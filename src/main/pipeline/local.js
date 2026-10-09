@@ -33,8 +33,39 @@ function root() {
   return process.cwd();
 }
 
-const MODEL_DIR = process.env.TYPD_MODEL_DIR || path.join(root(), 'models', 'typd-dictate');
-const SERVER = process.env.TYPD_LLAMA_SERVER || path.join(root(), 'vendor', 'llama', 'llama-server.exe');
+/*
+ * Where the weights and the server live. In development: models/ and vendor/ in the
+ * checkout. Packaged: outside app.asar, in the app's resources folder, because a native
+ * process cannot be spawned from inside the archive and llama-server cannot read weights
+ * through it (package.json build.extraResources puts them there):
+ *   <resources>/models/typd-dictate/   model.json + the two GGUF files it names
+ *   <resources>/llama/                 llama-server(.exe) and its libraries
+ * macOS has one llama.cpp build per architecture (scripts/fetch-llama-mac.js): Metal on
+ * Apple Silicon, CPU only on Intel.
+ */
+function packagedResources() {
+  try {
+    const electron = require('electron');
+    if (electron && electron.app && electron.app.isPackaged) return process.resourcesPath;
+  } catch {
+    // not running under Electron
+  }
+  return null;
+}
+const RESOURCES = packagedResources();
+
+function defaultServer() {
+  const exe = process.platform === 'win32' ? 'llama-server.exe' : 'llama-server';
+  if (RESOURCES) return path.join(RESOURCES, 'llama', exe);
+  if (process.platform === 'darwin') {
+    return path.join(root(), 'vendor', 'llama-mac', process.arch === 'arm64' ? 'arm64' : 'x64', exe);
+  }
+  return path.join(root(), 'vendor', 'llama', exe);
+}
+
+const MODEL_DIR = process.env.TYPD_MODEL_DIR ||
+  (RESOURCES ? path.join(RESOURCES, 'models', 'typd-dictate') : path.join(root(), 'models', 'typd-dictate'));
+const SERVER = process.env.TYPD_LLAMA_SERVER || defaultServer();
 /*
  * model.json beside the weights says which files to load and what the model was
  * trained to do, so a better model is a drop-in: copy the files, edit the json.
@@ -125,29 +156,48 @@ function warm() {
       return;
     }
 
-    proc = spawn(SERVER, [
-      '-m', MODEL, '--mmproj', MMPROJ,
-      '--host', '127.0.0.1', '--port', String(PORT),
-      '-ngl', process.env.TYPD_GPU_LAYERS || '99',   // falls back to the CPU if there is no GPU
-      // Under 1 GB of VRAM in total (1,011 MiB measured, 2026-10-05) with no measurable quality
-      // change: 8-bit KV cache, smaller micro-batches, and a 2,048-token window. The worst real
-      // dictation piece (71 s + the longest screen context) needs ~2,014 tokens; long revise
-      // selections are refused up front in pipeline/index.js instead of overflowing.
-      '-c', '2048', '-ctk', 'q8_0', '-ctv', 'q8_0', '-ub', '256', '-np', '1',
-      '--cache-ram', '0',                           // no host prompt cache: every dictation is new audio
-      // The built-in warm-up reserves ~550 MB for a 30 s audio window that a dictation never
-      // needs at once; the silent request below warms it instead (1.76 -> 1.35 GB, same speed).
-      '--no-warmup',
-      '--no-webui'
-    ], { windowsHide: true, stdio: ['ignore', 'ignore', process.env.TYPD_DEBUG ? 'inherit' : 'ignore'] });
-
-    proc.on('exit', (code) => {
-      debug('server exited', code);
-      proc = null;
-    });
+    // On macOS a GPU that is present but refuses the work (Metal in a VM, say) kills the
+    // server during load rather than falling back on its own; one retry on the CPU covers
+    // it. Only for the default layer count: an explicit TYPD_GPU_LAYERS is obeyed as given.
+    let layers = process.env.TYPD_GPU_LAYERS || '99';   // no GPU at all: llama.cpp uses the CPU
+    const cpuRetry = process.platform === 'darwin' && !process.env.TYPD_GPU_LAYERS;
+    const launch = () => {
+      const child = spawn(SERVER, [
+        '-m', MODEL, '--mmproj', MMPROJ,
+        '--host', '127.0.0.1', '--port', String(PORT),
+        '-ngl', layers,
+        // Under 1 GB of VRAM in total (1,011 MiB measured, 2026-10-05) with no measurable quality
+        // change: 8-bit KV cache, smaller micro-batches, and a 2,048-token window. The worst real
+        // dictation piece (71 s + the longest screen context) needs ~2,014 tokens; long revise
+        // selections are refused up front in pipeline/index.js instead of overflowing.
+        '-c', '2048', '-ctk', 'q8_0', '-ctv', 'q8_0', '-ub', '256', '-np', '1',
+        '--cache-ram', '0',                           // no host prompt cache: every dictation is new audio
+        // The built-in warm-up reserves ~550 MB for a 30 s audio window that a dictation never
+        // needs at once; the silent request below warms it instead (1.76 -> 1.35 GB, same speed).
+        '--no-warmup',
+        '--no-webui'
+      ], { windowsHide: true, stdio: ['ignore', 'ignore', process.env.TYPD_DEBUG ? 'inherit' : 'ignore'] });
+      child.on('exit', (code) => {
+        debug('server exited', code);
+        if (proc === child) proc = null;
+      });
+      // A binary that cannot be executed (lost its executable bit, quarantined) emits
+      // 'error' instead of 'exit'; unhandled, that would take the whole app down.
+      child.on('error', (err) => {
+        debug('server could not start:', err && err.message);
+        if (proc === child) proc = null;
+      });
+      return child;
+    };
+    proc = launch();
 
     const t0 = Date.now();
     while (Date.now() - t0 < 120000) {
+      if (!proc && cpuRetry && layers !== '0') {
+        debug('server died while loading on the GPU; retrying on the CPU');
+        layers = '0';
+        proc = launch();
+      }
       if (!proc) throw new Error('The dictation model failed to start');
       if (await health()) {
         await nudge('', 30000);   // the first dictation would otherwise pay for the warm-up

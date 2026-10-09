@@ -15,6 +15,10 @@
     "bench:selection": "node bench/selection.js 90 --copy",
     "bench:wiring": "node bench/wiring.js",
     "bench:learn": "node bench/learn.js",
+    "fetch:llama-mac": "node scripts/fetch-llama-mac.js",
+    "smoke": "node scripts/smoke-llama.js",
+    "dist:win": "electron-builder --win --x64",
+    "dist:mac": "node scripts/fetch-llama-mac.js && electron-builder --mac",
     "fetch:model": "node scripts/fetch-model.js"
   },
   "devDependencies": {
@@ -25,27 +29,107 @@
     "sherpa-onnx-node": "^1.13.4",
     "uiohook-napi": "^1.5.5"
   },
+  "//build": [
+    "Notes on build (electron-builder rejects unknown keys inside it, so they live here).",
+    "asarUnpack: inject.ps1 is spawned as a child process by path. Inside an asar archive",
+    "there is no real path to spawn, so PowerShell cannot find it and every paste fails",
+    "silently on the packaged build while working in development. Any helper spawned by",
+    "path (a script, a binary) needs the same treatment.",
+    "files: sherpa-onnx-node (Parakeet, TYPD_ENGINE=cascade) is parked. Only asr.js",
+    "requires it, lazily, for the cascade engine, whose models (bench/models) are never",
+    "packaged anyway; so it and its 22 MB native platform package stay out of the app.",
+    "extraResources: the dictation model and llama-server live outside app.asar in",
+    "<resources>/models/typd-dictate and <resources>/llama (see src/main/pipeline/local.js).",
+    "The model is staged by scripts/before-pack.js from model.json, so only the model in",
+    "use ships. win: the CUDA build in vendor/llama minus the other tools' *-impl.dll.",
+    "mac: vendor/llama-mac/<arch>, fetched by scripts/fetch-llama-mac.js (b11351).",
+    "npmRebuild false: the only native module, uiohook-napi, ships N-API prebuilds for every",
+    "platform, which Electron loads as-is; a rebuild would need a compiler for nothing.",
+    "mac: identity null means electron-builder signs nothing; scripts/after-pack.js signs ad",
+    "hoc on a Mac. minimumSystemVersion is llama.cpp b11351's deployment target."
+  ],
   "build": {
     "appId": "ai.typd.app",
     "productName": "Typd",
+    "directories": {
+      "output": "dist"
+    },
     "files": [
       "src/**/*",
-      "!**/*.md"
-    ],
-    "//asarUnpack": [
-      "inject.ps1 is spawned as a child process by path. Inside an asar archive",
-      "there is no real path to spawn, so PowerShell cannot find it and every",
-      "paste fails silently on the packaged build while working in development.",
-      "The ONNX models are loaded by the native sherpa binding, which likewise",
-      "cannot read through the archive."
+      "assets/**/*",
+      "!**/*.md",
+      "!node_modules/sherpa-onnx-node{,/**/*}",
+      "!node_modules/sherpa-onnx-*{,/**/*}"
     ],
     "asarUnpack": [
-      "src/main/inject.ps1",
-      "**/*.onnx",
-      "**/node_modules/sherpa-onnx-node/**"
+      "src/main/inject.ps1"
+    ],
+    "npmRebuild": false,
+    "beforePack": "scripts/before-pack.js",
+    "afterPack": "scripts/after-pack.js",
+    "extraResources": [
+      {
+        "from": "dist/.stage/models/typd-dictate",
+        "to": "models/typd-dictate"
+      }
     ],
     "win": {
-      "target": "nsis"
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/typd.ico",
+      "extraResources": [
+        {
+          "from": "vendor/llama",
+          "to": "llama",
+          "filter": [
+            "llama-server.exe",
+            "*.dll",
+            "!llama-*-impl.dll",
+            "llama-server-impl.dll"
+          ]
+        }
+      ]
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "category": "public.app-category.productivity",
+      "identity": null,
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "minimumSystemVersion": "13.3",
+      "artifactName": "${productName}-${version}-mac-${arch}.${ext}",
+      "extendInfo": {
+        "LSUIElement": true,
+        "NSMicrophoneUsageDescription": "Typd listens only while you are dictating, after you press its key. Your voice is turned into text on this Mac and never leaves it.",
+        "NSAppleEventsUsageDescription": "Typd pastes the text you dictated into the app you were typing in, and reads the text you highlighted when you ask it to change it."
+      },
+      "extraResources": [
+        {
+          "from": "vendor/llama-mac/${arch}",
+          "to": "llama"
+        }
+      ]
     }
   },
   "allowScripts": {
