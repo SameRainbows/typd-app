@@ -5,6 +5,39 @@ lead's decisions and the product owner's new scope: one real Typd window. Phase 
 for the lead's "go", because the macOS and tester-data agents are still editing `index.js`,
 `settings-window.js`, `hotkeys.js` and `inject*`.*
 
+## Status after Phase 2 (9 October 2026)
+
+Everything below is built, except where noted here.
+
+**Where the build differs from the plan, and why:**
+- **H1: modifiers are tap-only, not tap-or-hold.** Holding Right Ctrl (or Right ⌘) while
+  moving to Ctrl-click or ⌘-click takes more than 400 ms, so a hold trigger on a modifier would
+  start false dictations all day. Hold-to-talk is kept for keys that do nothing else: F13–F24
+  and side buttons.
+- **W1/W5: the Settings handlers live in `home-window.js`.** They were not split into a
+  `settings-section.js`; there is one window module.
+- **T1: no double-click on the tray.** A left click already opens the menu, and "Open Typd" is its
+  second item.
+- **F2: on a Mac the window does not open itself for permissions.** `permissions-mac.js`
+  already asks at launch with one native dialog. Home shows the switches that are off, with a
+  button for each pane, and the menu bar's first line says the same.
+- **F2: no "Restart Typd" button.** Only Input Monitoring needs a restart, and the dialog says so.
+- **H5: built on Windows, with no physical test yet.** A side button arms a hook inside
+  `inject.ps1`; installing and removing the hook is tested. Swallowing a real Back press in
+  Chrome still needs a person with a mouse: bind it in Settings, press it in a page with
+  history, and the page must not go back.
+- **W7:** `brand.js` takes `CHOSEN` (or `TYPD_MARK=<folder>`) from `assets/brand/<name>/`.
+
+**Also fixed:**
+- The Windows selection read cut at 8,000 characters, found by the macOS agent. It now reads up
+  to 100,000 characters and marks anything longer, and revising refuses both a marked selection
+  and anything over the path's limit: "Too much selected".
+- **P9:** the "Keep recordings" switch now decides on its own; the folder no longer has to exist.
+
+**Benches:** `npm run bench` now includes `bench/hotkeys.js` and `bench/home.js`, and
+`bench/wiring.js` checks the window's seams. The pill was rendered under light, dark and system
+themes, and matches the pre-change reference pixel for pixel.
+
 ## Decisions already made
 
 | # | Decision (lead, 9 Oct) | Where it lands |

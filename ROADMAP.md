@@ -40,12 +40,18 @@ These settle arguments. When a decision is close, the law wins.
 1. **Your voice never leaves the machine.** Recognition is local, permanently,
    even when that costs accuracy. It is the one claim competitors cannot make
    honestly, and it is what makes an always-listening session acceptable.
-2. **The overlay is the product.** One small Settings window may exist, for what
-   cannot be learned or inferred. It opens only when asked, holds at most five
-   controls, and never shows stats; a sixth setting has to replace one. No
-   dashboard, no hub, no settings tour, no stats page. (Changed 2026-10-05 after
+2. **The overlay is the product; the window is its quiet companion.** One calm
+   window exists for what the overlay cannot show: Home, History, Dictionary,
+   Settings and What's new. It opens only when asked — from the tray or menu
+   bar, or by launching Typd again — except when Typd cannot work without you
+   (the microphone is blocked, a Mac permission is missing). It holds essentials
+   only. No engagement mechanics: no streaks, goals, badges, nags, upsells, or
+   notifications asking you to come back. Its Settings section holds at most
+   five controls; a sixth setting has to replace one. (Changed 2026-10-05 after
    `dictation-research/reports/product_preferences_home.md`: Windows hides tray
-   icons, so a tray-only app cannot be found or configured by ordinary users.)
+   icons, so a tray-only app cannot be found or configured by ordinary users.
+   Changed again 2026-10-09: the product owner asked for a home window like
+   Wispr Flow and Typeless.)
 3. **Never destroy work that cannot be undone.** Revision overwrites the user's
    own writing. Every destructive path needs a way back before it ships.
 4. **It must compound.** A feature that works identically on day 200 and day 1
@@ -283,9 +289,12 @@ Everything above is copyable within a year. This phase is what is not.
 
 Written down so it stays refused:
 
-- **No dashboard and no hub.** Law 2. Configuration is learned where it can be.
-  The few choices that cannot be learned (microphone, sounds, start at login,
-  recordings, hotkey) live in one capped Settings window that never opens on its own.
+- **No engagement mechanics and no settings sprawl.** Law 2. The window shows
+  what you did and what Typd learned, plainly — counts, never streaks or goals.
+  Configuration is learned where it can be. The few choices that cannot be
+  learned (microphone, hotkey, sounds, start at login, recordings) live in the
+  window's capped Settings section, and the window never opens on its own unless
+  Typd cannot work.
 - **No cloud recognition.** Law 1. Not as an option, not as a "faster mode".
 - **No agent, no tool-calling, no "ask anything".** It is in `parked/` and it
   works, and it is still the wrong product. Typd is a text tool.

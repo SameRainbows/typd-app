@@ -102,8 +102,16 @@ function unwrap(text) {
  *          span: string|null,
  *          signal: AbortSignal}} opts
  */
+/*
+ * The most a revision through the cloud model takes. It is what that path effectively
+ * allowed before -- the selection used to be read 8,000 characters at most -- except
+ * that a longer one is now refused instead of being cut, rewritten, and pasted over the
+ * whole, which lost everything past the cut. (The local model's limit is lower; below.)
+ */
+const MAX_CLOUD_SPAN = 8000;
+
 async function* run(opts = {}) {
-  const { mode = 'dictate', audio, contextBlock, span, signal, stream } = opts;
+  const { mode = 'dictate', audio, contextBlock, span, signal, stream, spanTruncated } = opts;
 
   yield { type: 'thinking' };
 
@@ -145,7 +153,7 @@ async function* run(opts = {}) {
     if (!span) throw new Error('Nothing selected — highlight some text first');
     // The span is both prompt and answer inside a 2,048-token window (see local.js): ~3,000
     // characters is the most that fits with a spoken instruction. Say so instead of failing.
-    if (span.length > 3000) throw new Error('Too much selected — up to ~450 words');
+    if (spanTruncated || span.length > 3000) throw new Error('Too much selected — up to ~450 words');
     const { lead, tail, core } = peel(span);
     yield { type: 'expect', chars: core.length };
 
@@ -171,6 +179,7 @@ async function* run(opts = {}) {
 
   if (mode === 'revise') {
     if (!span) throw new Error('Nothing selected — highlight some text first');
+    if (spanTruncated || span.length > MAX_CLOUD_SPAN) throw new Error('Too much selected — up to ~1,200 words');
 
     const { lead, tail, core } = peel(span);
 

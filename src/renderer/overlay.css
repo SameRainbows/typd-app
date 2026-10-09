@@ -47,29 +47,32 @@
   --hair: 0.25px;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --pill-bg:    rgba(17, 18, 22, 0.95);
-    --pill-line:  rgba(255, 255, 255, 0.145);
-    --edge-top:   rgba(255, 255, 255, 0.16);
-    --edge-bot:   rgba(0, 0, 0, 0.3);
-    --pill-shadow:
-      0px 1px 2px 0px rgba(0, 0, 0, 0.45),
-      0px 6px 16px 0px rgba(0, 0, 0, 0.4),
-      0px 14px 32px 20px rgba(0, 0, 0, 0.54);
+/* The pill's dark palette, pinned: overlay.html sets data-scheme="dark", so the pill looks
+   the same whatever the system theme -- the Typd window follows the system, the pill does
+   not. It used to follow `prefers-color-scheme` while main forced the whole app dark; the
+   app now follows the system, and this is what keeps the pill exactly as it was.
+   TYPD_PREVIEW_THEME=light (index.js, --preview) switches it to inspect the light one. */
+:root[data-scheme="dark"] {
+  --pill-bg:    rgba(17, 18, 22, 0.95);
+  --pill-line:  rgba(255, 255, 255, 0.145);
+  --edge-top:   rgba(255, 255, 255, 0.16);
+  --edge-bot:   rgba(0, 0, 0, 0.3);
+  --pill-shadow:
+    0px 1px 2px 0px rgba(0, 0, 0, 0.45),
+    0px 6px 16px 0px rgba(0, 0, 0, 0.4),
+    0px 14px 32px 20px rgba(0, 0, 0, 0.54);
 
-    --text:   #F4F5F7;
-    --dim:    #DADDE4;
-    --meter:  #F4F5F7;
+  --text:   #F4F5F7;
+  --dim:    #DADDE4;
+  --meter:  #F4F5F7;
 
-    --chip:       rgba(244, 245, 247, 0.17);
-    --chip-hover: rgba(244, 245, 247, 0.2);
-    --commit:     #F4F5F7;
-    --commit-ink: #14161B;
-    --danger:     #E8695C;
+  --chip:       rgba(244, 245, 247, 0.17);
+  --chip-hover: rgba(244, 245, 247, 0.2);
+  --commit:     #F4F5F7;
+  --commit-ink: #14161B;
+  --danger:     #E8695C;
 
-    --fill:   rgba(244, 245, 247, 0.11);
-  }
+  --fill:   rgba(244, 245, 247, 0.11);
 }
 
 /* One device pixel, whatever the scaling factor. 1 CSS px at 1.5dppx is

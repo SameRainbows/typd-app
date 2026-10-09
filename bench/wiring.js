@@ -98,6 +98,50 @@ check('stub emits expect', /type: 'expect'/.test(stub));
 check('renderer consumes expect', /session:expect/.test(js));
 check('renderer drives width from it', /progressEl\.style\.width/.test(js));
 
+/* ------------------------------------------------------------ the window */
+
+// The Typd window (home-window.js, preload/home.js, renderer/home.*) fails the same
+// silent ways: a renamed id, a call the preload does not expose, a channel main never
+// handles -- and one more that matters more here, a handler that forgets to check
+// who is calling. Every one goes through handle(), which checks fromPage().
+section('the Typd window');
+const hHtml = read('src/renderer/home.html');
+const hJs = read('src/renderer/home.js');
+const hPre = read('src/preload/home.js');
+const hMain = read('src/main/home-window.js');
+
+const hIds = [...new Set([...hJs.matchAll(/\$\('([^']+)'\)/g)].map((m) => m[1]))];
+const missingIds = hIds.filter((id) => !hHtml.includes('id="' + id + '"'));
+check('every $(id) in home.js exists in home.html (' + hIds.length + ')', !missingIds.length, missingIds.join(', '));
+
+const preCalls = [...hPre.matchAll(/call\('([^']+)'\)/g)].map((m) => m[1]);
+const handled = [...hMain.matchAll(/handle\('([^']+)'/g)].map((m) => m[1]);
+const unhandled = preCalls.filter((c) => !handled.includes(c));
+check('every preload call has a handler in main (' + preCalls.length + ')', !unhandled.length, unhandled.join(', '));
+
+const directHandles = (hMain.match(/ipcMain\.handle\(/g) || []).length;
+check('every handler goes through handle(), which checks fromPage()',
+  directHandles === 1 && /function handle\([^)]*\)\s*\{\s*ipcMain\.handle\(channel, \(e, \.\.\.args\) => \(fromPage\(e\)/.test(hMain));
+
+const apiUses = [...hJs.matchAll(/api\.([a-z]+)(?:\.([a-zA-Z]+))?\(/g)].map((m) => m[2] ? m[1] + '.' + m[2] : m[1]);
+const exposed = new Set(['get', 'news', 'action', 'pane', 'feedback', 'on']);
+for (const m of hPre.matchAll(/^ {2}([a-z]+): \{([\s\S]*?)^ {2}\}/gm)) {
+  for (const k of m[2].matchAll(/^ {4}([a-zA-Z]+):/gm)) exposed.add(m[1] + '.' + k[1]);
+}
+const unexposed = [...new Set(apiUses)].filter((u) => !exposed.has(u));
+check('every api.* the page calls is exposed by the preload', !unexposed.length, unexposed.join(', '));
+
+const events = (hPre.match(/const EVENTS = \[([^\]]+)\]/) || [, ''])[1];
+const listened = [...new Set([...hJs.matchAll(/api\.on\('([^']+)'/g)].map((m) => m[1]))];
+const sent = [...new Set([...hMain.matchAll(/send\('([a-z]+:[a-z-]+)'/g)].map((m) => m[1]))];
+const notAllowed = [...listened, ...sent].filter((c) => !events.includes("'" + c + "'"));
+check('every event sent or listened for is allowed by the preload', !notAllowed.length, notAllowed.join(', '));
+
+check('the overlay reports devices for the tray menu',
+  /devices\(list\)/.test(pre) && /typd\.devices\(/.test(js) && /'overlay:devices'/.test(main));
+check('the pill is pinned dark, whatever the system theme',
+  /<html[^>]*data-scheme="dark"/.test(html) && !/@media \(prefers-color-scheme/.test(read('src/renderer/overlay.css')));
+
 /* ------------------------------------------------------------------ timing */
 
 section('timing constants that must agree');

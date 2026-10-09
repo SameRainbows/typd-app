@@ -210,6 +210,10 @@
 
   /* ------------------------------------------------------------------ meter */
 
+  /* TODO(meter): the user is choosing a new meter in design/meter-study.html. Leave
+   * this one exactly as it is until that choice is made, then land it here (and the
+   * constants below) in one change. */
+
   /* Scrolling peak history, not a row of bars wiggling.
    *
    * The previous meter multiplied one amplitude by a per-bar sine, so it looked
@@ -502,7 +506,9 @@
   });
 
   // Between sessions only, and silent: main sends it when a correction was
-  // learned ("Learned “Kaggle”"). A session that has started owns the pill.
+  // learned ("Learned “Kaggle”"), and once on the very first launch ("Ready — tap
+  // Right Alt and talk"), which stays longer (`ms`). A session that has started
+  // owns the pill, and its start clears the note.
   window.typd.on('session:note', function (p) {
     if (state !== 'idle') return;
     epoch++;
@@ -511,7 +517,7 @@
     resultEl.textContent = p.message || '';
     overlay.setAttribute('data-visible', 'true');
     setState('note');
-    dismiss(LINGER_NOTE_MS);
+    dismiss(p.ms > 0 && p.ms <= 15000 ? p.ms : LINGER_NOTE_MS);
   });
 
   window.typd.on('settings:changed', function (p) {
@@ -524,6 +530,22 @@
     stopMic(false);
     dismiss(0);
   });
+
+  /* --------------------------------------------------------------- devices */
+
+  // The input devices, for the tray's Microphone menu. This page already holds the
+  // microphone permission, so the names are there; main gets a fresh list whenever
+  // a device is plugged in or pulled out.
+  function reportDevices() {
+    if (!navigator.mediaDevices || !window.typd.devices) return;
+    navigator.mediaDevices.enumerateDevices().then(function (all) {
+      window.typd.devices(all
+        .filter(function (d) { return d.kind === 'audioinput' && d.deviceId !== 'default' && d.deviceId !== 'communications'; })
+        .map(function (d) { return { deviceId: d.deviceId, label: d.label }; }));
+    }).catch(function () {});
+  }
+  if (navigator.mediaDevices) navigator.mediaDevices.addEventListener('devicechange', reportDevices);
+  reportDevices();
 
   /* ------------------------------------------------------------------- boot */
 

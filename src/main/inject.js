@@ -36,6 +36,8 @@ let proc = null;
 let ready = false;
 let queue = [];       // pending {resolve, reject} in command order
 let buffer = '';
+const buttonListeners = new Set();
+let armedButton = 0;  // the side button the helper's hook is swallowing, 0 for none
 
 function handleLine(line) {
   const text = line.trim();
@@ -50,6 +52,14 @@ function handleLine(line) {
 
   if (payload.ready) {
     ready = true;
+    if (armedButton && proc) proc.stdin.write('buttons ' + armedButton + '\n');   // asked for before the helper was up
+    return;
+  }
+
+  // Unasked-for lines from the side-button hook (inject.ps1): not an answer to a command.
+  if (payload.ev) {
+    if (payload.ev === 'button') for (const fn of buttonListeners) fn(payload.b, Boolean(payload.down));
+    if (payload.ev === 'buttons' && process.env.TYPD_DEBUG) console.log('[typd:buttons]', payload);
     return;
   }
 
@@ -115,6 +125,24 @@ function command(line, timeoutMs = 2000) {
  */
 function maskAlt() {
   if (proc && ready) proc.stdin.write('mask\n');
+}
+
+/**
+ * Mouse side buttons as the Typd key (hotkeys.js). The helper's own low-level mouse hook
+ * swallows the bound button -- Back must not also go back in the app underneath -- and
+ * reports its presses here. arm(4 | 5) installs it, arm(0) removes it. If the hook
+ * cannot be installed, presses simply never arrive, and the key picker's "press it
+ * again" check puts the old key back.
+ */
+function buttons() {
+  return {
+    on(fn) { buttonListeners.add(fn); },
+    off(fn) { buttonListeners.delete(fn); },
+    arm(b) {
+      armedButton = b === 4 || b === 5 ? b : 0;
+      if (proc) proc.stdin.write('buttons ' + armedButton + '\n');
+    }
+  };
 }
 
 /** The app the text is about to land in. Null if it cannot be determined. */
@@ -183,7 +211,9 @@ async function selection(onEarly) {
 
     if (r && r.method === 'text-pattern' && r.text) {
       if (onEarly) onEarly(true);
-      return { text: r.text, method: 'uia', process: r.process || '', title: r.title || '' };
+      // truncated: more was highlighted than the helper reads (inject.ps1, SelectionLimit).
+      // Revising it would replace all of it with a rewrite of part of it; the pipeline refuses.
+      return { text: r.text, truncated: Boolean(r.truncated), method: 'uia', process: r.process || '', title: r.title || '' };
     }
 
     // A caret with no range is the one negative answer worth trusting: the
@@ -312,6 +342,6 @@ function stop() {
 }
 
 module.exports = {
-  start, stop, paste, copy, maskAlt, focusedApp, focusContext, selection, selectionStillIs,
+  start, stop, paste, copy, maskAlt, focusedApp, focusContext, selection, selectionStillIs, buttons,
   isReady: () => ready
 };

@@ -53,6 +53,94 @@ public static class Fg {
 
 # Node reads line-delimited JSON, so every response must be one line and must be
 # flushed immediately -- the default buffering would hold answers indefinitely.
+# Mouse side buttons as the Typd key. uiohook only listens, so a side button heard
+# there would still be Back in the browser underneath -- and leave a half-written form.
+# This hook swallows the one button Typd is bound to and reports it instead, on its own
+# thread with its own message loop (a low-level hook needs one). It is installed only
+# while a side button is the key ("buttons 4" / "buttons 5"; "buttons 0" removes it),
+# so with any other key nothing here runs -- not even the compile, which happens on the
+# first "buttons" command rather than at launch. Guarded: if it ever fails to build,
+# pasting is untouched and Settings' "press it again" check refuses the button.
+$script:Buttons = $null
+$script:ButtonsSource = @"
+using System;
+using System.Threading;
+using System.Runtime.InteropServices;
+public static class TypdButtons {
+  delegate IntPtr Proc(int code, IntPtr wParam, IntPtr lParam);
+  [StructLayout(LayoutKind.Sequential)] struct POINT { public int x; public int y; }
+  [StructLayout(LayoutKind.Sequential)] struct MSLL { public POINT pt; public uint mouseData; public uint flags; public uint time; public IntPtr extra; }
+  [StructLayout(LayoutKind.Sequential)] struct MSG { public IntPtr hwnd; public uint message; public IntPtr wParam; public IntPtr lParam; public uint time; public POINT pt; }
+  [DllImport("user32.dll", SetLastError = true)] static extern IntPtr SetWindowsHookEx(int id, Proc fn, IntPtr mod, uint thread);
+  [DllImport("user32.dll")] static extern bool UnhookWindowsHookEx(IntPtr hook);
+  [DllImport("user32.dll")] static extern IntPtr CallNextHookEx(IntPtr hook, int code, IntPtr wParam, IntPtr lParam);
+  [DllImport("user32.dll")] static extern int GetMessage(out MSG msg, IntPtr hwnd, uint min, uint max);
+  [DllImport("user32.dll")] static extern bool PostThreadMessage(uint thread, uint msg, IntPtr wParam, IntPtr lParam);
+  [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+  [DllImport("kernel32.dll")] static extern IntPtr GetModuleHandle(string name);
+  const int WH_MOUSE_LL = 14, WM_XBUTTONDOWN = 0x020B, WM_XBUTTONUP = 0x020C;
+  static volatile int armed;           // 0, or the button Typd is bound to: 4 (back), 5 (forward)
+  static Proc keep;                    // the delegate must outlive the hook
+  static IntPtr hook;
+  static uint loopThread;
+  static Thread thread;
+
+  static void Say(string json) { Console.Out.WriteLine(json); Console.Out.Flush(); }
+
+  static IntPtr OnMouse(int code, IntPtr wParam, IntPtr lParam) {
+    int msg = wParam.ToInt32();
+    if (code >= 0 && armed != 0 && (msg == WM_XBUTTONDOWN || msg == WM_XBUTTONUP)) {
+      MSLL s = (MSLL)Marshal.PtrToStructure(lParam, typeof(MSLL));
+      int x = (int)(s.mouseData >> 16);           // XBUTTON1 = 1 (back), XBUTTON2 = 2 (forward)
+      int b = x == 1 ? 4 : x == 2 ? 5 : 0;
+      if (b == armed) {
+        Say("{\"ev\":\"button\",\"b\":" + b + ",\"down\":" + (msg == WM_XBUTTONDOWN ? "true" : "false") + "}");
+        return (IntPtr)1;                         // swallowed: the app underneath never sees it
+      }
+    }
+    return CallNextHookEx(hook, code, wParam, lParam);
+  }
+
+  public static void Arm(int button) {
+    armed = (button == 4 || button == 5) ? button : 0;
+    if (armed != 0 && thread == null) {
+      var ready = new ManualResetEvent(false);
+      bool ok = false;
+      thread = new Thread(() => {
+        keep = OnMouse;
+        hook = SetWindowsHookEx(WH_MOUSE_LL, keep, GetModuleHandle(null), 0);
+        loopThread = GetCurrentThreadId();
+        ok = hook != IntPtr.Zero;
+        ready.Set();
+        if (!ok) return;
+        MSG m;
+        while (GetMessage(out m, IntPtr.Zero, 0, 0) > 0) { }
+        UnhookWindowsHookEx(hook);
+        hook = IntPtr.Zero;
+      });
+      thread.IsBackground = true;
+      thread.Start();
+      ready.WaitOne(2000);
+      if (!ok) thread = null;
+      Say("{\"ev\":\"buttons\",\"armed\":" + armed + ",\"ok\":" + (ok ? "true" : "false") + "}");
+      return;
+    }
+    if (armed == 0 && thread != null) {
+      PostThreadMessage(loopThread, 0x0012, IntPtr.Zero, IntPtr.Zero);   // WM_QUIT: unhook and end
+      thread = null;
+    }
+    Say("{\"ev\":\"buttons\",\"armed\":" + armed + ",\"ok\":true}");
+  }
+}
+"@
+
+function Use-Buttons {
+  if ($null -eq $script:Buttons) {
+    try { Add-Type $script:ButtonsSource; $script:Buttons = $true } catch { $script:Buttons = $false }
+  }
+  return $script:Buttons
+}
+
 function Emit([string] $json) {
   [Console]::Out.WriteLine($json)
   [Console]::Out.Flush()
@@ -168,6 +256,11 @@ function Get-Focus {
 # under that, and relevance beats volume well before the limit bites.
 $script:ContextLimit = 8000
 
+# How much of a highlighted span to read. Far more than any revision accepts (the
+# pipeline refuses past a few thousand characters), so "too much selected" is always
+# known rather than silently cut; JSON on one line carries this comfortably.
+$script:SelectionLimit = 100000
+
 function Get-FocusText {
   try {
     $el = [System.Windows.Automation.AutomationElement]::FocusedElement
@@ -226,6 +319,7 @@ function Get-Selection {
     text = ''
     length = 0
     docLength = 0
+    truncated = $false
   }
 
   try {
@@ -249,8 +343,16 @@ function Get-Selection {
       try { $sel = $tp.GetSelection() } catch { $out.method = 'selection-unsupported' }
 
       if ($sel -and $sel.Length -gt 0) {
-        $text = $sel[0].GetText($script:ContextLimit)
+        # Read one character past the limit, so a longer selection is known to be longer.
+        # It used to be read at ContextLimit (8,000) like the context, and a longer
+        # selection came back cut short -- then revised and pasted over the WHOLE of it,
+        # losing everything past the cut. Now it is marked, and the pipeline refuses it.
+        $text = $sel[0].GetText($script:SelectionLimit + 1)
         if ($null -eq $text) { $text = '' }
+        if ($text.Length -gt $script:SelectionLimit) {
+          $text = $text.Substring(0, $script:SelectionLimit)
+          $out.truncated = $true
+        }
 
         # Chromium's accessibility tree -- so every browser, and every Electron
         # application -- hands back the WHOLE DOCUMENT as the selection when the
@@ -263,8 +365,9 @@ function Get-Selection {
         # It is either genuine select-all or a control telling us nothing, and
         # the two are indistinguishable from here -- so defer to Ctrl+C, which
         # asks the application directly and happens to be right either way.
+        # Just enough of the document to tell "the same text" from "longer than it".
         $doc = ''
-        try { $doc = $tp.DocumentRange.GetText($script:ContextLimit) } catch { }
+        try { $doc = $tp.DocumentRange.GetText($text.Length + 1) } catch { }
         if ($null -eq $doc) { $doc = '' }
         $out.docLength = $doc.Length
 
@@ -422,6 +525,15 @@ while ($true) {
   $line = $line.Trim()
   if ($line.StartsWith('put ')) { Send-Paste $line.Substring(4); continue }
   if ($line.StartsWith('copy ')) { Set-Copy $line.Substring(5); continue }
+  # No reply in the command queue: it answers with an {"ev":...} line, which inject.js routes
+  # to its button listeners rather than to a waiting command.
+  if ($line.StartsWith('buttons ')) {
+    $n = 0; [void][int]::TryParse($line.Substring(8), [ref]$n)
+    if ($n -eq 0 -and $null -eq $script:Buttons) { Emit '{"ev":"buttons","armed":0,"ok":true}' }   # never armed: nothing to remove
+    elseif (Use-Buttons) { try { [TypdButtons]::Arm($n) } catch { Emit '{"ev":"buttons","armed":0,"ok":false}' } }
+    else { Emit '{"ev":"buttons","armed":0,"ok":false}' }
+    continue
+  }
 
   switch ($line) {
     'restore'   { Restore-Clipboard }

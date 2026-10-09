@@ -1,34 +1,39 @@
 'use strict';
 
 const {
-  app, BrowserWindow, ipcMain, Menu, Tray, nativeImage, nativeTheme, dialog, powerMonitor,
+  app, ipcMain, nativeTheme, dialog, powerMonitor, systemPreferences,
   session: electronSession
 } = require('electron');
 
 const { createOverlayWindow, positionOverlay, showOverlay } = require('./overlay-window');
 const { registerHotkeys } = require('./hotkeys');
+const hotkeyLogic = require('./hotkey-logic');
 const settings = require('./settings');
-const settingsWindow = require('./settings-window');
+const home = require('./home-window');
+const status = require('./status');
+const brand = require('./brand');
+const { store } = require('./store');
+const { createTray } = require('./tray');
 const pipeline = require('./pipeline');
 const inject = require('./inject');
 const learn = require('./learn');
 const dictionary = require('./dictionary');
 const collect = require('./collect');   // tester builds only; inert without tester.json
 
+const MAC = process.platform === 'darwin';
+
 /**
- * Opt-in: keep each dictation's audio with everything needed to replay it -- the text Typd
+ * Keep each dictation's audio with everything needed to replay it -- the text Typd
  * produced, the model, the screen context and highlighted span it was given -- so real
  * dictations can become a private test set and training data. Stored under
  * %APPDATA%\Typd\recordings and never sent anywhere; the first law still holds.
  *
- * The folder is the switch: it records while the folder exists (or TYPD_KEEP_AUDIO is set).
- * Rename or delete the folder to stop. Off by default.
+ * The "Keep recordings" switch in Settings is the switch: on, every dictation is kept and
+ * the folder is made if it is missing; off, nothing is. TYPD_KEEP_AUDIO forces it on.
  */
 function recordingsDir() {
-  if (!settings.get('keepRecordings')) return null;
-  const dir = require('path').join(app.getPath('appData'), 'Typd', 'recordings');
-  if (process.env.TYPD_KEEP_AUDIO) return dir;
-  return require('fs').existsSync(dir) ? dir : null;
+  if (!settings.get('keepRecordings') && !process.env.TYPD_KEEP_AUDIO) return null;
+  return settings.recordingsDir();
 }
 
 function keepRecording(current, text) {
@@ -68,6 +73,32 @@ function keepRecording(current, text) {
   }
 }
 
+/**
+ * History (store.js): what landed, for the window's History and Home. Never the screen
+ * context, the span or a title -- store.record drops anything it does not know. Written a
+ * tick later, so the paste is never waiting on a file.
+ */
+function keepHistory(current, text, outcome) {
+  if (stub) return;
+  const audio = current.audio;
+  setImmediate(() => {
+    try {
+      store().record({
+        mode: current.mode,
+        text,
+        seconds: audio && audio.samples ? audio.samples.length / (audio.sampleRate || 16000) : 0,
+        waitMs: current.endedAt ? Date.now() - current.endedAt : 0,
+        app: current.target && current.target.process ? current.target.process : null,
+        outcome
+      });
+    } catch (err) {
+      if (process.env.TYPD_DEBUG) console.log('[typd:history]', err);
+    }
+    home.changed('history');
+    refreshTray();
+  });
+}
+
 const dev = process.argv.includes('--dev');
 
 // The fake pipeline, for tuning the overlay without a model load or an API call.
@@ -86,6 +117,7 @@ let overlay = null;
 let tray = null;
 let hotkeys = null;
 let session = null;
+let firstRunNote = false;   // the pill says "Ready — tap … and talk" once, on the very first launch
 
 // Two copies fighting over one global hotkey is a confusing failure that looks
 // like the hotkey is simply broken.
@@ -140,10 +172,12 @@ function beginSession() {
   const controller = new AbortController();
   session = {
     mode: 'dictate', modeSettled: false, controller, target: null,
-    contextBlock: null, span: null, audio: null, onAudio: null, ready: null,
+    contextBlock: null, span: null, spanTruncated: false, audio: null, onAudio: null, ready: null,
     stream: undefined   // opened on the first chunk; null when the model takes one piece
   };
   const current = session;
+  firstRunNote = false;
+  status.set({ live: true });
 
   // What is on screen decides the mode. A highlighted span means the user is
   // revising it; no highlight means they are dictating. There is one key, and
@@ -171,6 +205,9 @@ function beginSession() {
       if (sel && sel.text) {
         learn.stop();
         current.span = sel.text;
+        // More was highlighted than could be read: revising it would paste a rewrite of
+        // only the part read over all of it. The pipeline refuses instead.
+        current.spanTruncated = Boolean(sel.truncated);
         current.target = { process: sel.process, title: sel.title };
         setMode(current, 'revise');
         pipeline.wake(null);
@@ -238,6 +275,7 @@ async function endSession() {
   const current = session;
   current.endedAt = Date.now();
   send('session:capture-end', {});
+  status.set({ live: false });   // the microphone is closed; the model is writing
   // Escape still means "never mind" while the model works, not only while recording.
   hotkeys.holdWork(() => { if (session === current) cancelSession(); });
 
@@ -256,6 +294,7 @@ async function endSession() {
           audio: await awaitAudio(current),
           contextBlock: current.contextBlock,
           span: current.span,
+          spanTruncated: current.spanTruncated,
           signal: current.controller.signal,
           stream: current.stream || null
         });
@@ -281,6 +320,7 @@ async function endSession() {
           if (!still.ok) {
             // Nothing is overwritten, but the rewrite is kept: it is on the clipboard.
             remember(event.text);
+            keepHistory(current, event.text, 'copied');
             await inject.copy(event.text);
             if (session !== current) return;
             send('session:error', {
@@ -298,14 +338,16 @@ async function endSession() {
         if (session !== current) return;
 
         if (!result.ok) {
+          keepHistory(current, event.text, 'copied');
           send('session:error', {
             message: result.copied
-              ? 'Copied — press ' + (process.platform === 'darwin' ? '⌘V' : 'Ctrl+V') + ' to paste'   // macOS: ⌘V
+              ? 'Copied — press ' + (MAC ? '⌘V' : 'Ctrl+V') + ' to paste'
               : 'Could not paste — ' + result.reason
           });
           break;
         }
 
+        keepHistory(current, event.text, 'pasted');
         send('session:done', { text: event.text, target: appLabel(current.target) });
         learn.watch(event.text, current.target && current.target.process, inject.focusContext, learned);
         // Tester builds only (a tester.json is present, see collect.js): queue this audio and
@@ -329,68 +371,55 @@ async function endSession() {
 function cancelSession() {
   if (session) session.controller.abort();
   session = null;
+  status.set({ live: false });
   hotkeys.releaseWork();
   passThrough();
   send('session:cancel', {});
 }
 
+/** A short note in the pill between sessions -- a learned word, or the first-run hello. */
+function note(message, ms) {
+  if (session || !overlay || overlay.isDestroyed()) return;
+  positionOverlay(overlay);
+  passThrough();
+  showOverlay(overlay);
+  send('session:note', { message, ms });
+}
+
 /* --------------------------------------------------------------------- tray */
 
-/**
- * Draw the tray mark straight into a BGRA buffer. No icon asset to ship, and no
- * invisible tray entry that leaves the app unquittable while there is still no
- * real mark to use.
- */
-function trayIcon(size) {
-  const scale = 4;   // supersample, then let the downscale do the antialiasing
-  const big = size * scale;
-  const buf = Buffer.alloc(big * big * 4);
-  const r = big / 2 - scale;
-  const c = big / 2;
+function keyInfo() {
+  const b = hotkeys ? hotkeys.name : settings.get('hotkey');
+  return {
+    label: hotkeyLogic.label(b, process.platform),
+    short: hotkeyLogic.shortLabel(b, process.platform),
+    verb: hotkeyLogic.verb(b, process.platform)
+  };
+}
+status.useKey(keyInfo);
 
-  for (let y = 0; y < big; y++) {
-    for (let x = 0; x < big; x++) {
-      const dx = x + 0.5 - c;
-      const dy = y + 0.5 - c;
-      if (dx * dx + dy * dy <= r * r) {
-        const i = (y * big + x) * 4;
-        buf[i] = 0xF7;       // B
-        buf[i + 1] = 0xF5;   // G
-        buf[i + 2] = 0xF4;   // R  -> near-white, matching the pill
-        buf[i + 3] = 0xff;   // A
-      }
-    }
+/** A click on the tray's status line: whatever fixes what it says. */
+function statusAction(id) {
+  if (id === 'hotkey') return home.open('settings', { capture: true });
+  if (id === 'retry') return warmModel();
+  if (id === 'privacy') {
+    if (MAC) return require('./permissions-mac').openPane('microphone');
+    return require('electron').shell.openExternal('ms-settings:privacy-microphone').catch(() => {});
   }
-
-  return nativeImage
-    .createFromBitmap(buf, { width: big, height: big })
-    .resize({ width: size, height: size, quality: 'best' });
+  if (id === 'permissions') return home.open('home');
 }
 
-// The last finished text, so it is never more than a right-click away: pasted into the wrong
-// window, lost to a crash of the target app, or simply wanted twice. Memory only.
-let lastText = '';
+const trayUi = createTray({
+  open: (section, opts) => home.open(section, opts),
+  copy: (text) => inject.copy(text),
+  statusAction,
+  forget: (term) => forget(term)
+});
 
-// The word most recently learned from a correction, so a wrong lesson is one
-// right-click from undone (ROADMAP 3.8). The full list is the dictionary file.
-let lastLearned = null;
-
-function trayMenu() {
-  return Menu.buildFromTemplate([
-    { label: `Dictate    ${hotkeys ? hotkeys.binding : 'Right Alt'}`, enabled: false },
-    { label: 'Revise     select text first', enabled: false },
-    { type: 'separator' },
-    { label: 'Copy last dictation', enabled: Boolean(lastText), click: () => inject.copy(lastText) },
-    ...(lastLearned ? [{ label: `Forget “${lastLearned}”`, click: () => forget(lastLearned) }] : []),
-    { type: 'separator' },
-    { label: 'Settings…', click: () => settingsWindow.open() },
-    { label: 'Quit Typd', click: () => app.quit() }
-  ]);
-}
+const refreshTray = () => trayUi.refresh();
 
 function remember(text) {
-  lastText = text;
-  if (tray) tray.setContextMenu(trayMenu());
+  trayUi.remember(text);
 }
 
 /**
@@ -398,44 +427,80 @@ function remember(text) {
  * the pill is never interrupted mid-dictation for this.
  */
 function learned({ term }) {
-  lastLearned = term;
-  if (tray) tray.setContextMenu(trayMenu());
-  if (session || !overlay || overlay.isDestroyed()) return;
-  positionOverlay(overlay);
-  passThrough();
-  showOverlay(overlay);
-  send('session:note', { message: `Learned “${term}”` });
+  trayUi.learned(term);
+  home.changed('dictionary');
+  note(`Learned “${term}”`);
 }
 
 function forget(term) {
   dictionary.remove(term);
-  if (lastLearned === term) lastLearned = null;
-  if (tray) tray.setContextMenu(trayMenu());
+  trayUi.forgotten(term);
+  home.changed('dictionary');
 }
 
-function buildTray() {
-  // macOS: a template image, black and alpha, that the menu bar tints itself (mac/tray-icon.js).
-  tray = new Tray(process.platform === 'darwin' ? require('./mac/tray-icon').image() : trayIcon(16));
-  tray.setToolTip('Typd — ' + (hotkeys ? hotkeys.binding : 'Right Alt'));
-  tray.setContextMenu(trayMenu());
+/* ------------------------------------------------------------- model, mic */
+
+function warmModel() {
+  if (stub) { status.set({ model: 'ready' }); return; }
+  status.set({ model: 'loading', modelWhy: '' });
+  Promise.resolve(pipeline.warm()).then(() => {
+    status.set({ model: 'ready' });
+    if (firstRunNote) {
+      const k = keyInfo();
+      note('Ready — ' + k.verb + ' ' + k.short + ' and talk', 10000);
+    }
+  }, (err) => {
+    status.set({ model: 'failed', modelWhy: String((err && err.message) || '') });
+  });
+}
+
+/**
+ * Windows: is the microphone switched off for desktop apps in Privacy settings? Read
+ * without opening it. A blocked microphone is the one launch-time problem that opens the
+ * window unasked, on the row that fixes it -- Typd cannot work, and a hidden tray icon
+ * cannot say so (ROADMAP, Law 2). macOS asks through permissions-mac.js instead.
+ */
+function checkMic(openIfBlocked) {
+  if (MAC) return;
+  let state = 'unknown';
+  try { state = systemPreferences.getMediaAccessStatus('microphone'); } catch { /* older Windows */ }
+  const blocked = state === 'denied';
+  status.set({ mic: blocked ? 'blocked' : 'ok' });
+  if (blocked && openIfBlocked) home.open('settings');
+}
+
+/** macOS: which of the switches Typd needs are off, for the tray line and Home's card. */
+function checkMacPermissions() {
+  if (!MAC) return;
+  require('./permissions-mac').status().then((on) => {
+    const off = ['microphone', 'accessibility', 'input'].filter((k) => on && on[k] === false);
+    status.set({ perms: off });
+  }).catch(() => {});
 }
 
 /* -------------------------------------------------------------------- start */
 
 app.whenReady().then(() => {
   // macOS: a menu-bar utility -- no Dock icon, no app menu, not in the app switcher. Before
-  // the overlay exists, so it is created as the accessory window it will stay.
-  if (process.platform === 'darwin' && app.dock) app.dock.hide();
+  // the overlay exists, so it is created as the accessory window it will stay. The Typd
+  // window brings the Dock icon back while it is open.
+  if (MAC && app.dock) app.dock.hide();
 
-  // Dark unless the OS says otherwise. The overlay sits over other people's
-  // windows and a bright pill is the more intrusive default of the two.
-  nativeTheme.themeSource = 'dark';
+  // The windows follow the system's light or dark theme. The pill does not: it keeps the
+  // dark palette it has always had, pinned in overlay.html (data-scheme), because it sits
+  // over other people's windows and a bright pill is the more intrusive of the two.
+  nativeTheme.themeSource = 'system';
 
-  // The overlay needs the mic for its level meter. Grant that and deny the rest
-  // -- an always-on-top window should have the narrowest surface possible.
+  // The overlay needs the mic for its level meter, and the Typd window for its own. Grant
+  // that and deny the rest -- an always-on-top window should have the narrowest surface
+  // possible. The check handler lets the overlay read device names for the tray's
+  // Microphone menu.
   electronSession.defaultSession.setPermissionRequestHandler((wc, permission, callback) => {
     callback(permission === 'media' || permission === 'audioCapture');
   });
+  electronSession.defaultSession.setPermissionCheckHandler((wc, permission) => permission === 'media');
+
+  firstRunNote = settings.isFirstRun();
 
   overlay = createOverlayWindow({ dev });
   overlay.webContents.on('did-finish-load', markRendererReady);
@@ -444,87 +509,131 @@ app.whenReady().then(() => {
   // shell start, and the speech model so the first dictation does not pay for
   // loading it.
   inject.start();
-  if (!stub) {
-    pipeline.warm();
-
-    // With the single local model, dictation needs no key at all; only revise
-    // (and the old cascade engine) call the cloud.
-    if (pipeline.ENGINE === 'cascade' && !process.env.POOLSIDE_API_KEY) {
-      dialog.showMessageBox({
-        type: 'warning',
-        title: 'Typd — no API key',
-        message: 'POOLSIDE_API_KEY is not set.',
-        detail:
-          'Speech recognition runs locally and will work, but the cleanup step ' +
-          'needs a key from platform.poolside.ai.\n\n' +
-          'Set it in the environment before launching, or run with --stub to ' +
-          'use canned responses.'
-      });
-    }
+  warmModel();
+  if (!stub && pipeline.ENGINE === 'cascade' && !process.env.POOLSIDE_API_KEY) {
+    // With the single local model, dictation needs no key at all; only the old cascade
+    // engine calls the cloud for everything.
+    dialog.showMessageBox({
+      type: 'warning',
+      title: 'Typd — no API key',
+      message: 'POOLSIDE_API_KEY is not set.',
+      detail:
+        'Speech recognition runs locally and will work, but the cleanup step ' +
+        'needs a key from platform.poolside.ai.\n\n' +
+        'Set it in the environment before launching, or run with --stub to ' +
+        'use canned responses.'
+    });
   }
+
+  // Windows: side buttons come from the injector's mouse hook, which swallows them so Back
+  // does not also go back in the app underneath (inject.ps1). Null where there is none.
+  const buttons = !MAC && typeof inject.buttons === 'function' ? inject.buttons() : null;
 
   const bindHotkeys = (binding) => registerHotkeys({
     onPress: () => beginSession(),
     onRelease: endSession,
     onCancel: cancelSession,
     onAltDown: () => inject.maskAlt(),
-    binding
-  });
-  hotkeys = bindHotkeys(settings.get('hotkey'));
-
-  // Settings: the window, and what each change does right away.
-  settingsWindow.register({
-    modelName: () => require('path').basename(require('./pipeline/local').MODEL).replace(/\.gguf$/, ''),
-    applyHotkey: (binding) => {
-      if (session) return false;                  // never swap the key mid-dictation
-      const old = hotkeys;
-      old.close();
-      const next = bindHotkeys(binding);
-      if (next.failed.length) { next.close(); hotkeys = bindHotkeys(settings.get('hotkey')); return false; }
-      hotkeys = next;
-      if (tray) { tray.setContextMenu(trayMenu()); tray.setToolTip('Typd — ' + hotkeys.binding); }
+    binding,
+    // With the Typd window in front, the key answers "heard it" there instead of starting a
+    // dictation that would have nowhere to land -- the key picker's check, and any time.
+    intercept: () => {
+      if (session || !home.isFocused()) return false;
+      home.heard();
       return true;
-    }
+    },
+    buttons
   });
+
+  const keyFailed = () => {
+    const failed = hotkeys.failed.length > 0;
+    status.set({ key: failed ? 'failed' : 'ok', keyWhy: failed ? hotkeys.reason : '' });
+  };
+
+  hotkeys = bindHotkeys(settings.get('hotkey'));
+  keyFailed();
+
+  /**
+   * Swap the live key. The old one is closed first (one hook, one shortcut); if the new
+   * one will not arm, the old one comes back and the reason goes to the page.
+   */
+  const applyHotkey = (binding) => {
+    if (session) return { ok: false, reason: 'Finish the dictation first.' };
+    const previous = hotkeys.name;
+    hotkeys.close();
+    const next = bindHotkeys(binding);
+    if (next.failed.length) {
+      next.close();
+      hotkeys = bindHotkeys(previous);
+      keyFailed();
+      return { ok: false, reason: next.reason || "Typd couldn't use that key." };
+    }
+    hotkeys = next;
+    keyFailed();
+    refreshTray();
+    return { ok: true };
+  };
+
+  home.register({
+    hotkey: () => (hotkeys ? hotkeys.name : settings.get('hotkey')),
+    applyHotkey,
+    pauseHotkey: (on) => { if (hotkeys && hotkeys.pause) hotkeys.pause(on); },
+    hotkeyChanged: () => status.touch(),
+    sideButtons: () => Boolean(buttons),
+    model: () => ({ name: require('path').basename(require('./pipeline/local').MODEL).replace(/\.gguf$/i, '') }),
+    copy: (text) => inject.copy(text),
+    retryModel: warmModel,
+    historyChanged: () => refreshTray(),
+    wordRemoved: (term) => trayUi.forgotten(term)
+  });
+
   settings.onChange((key) => {
     if (key === 'sounds' || key === 'mic') send('settings:changed', { sounds: settings.get('sounds'), mic: settings.get('mic') });
+    if (key === 'mic') refreshTray();
   });
-  // Launching Typd again (Start, Windows search) while it runs opens Settings: the tray icon
-  // may be hidden by Windows, and "I opened it and nothing happened" must never be the answer.
-  app.on('second-instance', () => settingsWindow.open());
+
+  // Launching Typd again (Start, Windows search) while it runs opens the window: the tray
+  // icon may be hidden by Windows, and "I opened it and nothing happened" must never be the
+  // answer.
+  app.on('second-instance', () => home.open('home'));
 
   // After sleep or a lock screen the keyboard hook may be gone without a word; put it back.
   // A beat later, so the desktop session is fully back first.
   for (const ev of ['resume', 'unlock-screen']) {
-    powerMonitor.on(ev, () => setTimeout(() => hotkeys.rearm(), 1500));
+    powerMonitor.on(ev, () => setTimeout(() => { hotkeys.rearm(); checkMic(false); }, 1500));
   }
 
-  if (hotkeys.failed.length) {
-    dialog.showMessageBox({
-      type: 'warning',
-      title: 'Typd — hotkey unavailable',
-      message: 'Another application already owns ' + hotkeys.failed.join(' and ') + '.',
-      detail: 'Set TYPD_HOTKEY to another key (for example CommandOrControl+Shift+D) and restart.'
-    });
-  }
+  trayUi.build();
 
-  buildTray();
+  // First run: start at login is on by default, so make it so -- the installed app's own
+  // login entry, or the Startup shortcut when run from source.
+  if (firstRunNote && !MAC && settings.get('startAtLogin') && !home.loginItem()) home.setLoginItem(true);
+  checkMic(true);
+
+  // A chosen mark (brand.js) is drawn once in a hidden page; the tray picks it up when ready.
+  brand.prepare(MAC ? [18, 36] : [16, 20, 24, 32]).then((ok) => { if (ok) trayUi.redraw(); });
 
   // macOS: microphone, Accessibility and Input Monitoring are asked for together, in one
   // dialog, and again whenever one goes missing (permissions-mac.js). Open at login is the
   // system's own login item, added on the first run of the installed app. Opening Typd
   // again from Finder, Spotlight or Launchpad -- the way to reach it when the menu bar hides
-  // its icon behind the notch -- opens Settings, as a second launch does on Windows.
-  if (process.platform === 'darwin') {
-    require('./permissions-mac').ensure('startup');
+  // its icon behind the notch -- opens the window, as a second launch does on Windows.
+  if (MAC) {
+    require('./permissions-mac').ensure('startup').then(checkMacPermissions);
     require('./mac/login-item').sync(settings.get('startAtLogin'));
+    setInterval(checkMacPermissions, 15000);
     const launched = Date.now();
-    app.on('activate', () => { if (Date.now() - launched > 3000) settingsWindow.open(); });
+    app.on('activate', () => { if (Date.now() - launched > 3000) home.open('home'); });
   }
 
   if (preview) {
+    // The pill is pinned dark (overlay.html); TYPD_PREVIEW_THEME=light shows its light palette.
     if (process.env.TYPD_PREVIEW_THEME) {
-      nativeTheme.themeSource = process.env.TYPD_PREVIEW_THEME;
+      overlay.webContents.once('did-finish-load', () => {
+        overlay.webContents.executeJavaScript(
+          'document.documentElement.dataset.scheme = ' + JSON.stringify(process.env.TYPD_PREVIEW_THEME === 'light' ? 'light' : 'dark')
+        ).catch(() => {});
+      });
     }
     setTimeout(() => beginSession(), 400);
 
@@ -558,6 +667,17 @@ app.whenReady().then(() => {
     if (overlay && !overlay.isDestroyed()) {
       overlay.setIgnoreMouseEvents(!on, { forward: true });
     }
+  });
+
+  // The input devices, from the overlay (it already holds microphone permission), for the
+  // tray's Microphone menu. Sent at load and whenever a device comes or goes.
+  ipcMain.on('overlay:devices', (e, list) => {
+    if (!overlay || e.sender !== overlay.webContents || !Array.isArray(list)) return;
+    const devices = list
+      .filter((d) => d && typeof d.deviceId === 'string' && d.deviceId.length <= 256)
+      .slice(0, 32)
+      .map((d) => ({ deviceId: d.deviceId, label: String(d.label || '').slice(0, 120) }));
+    trayUi.setDevices(devices);
   });
 
   // Live PCM while the user talks, 256 ms at a time. Only a model trained on
@@ -609,9 +729,13 @@ app.whenReady().then(() => {
     hotkeys.settle();
     session.controller.abort();
     session = null;
+    status.set({ live: false });
     passThrough();
+    checkMic(false);
+    const blocked = status.get().mic === 'blocked';
     send('session:error', {
-      message: kind === 'silent' ? 'Mic silent — check mute/privacy' : 'No mic access — check settings'
+      message: blocked ? 'Mic blocked by ' + (MAC ? 'macOS' : 'Windows') + ' privacy'
+        : kind === 'silent' ? 'Mic silent — check mute or privacy' : 'No microphone — check Settings'
     });
   });
 
@@ -627,7 +751,7 @@ app.whenReady().then(() => {
   });
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
+    if (!overlay || overlay.isDestroyed()) {
       rendererReady = false;
       overlay = createOverlayWindow({ dev });
       overlay.webContents.on('did-finish-load', markRendererReady);

@@ -72,4 +72,18 @@ function remove(term) {
   return kept.length !== entries.length && save(kept);
 }
 
-module.exports = { add, remove, load };
+/** Undo a remove(): the entry back as it was -- its "heard as", source and date kept. */
+function restore(entry) {
+  if (!entry || typeof entry.term !== 'string' || !entry.term.trim()) return false;
+  const entries = load();
+  if (entries.some((e) => e && same(e.term, entry.term))) return true;
+  entries.push({
+    term: entry.term,
+    heardAs: Array.isArray(entry.heardAs) ? entry.heardAs.map(String) : [],
+    source: entry.source === 'auto' ? 'auto' : 'manual',
+    addedAt: typeof entry.addedAt === 'string' ? entry.addedAt : new Date().toISOString()
+  });
+  return save(entries);
+}
+
+module.exports = { add, remove, restore, load };

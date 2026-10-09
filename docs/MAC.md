@@ -52,10 +52,12 @@ macOS asks for some of them by itself. If it does not, turn them on yourself.
 For each one: open **System Settings → Privacy & Security**, click the permission, and turn on
 **Typd**. If Typd is not in the list, click **+**, choose Typd from Applications, and turn it on.
 
-After you turn on Accessibility or Input Monitoring, **quit Typd and open it again**. macOS only
-applies those two when the app starts.
+After you turn on Input Monitoring, **quit Typd and open it again**. macOS only applies that one
+when the app starts. Accessibility works as soon as you turn it on.
 
-If a message asks to let Typd control **System Events**, click **OK**. Typd uses it to paste.
+If a message asks to let Typd control **System Events**, click **OK**. Typd uses it to read the
+text you highlighted and the text around your cursor, so it can learn the words you correct. The
+paste itself (⌘V) does not need it: Typd presses ⌘V directly.
 
 **After an update:** a new version can lose these permissions, because the app is not signed with
 an Apple developer ID. If dictation stops pasting or the key stops working, go to each list, select
@@ -63,8 +65,10 @@ Typd, remove it with **–**, then add it again with **+**.
 
 ## Use it
 
-Typd has no Dock icon and no window. It lives in the **menu bar** at the top right of the screen.
-Click its icon to see the key, open Settings, or quit.
+Typd lives in the **menu bar** at the top right of the screen, with no Dock icon. Click its icon to
+see whether it is ready and which key to press, switch microphones, change the key, open the Typd
+window (Home, History, Dictionary, Settings), or quit. While the Typd window is open, Typd also
+shows in the Dock and in ⌘Tab.
 
 Press the Typd key once and talk. Press it again and the text appears where your cursor is. To
 change some text, highlight it, press the key, say what to change ("make this shorter"), and press
@@ -76,9 +80,9 @@ The first start after installing can take a few seconds while the Mac prepares t
 
 Click the Typd icon in the menu bar and choose **Quit Typd**.
 
-On a MacBook with a notch, the menu bar can run out of room and hide Typd's icon. Then open
-**Activity Monitor** (Applications → Utilities), search for **Typd**, select it, and click the
-**✕** button at the top → **Quit**.
+On a MacBook with a notch, the menu bar can run out of room and hide Typd's icon. Then open Typd
+again from Applications or Spotlight and its window opens. To quit without the icon, open **Activity Monitor** (Applications → Utilities), search for **Typd**,
+select it, and click the **✕** button at the top → **Quit**.
 
 ## Uninstall
 

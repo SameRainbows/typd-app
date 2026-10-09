@@ -50,6 +50,9 @@ contextBridge.exposeInMainWorld('typd', {
   // which is what a Windows privacy block or a hardware mute looks like from here.
   micProblem(kind) { ipcRenderer.send('overlay:mic', kind); },
 
+  // The input devices ({deviceId, label}), for the tray's Microphone menu.
+  devices(list) { ipcRenderer.send('overlay:devices', Array.isArray(list) ? list : []); },
+
   confirm() { ipcRenderer.send('overlay:confirm'); },
   cancel() { ipcRenderer.send('overlay:cancel'); },
   notifyHidden() { ipcRenderer.send('overlay:hidden'); }
