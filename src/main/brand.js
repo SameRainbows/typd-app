@@ -6,10 +6,9 @@ const path = require('path');
 /**
  * The mark: the one place that knows what it looks like.
  *
- * A new identity is being chosen (design/identity-study-02.html; candidates in
- * assets/brand/<name>/). Until it is, Typd draws today's pill with its dot. To
- * switch, set CHOSEN to the candidate's folder name -- or try one without editing
- * anything: TYPD_MARK=selection npm start. Nothing else in the app draws the mark:
+ * The identity is 03 Ligature (design/identity-study-02.html; every candidate stays in
+ * assets/brand/<name>/). The old pill with its dot is the fallback. To try another
+ * candidate without editing anything: TYPD_MARK=selection npm start. Nothing else in the app draws the mark:
  * the tray asks trayImage(), the window asks windowMark().
  *
  * A candidate folder holds mark.svg (the master, currentColor on a 16-unit grid) and
@@ -18,7 +17,9 @@ const path = require('path');
  * process, so prepare() draws each one once in a hidden page (Path2D on a canvas)
  * and keeps the alpha; until that finishes, or if it fails, the pill is drawn.
  */
-const CHOSEN = process.env.TYPD_MARK || null;
+// Chosen 2026-10-09: 03 Ligature, the p and d of "typd" sharing one bowl (identity study
+// 02). TYPD_MARK=<folder> still tries another candidate; TYPD_MARK=pill draws the old pill.
+const CHOSEN = process.env.TYPD_MARK === 'pill' ? null : (process.env.TYPD_MARK || 'ligature');
 
 const BRAND_DIR = path.join(__dirname, '..', '..', 'assets', 'brand');
 const RED = [0x3B, 0x48, 0xE5];      // #E5483B, the dot in the app icon (BGR)
@@ -171,7 +172,10 @@ function bitmap(px, state, { dark, template }) {
     const alpha = Math.max(a, b);
     if (!alpha) continue;
     const mix = b > 0 ? dotColour : ink;
-    buf[i * 4] = mix[0]; buf[i * 4 + 1] = mix[1]; buf[i * 4 + 2] = mix[2];
+    // nativeImage bitmaps are premultiplied BGRA: colour already scaled by alpha. Writing
+    // full-strength colour with partial alpha made the dimmed state (and every soft edge)
+    // render at almost full brightness.
+    buf[i * 4] = Math.round(mix[0] * alpha); buf[i * 4 + 1] = Math.round(mix[1] * alpha); buf[i * 4 + 2] = Math.round(mix[2] * alpha);
     buf[i * 4 + 3] = Math.round(alpha * 255);
   }
   return buf;

@@ -21,6 +21,7 @@
     "smoke": "node scripts/smoke-llama.js",
     "dist:win": "electron-builder --win --x64",
     "dist:mac": "node scripts/fetch-llama-mac.js && electron-builder --mac",
+    "build:icons": "electron scripts/build-icons.js && python scripts/build-icons.py",
     "fetch:model": "node scripts/fetch-model.js"
   },
   "devDependencies": {
@@ -133,8 +134,10 @@
           "from": "vendor/llama-mac/${arch}",
           "to": "llama"
         }
-      ]
-    }
+      ],
+      "icon": "assets/typd.png"
+    },
+    "icon": "assets/typd.png"
   },
   "allowScripts": {
     "uiohook-napi@1.5.5": true,
