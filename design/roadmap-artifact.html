@@ -1,0 +1,744 @@
+<title>The Road to 10.0</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+
+<style>
+/* Typd's own palette, because a roadmap for a monochrome product that arrived
+   at its restraint on purpose should not be dressed in someone else's colours.
+   Near-black to near-white with a barely-there cool cast; one danger red, used
+   only where the product uses it -- for the things that must not happen. */
+:root {
+  --ground:      #FBFBFC;
+  --raised:      #FFFFFF;
+  --sunken:      #F2F3F5;
+  --ink:         #14161B;
+  --ink-muted:   #575D66;
+  --ink-faint:   #8B919B;
+  --ghost:       #DFE1E5;
+  --rule:        rgba(16, 18, 23, 0.10);
+  --rule-strong: rgba(16, 18, 23, 0.22);
+  --danger:      #B22D22;
+
+  /* The product's commit control is the inverse of the pill in both themes.
+     Milestones borrow that exact move: the thing you are aiming at is the
+     thing that flips. */
+  --invert-bg:   #14161B;
+  --invert-ink:  #FBFBFC;
+
+  --numeral:     rgba(16, 18, 23, 0.055);
+
+  --display: "Archivo", "Segoe UI", system-ui, sans-serif;
+  --body:    "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --mono:    "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground:      #0D0E11;
+    --raised:      #131519;
+    --sunken:      #17191E;
+    --ink:         #F4F5F7;
+    --ink-muted:   #9DA3AC;
+    --ink-faint:   #6C727B;
+    --ghost:       #2A2D33;
+    --rule:        rgba(255, 255, 255, 0.10);
+    --rule-strong: rgba(255, 255, 255, 0.24);
+    --danger:      #E8695C;
+    --invert-bg:   #F4F5F7;
+    --invert-ink:  #14161B;
+    --numeral:     rgba(255, 255, 255, 0.055);
+  }
+}
+
+:root[data-theme="dark"] {
+  --ground:      #0D0E11;
+  --raised:      #131519;
+  --sunken:      #17191E;
+  --ink:         #F4F5F7;
+  --ink-muted:   #9DA3AC;
+  --ink-faint:   #6C727B;
+  --ghost:       #2A2D33;
+  --rule:        rgba(255, 255, 255, 0.10);
+  --rule-strong: rgba(255, 255, 255, 0.24);
+  --danger:      #E8695C;
+  --invert-bg:   #F4F5F7;
+  --invert-ink:  #14161B;
+  --numeral:     rgba(255, 255, 255, 0.055);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--body);
+  font-size: 16px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap {
+  max-width: 940px;
+  margin: 0 auto;
+  padding: clamp(32px, 6vw, 88px) clamp(20px, 5vw, 48px) 120px;
+}
+
+/* ------------------------------------------------------------------ masthead */
+
+.masthead { display: flex; flex-direction: column; gap: 20px; }
+
+.eyebrow {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+h1 {
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: clamp(38px, 7vw, 68px);
+  line-height: 1.02;
+  letter-spacing: -0.03em;
+  margin: 0;
+  text-wrap: balance;
+}
+
+.standfirst {
+  font-size: clamp(17px, 2.2vw, 20px);
+  line-height: 1.5;
+  color: var(--ink-muted);
+  max-width: 34em;
+  margin: 0;
+}
+
+.masthead-rule {
+  height: 1px;
+  background: var(--rule-strong);
+  margin-top: 16px;
+}
+
+/* -------------------------------------------------------------------- prose */
+
+section { margin-top: clamp(52px, 8vw, 88px); }
+
+h2 {
+  font-family: var(--display);
+  font-weight: 600;
+  font-size: clamp(24px, 3.4vw, 32px);
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+  margin: 0 0 20px;
+  text-wrap: balance;
+}
+
+h3 {
+  font-family: var(--display);
+  font-weight: 600;
+  font-size: 19px;
+  letter-spacing: -0.01em;
+  margin: 0 0 8px;
+}
+
+p { max-width: 66ch; margin: 0 0 18px; }
+p:last-child { margin-bottom: 0; }
+
+strong { font-weight: 600; color: var(--ink); }
+em { font-style: italic; color: var(--ink-muted); }
+
+.lede {
+  font-size: 19px;
+  line-height: 1.55;
+  border-left: 2px solid var(--rule-strong);
+  padding-left: 22px;
+  margin-bottom: 28px;
+}
+.lede strong { font-weight: 600; }
+
+/* --------------------------------------------------------------------- bets */
+
+.bets { display: flex; flex-direction: column; gap: 22px; margin-top: 30px; }
+
+.bet {
+  display: grid;
+  grid-template-columns: 26px 1fr;
+  gap: 18px;
+  align-items: start;
+}
+.bet-num {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-faint);
+  padding-top: 5px;
+  font-variant-numeric: tabular-nums;
+}
+.bet p { margin: 0; }
+
+/* --------------------------------------------------------------------- laws */
+
+/* The laws are numbered because the phases cite them by number -- "Law 2 says
+   the overlay is the product". The numbering is a reference, not decoration. */
+.laws {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 1px;
+  background: var(--rule);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.laws li {
+  background: var(--raised);
+  padding: 16px 20px;
+  display: grid;
+  grid-template-columns: 22px 1fr;
+  gap: 16px;
+  align-items: baseline;
+}
+.laws .n {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+.laws b { font-weight: 600; }
+.laws span.t { color: var(--ink-muted); }
+.laws span.t b { color: var(--ink); }
+
+/* ------------------------------------------------------------------- phases */
+
+.phase {
+  position: relative;
+  margin-top: clamp(56px, 9vw, 96px);
+  padding-top: 28px;
+  border-top: 1px solid var(--rule-strong);
+}
+
+/* The oversized numeral sits behind the heading like a printed spec sheet's
+   sheet number: present, legible if you look for it, never competing. */
+.phase-numeral {
+  position: absolute;
+  top: 4px;
+  right: 0;
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: clamp(84px, 15vw, 168px);
+  line-height: 0.8;
+  letter-spacing: -0.06em;
+  color: var(--numeral);
+  pointer-events: none;
+  user-select: none;
+  z-index: 0;
+}
+
+.phase-head { position: relative; z-index: 1; }
+
+.phase-range {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+  margin-bottom: 6px;
+}
+
+.phase h2 { margin-bottom: 14px; }
+.phase-intro { color: var(--ink-muted); max-width: 62ch; }
+
+/* Sub-steps. A three-column table collapses badly and buries the test, which
+   is the half that decides whether the step was real. Version and step read as
+   one line; the test sits underneath in the quieter voice, where it belongs. */
+.steps {
+  margin-top: 30px;
+  display: grid;
+  gap: 1px;
+  background: var(--rule);
+  border-top: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+}
+
+.step {
+  background: var(--ground);
+  display: grid;
+  grid-template-columns: 62px 1fr;
+  gap: 20px;
+  padding: 16px 4px;
+  align-items: start;
+}
+
+.step-v {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+  padding-top: 2px;
+}
+
+.step-what { font-weight: 500; margin: 0 0 5px; max-width: 60ch; }
+
+.step-test {
+  margin: 0;
+  font-size: 14.5px;
+  line-height: 1.55;
+  color: var(--ink-muted);
+  max-width: 66ch;
+}
+.step-test::before {
+  content: "Test";
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin-right: 10px;
+}
+
+/* The milestone is the phase's exit condition, so it inverts -- the same move
+   the product's commit control makes against the pill it sits in. */
+.step.milestone { background: var(--invert-bg); color: var(--invert-ink); padding: 18px 20px; }
+.step.milestone .step-v { color: var(--invert-ink); opacity: 0.55; }
+.step.milestone .step-what { color: var(--invert-ink); font-weight: 600; }
+.step.milestone .step-test { color: var(--invert-ink); opacity: 0.72; }
+.step.milestone .step-test::before { color: var(--invert-ink); opacity: 0.6; }
+
+/* ------------------------------------------------------------------- refuses */
+
+/* Status rides with the step rather than in a column, so it survives the
+   narrow layout where a fourth column could not. */
+.chip {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 2px;
+  border: 1px solid var(--rule-strong);
+  color: var(--ink-faint);
+  margin-left: 10px;
+  vertical-align: 2px;
+  white-space: nowrap;
+}
+.chip.done { border-color: transparent; background: var(--ink); color: var(--ground); }
+.chip.part { border-style: dashed; }
+
+.refuses {
+  margin-top: 30px;
+  display: grid;
+  gap: 14px;
+  list-style: none;
+  padding: 0;
+}
+.refuses li {
+  display: grid;
+  grid-template-columns: 20px 1fr;
+  gap: 14px;
+  align-items: baseline;
+  color: var(--ink-muted);
+  max-width: 68ch;
+}
+.refuses .x {
+  font-family: var(--mono);
+  font-weight: 600;
+  color: var(--danger);
+  font-size: 14px;
+}
+.refuses b { color: var(--ink); font-weight: 600; }
+
+footer {
+  margin-top: 96px;
+  padding-top: 22px;
+  border-top: 1px solid var(--rule);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  letter-spacing: 0.05em;
+  color: var(--ink-faint);
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 620px) {
+  .step { grid-template-columns: 52px 1fr; gap: 14px; }
+  .laws li { grid-template-columns: 20px 1fr; gap: 12px; padding: 14px 16px; }
+  .phase-numeral { font-size: 72px; opacity: 0.8; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: 1ms !important; transition-duration: 1ms !important; }
+}
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="eyebrow">Typd · Vision and road</div>
+    <h1>The Road to 10.0</h1>
+    <p class="standfirst">
+      Ten phases from a dictation tool that works to one nobody can copy.
+      Phase&nbsp;<em>N</em> runs from <em>(N−1).1</em> to <em>N.0</em>, so the
+      version number and the progress are the same thing.
+    </p>
+    <div class="masthead-rule"></div>
+  </header>
+
+  <section>
+    <h2>The vision</h2>
+
+    <p class="lede">
+      <strong>Voice should be a way to work on text, not just a way to enter
+      it.</strong>
+    </p>
+
+    <p>
+      Every dictation tool on the market is write-only. You speak, it inserts,
+      the session ends. The moment the output needs changing you are back on the
+      keyboard — which means voice is useless for anything that matters, anything
+      you would revise. Wispr Flow, Typeless, superwhisper, Willow and OpenWhispr
+      all compete on the same axis: words per minute, and how good the cleanup
+      pass is. That axis is saturated, the models underneath it are commodity,
+      and an open-source clone of any of them is a weekend's work.
+    </p>
+
+    <p>
+      Typd closes the loop. You speak it, you look at it, you tell it what is
+      wrong, it changes. Produce, inspect, revise — the second half of writing,
+      which nobody in this category has built.
+    </p>
+
+    <div class="bets">
+      <div class="bet">
+        <div class="bet-num">01</div>
+        <p>
+          <strong>The loop is the product.</strong> Not the accuracy, not the
+          speed — those are the price of entry. A tool you can talk back to is a
+          different category from a tool you talk into.
+        </p>
+      </div>
+      <div class="bet">
+        <div class="bet-num">02</div>
+        <p>
+          <strong>The people who need this most are not native English
+          speakers.</strong> For a native speaker dictation is a 1.3× speedup.
+          For someone thinking in one language and writing in another it is the
+          difference between writing and not writing — and the anxiety it removes
+          is worth more than the seconds. Every incumbent treats this as a
+          "translate" mode bolted on the side, because they were all built by
+          native speakers optimising words per minute.
+        </p>
+      </div>
+      <div class="bet">
+        <div class="bet-num">03</div>
+        <p>
+          <strong>The only moat is that it compounds.</strong> Models are
+          commodity and features get copied in a quarter. What cannot be copied
+          is six months of learning how one specific person writes. Every session
+          must leave the app better at <em>you</em>.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>The laws</h2>
+    <p>These settle arguments. When a decision is close, the law wins.</p>
+
+    <ol class="laws">
+      <li><span class="n">1</span><span class="t"><b>Your voice never leaves the machine.</b> Recognition is local, permanently, even when that costs accuracy. It is the one claim competitors cannot make honestly, and it is what makes an always-listening session acceptable.</span></li>
+      <li><span class="n">2</span><span class="t"><b>The overlay is the entire product surface.</b> If a feature needs a window, it is either the wrong feature or the wrong shape. No dashboard, no settings tour, no stats page anyone visits twice.</span></li>
+      <li><span class="n">3</span><span class="t"><b>Never destroy work that cannot be undone.</b> Revision overwrites the user's own writing. Every destructive path needs a way back before it ships.</span></li>
+      <li><span class="n">4</span><span class="t"><b>It must compound.</b> A feature that works identically on day 200 and day 1 is a feature a competitor can clone. Prefer the version that accumulates.</span></li>
+      <li><span class="n">5</span><span class="t"><b>Nothing ships that is not measured.</b> The bench comes first. "It feels better" is a hypothesis, not a result.</span></li>
+      <li><span class="n">6</span><span class="t"><b>Invisible beats clever.</b> Reliability is the feature. A brilliant tool that fails twice a week is uninstalled by the third week.</span></li>
+      <li><span class="n">7</span><span class="t"><b>Restraint is the aesthetic.</b> Monochrome, one danger red, no decoration that is not doing work.</span></li>
+      <li><span class="n">8</span><span class="t"><b>One gesture, unless the state cannot say it.</b> A new hotkey has to be the only way to express something the current state does not already express. Dictate and revise share a key because the selection already says which is meant. The cost of a chord is not the chord — it is that the user has to hold a decision before acting.</span></li>
+    </ol>
+  </section>
+
+  <!-- PHASE 1 -->
+  <div class="phase">
+    <div class="phase-numeral">01</div>
+    <div class="phase-head">
+      <div class="phase-range">0.1 → 1.0</div>
+      <h2>Make the loop real</h2>
+      <p class="phase-intro">
+        The revision turn exists and is unverified. Nothing else matters until
+        you can use it for a day without falling back to the keyboard.
+      </p>
+    </div>
+    <div class="steps">
+      <div class="step"><div class="step-v">0.1</div><div><p class="step-what">Verify the whole-document guard in Zen, Chrome, VS&nbsp;Code, Word, Notepad, Obsidian<span class="chip">needs you</span></p><p class="step-test">Highlight one sentence in each and revise it. Only that sentence changes. The debug log names the mechanism used per app.</p></div></div>
+      <div class="step"><div class="step-v">0.2</div><div><p class="step-what">Verify the hotkey does not leak to the host application<span class="chip">needs you</span></p><p class="step-test">Press it over a browser, an editor and an elevated terminal. The page must not react. If it leaks, that confirms integrity-level preemption and 0.3 becomes a native hook.</p></div></div>
+      <div class="step"><div class="step-v">0.3</div><div><p class="step-what">Undo — Ctrl+Z after a revision restores the original span<span class="chip">needs you</span></p><p class="step-test">Revise, undo, compare byte for byte. Must hold in all six applications from 0.1.</p></div></div>
+      <div class="step"><div class="step-v">0.4</div><div><p class="step-what">Detect a lost selection between hotkey press and paste<span class="chip done">done</span></p><p class="step-test">Press revise, click elsewhere, finish. It must refuse and say why, not insert at the caret.</p></div></div>
+      <div class="step"><div class="step-v">0.5</div><div><p class="step-what">Every failure path has a legible message<span class="chip done">done</span></p><p class="step-test">Force each: no selection, no microphone, no key, rejected key, timeout, empty completion. Each shows a sentence a non-programmer understands.</p></div></div>
+      <div class="step"><div class="step-v">0.6</div><div><p class="step-what">The README describes the app that exists<span class="chip done">done</span></p><p class="step-test">A fresh reader follows it start to finish with no surprises.</p></div></div>
+      <div class="step"><div class="step-v">0.7</div><div><p class="step-what">Packaging: the injection helper survives being built into an archive<span class="chip part">config done</span></p><p class="step-test">Build, install to a clean path, dictate. The helper spawns from inside the archive.</p></div></div>
+      <div class="step"><div class="step-v">0.8</div><div><p class="step-what">Session lifecycle survives abuse<span class="chip part">2 bugs fixed</span></p><p class="step-test">Hammer both hotkeys, cancel mid-stream, revise during a dictation, unplug the microphone. No crash, no stuck overlay, no dead click-region.</p></div></div>
+      <div class="step"><div class="step-v">0.9</div><div><p class="step-what">First run with no API key is not a dead end<span class="chip">needs you</span></p><p class="step-test">Launch clean. The message says what to do and where to get it, and dictation still records rather than silently failing.</p></div></div>
+      <div class="step milestone"><div class="step-v">1.0</div><div><p class="step-what">Milestone — one working day</p><p class="step-test">Use Typd for a full day of real work. Log every fallback to the keyboard and why. Fewer than three is a pass.</p></div></div>
+    </div>
+  </div>
+
+  <!-- PHASE 2 -->
+  <div class="phase">
+    <div class="phase-numeral">02</div>
+    <div class="phase-head">
+      <div class="phase-range">1.1 → 2.0</div>
+      <h2>The interface becomes the product</h2>
+      <p class="phase-intro">
+        Law 2 says the overlay <em>is</em> the product. Today it is a placeholder
+        with good bones. This is where design stops being a study and lands.
+      </p>
+    </div>
+    <div class="steps">
+      <div class="step"><div class="step-v">1.1</div><div><p class="step-what">Review the four design studies and pick a direction</p><p class="step-test">Each study self-assesses honestly. Choose on evidence, not novelty. A rejected direction with a written reason is a result.</p></div></div>
+      <div class="step"><div class="step-v">1.2</div><div><p class="step-what">Land the refined pill — proportion, glass, hairline, shadow, radius</p><p class="step-test">Side by side at actual size over busy light and dark backgrounds. Screenshot both, judge cold the next morning.</p></div></div>
+      <div class="step"><div class="step-v">1.3</div><div><p class="step-what">Land the voice visualisation</p><p class="step-test">Must read at 36px tall, hold 60fps, and be legible in peripheral vision — you are looking at your document, not at it.</p></div></div>
+      <div class="step"><div class="step-v">1.4</div><div><p class="step-what">Rework the state morph so it reads as one object changing</p><p class="step-test">Auto-play the six states at real timings. If any transition reads as a swap rather than a change, it fails.</p></div></div>
+      <div class="step"><div class="step-v">1.5</div><div><p class="step-what">Revise mode is visibly distinct from dictate</p><p class="step-test">Someone who has never used it identifies which mode is live from a screenshot. With one hotkey the pill is the only thing that says which mode you are in, and it overwrites their writing — ambiguity here is a data-loss risk.</p></div></div>
+      <div class="step"><div class="step-v">1.6</div><div><p class="step-what">Land the mark and wordmark</p><p class="step-test">Judge at 16px in a real taskbar next to real icons. If it needs 32px to work, it is the wrong mark.</p></div></div>
+      <div class="step"><div class="step-v">1.7</div><div><p class="step-what">Replace the procedural tray circle with the real mark</p><p class="step-test">Visible and identifiable in light and dark Windows themes at 100% and 150% scaling.</p></div></div>
+      <div class="step"><div class="step-v">1.8</div><div><p class="step-what">Audit the sound design</p><p class="step-test">Four cues. Each must be identifiable without looking and must not be annoying on the fortieth use. Test with headphones and with laptop speakers.</p></div></div>
+      <div class="step"><div class="step-v">1.9</div><div><p class="step-what">Reduced-motion and high-contrast paths</p><p class="step-test">Force both in Windows settings. Nothing breaks, nothing becomes unreadable, nothing keeps animating.</p></div></div>
+      <div class="step milestone"><div class="step-v">2.0</div><div><p class="step-what">Milestone — it looks like a product</p><p class="step-test">Show it to five people cold. Ask what they think it costs. Anything under ten dollars a month means the interface is still under-selling the product.</p></div></div>
+    </div>
+  </div>
+
+  <!-- PHASE 3 -->
+  <div class="phase">
+    <div class="phase-numeral">03</div>
+    <div class="phase-head">
+      <div class="phase-range">2.1 → 3.0</div>
+      <h2>The session</h2>
+      <p class="phase-intro">
+        The architectural bet. Stop treating dictation as one-shot: hold a
+        session open and let revision after revision land on the same text. This
+        is the thing no competitor has, and it only becomes possible once phases
+        1 and 2 are solid.
+      </p>
+    </div>
+    <div class="steps">
+      <div class="step"><div class="step-v">2.1</div><div><p class="step-what">Session state: an open chunk with a tracked region in the target application</p><p class="step-test">The region survives typing above it, scrolling, and window resize. Measure how long tracking holds before it drifts.</p></div></div>
+      <div class="step"><div class="step-v">2.2</div><div><p class="step-what">Second and subsequent turns land on the same region</p><p class="step-test">Ten consecutive revisions on one paragraph. The tenth is as accurate as the first — no drift, no accumulated stray whitespace.</p></div></div>
+      <div class="step"><div class="step-v">2.3</div><div><p class="step-what">An undo stack across the session</p><p class="step-test">Five revisions, then "go back" three times. Lands exactly on state 2.</p></div></div>
+      <div class="step"><div class="step-v">2.4</div><div><p class="step-what">An explicit end-session gesture, distinct from end-turn</p><p class="step-test">Users must never be unsure whether the microphone is live. After ending, speaking near the machine does nothing observable.</p></div></div>
+      <div class="step"><div class="step-v">2.5</div><div><p class="step-what">Session-scoped context: the model sees the current draft, not just the span</p><p class="step-test">An instruction referring to something earlier in the draft — "make it match the tone of the first paragraph" — must work.</p></div></div>
+      <div class="step"><div class="step-v">2.6</div><div><p class="step-what">Cache the stable draft prefix across turns</p><p class="step-test">Measure turn 1 against turn 5. Turn 5 should be materially faster, or the caching is not working.</p></div></div>
+      <div class="step"><div class="step-v">2.7</div><div><p class="step-what">A visible, unmistakable listening indicator for the whole session</p><p class="step-test">A stranger looking at the screen can tell the microphone is open. Non-negotiable given it stays live.</p></div></div>
+      <div class="step"><div class="step-v">2.8</div><div><p class="step-what">Insertion versus instruction stays explicit within a session</p><p class="step-test">Fifty utterances that are ambiguous in isolation, all correctly routed.</p></div></div>
+      <div class="step"><div class="step-v">2.9</div><div><p class="step-what">Graceful degradation when the target application loses the region</p><p class="step-test">Detect and say so rather than pasting into the wrong place. Test by closing the document mid-session.</p></div></div>
+      <div class="step milestone"><div class="step-v">3.0</div><div><p class="step-what">Milestone — write a page by voice alone</p><p class="step-test">Dictate a full page, then revise it to publishable without touching the keyboard. Time it against typing the same page.</p></div></div>
+    </div>
+  </div>
+
+  <!-- PHASE 4 -->
+  <div class="phase">
+    <div class="phase-numeral">04</div>
+    <div class="phase-head">
+      <div class="phase-range">3.1 → 4.0</div>
+      <h2>It compounds</h2>
+      <p class="phase-intro">
+        Law 4. Everything parked was built and tested; this is where it returns —
+        plus the one thing no competitor does, biasing the recogniser
+        <em>before</em> it makes the error rather than repairing after.
+      </p>
+    </div>
+    <div class="steps">
+      <div class="step"><div class="step-v">3.1</div><div><p class="step-what">Restore the dictionary</p><p class="step-test">All nine detection tests still pass against current code.</p></div></div>
+      <div class="step"><div class="step-v">3.2</div><div><p class="step-what">Restore learn-from-corrections</p><p class="step-test">Fix a word in a pasted result; it is remembered with no dialog. Measure the false-positive rate on ordinary edits — poisoning the dictionary is worse than not learning.</p></div></div>
+      <div class="step"><div class="step-v">3.3</div><div><p class="step-what">Feed the dictionary into the recogniser as hotwords, not into the cleanup prompt</p><p class="step-test">Word error on your own voice with and without. Repairing after the fact cannot fix what biasing before prevents; the delta is the whole argument.</p></div></div>
+      <div class="step"><div class="step-v">3.4</div><div><p class="step-what">Harvest vocabulary from screen context into a rolling personal lexicon</p><p class="step-test">Names and identifiers accumulate without anyone typing them. Measure lexicon precision — junk in the lexicon is worse than a small lexicon.</p></div></div>
+      <div class="step"><div class="step-v">3.5</div><div><p class="step-what">Decay: terms not seen for weeks fall out</p><p class="step-test">Lexicon size stabilises rather than growing forever, and word error does not regress after decay.</p></div></div>
+      <div class="step"><div class="step-v">3.6</div><div><p class="step-what">Per-application register learned from evidence, not presets</p><p class="step-test">The same dictation into a code editor and a chat app produces appropriately different output, with no per-app configuration.</p></div></div>
+      <div class="step"><div class="step-v">3.7</div><div><p class="step-what">Revision instructions you repeat become cheaper</p><p class="step-test">If you say "tighten this" fifty times, the fiftieth is faster and more predictable than the first.</p></div></div>
+      <div class="step"><div class="step-v">3.8</div><div><p class="step-what">Everything learned is inspectable and deletable</p><p class="step-test">Law 3 applied to learning. There must be a way to see and remove what it thinks it knows — without a settings dashboard.</p></div></div>
+      <div class="step"><div class="step-v">3.9</div><div><p class="step-what">Learning survives update and reinstall</p><p class="step-test">Export, reinstall, import. Accuracy on your vocabulary is unchanged.</p></div></div>
+      <div class="step milestone"><div class="step-v">4.0</div><div><p class="step-what">Milestone — measurably better at you</p><p class="step-test">Re-run word error on your own recordings against the phase-1 baseline. The number must have moved, and the movement must be attributable.</p></div></div>
+    </div>
+  </div>
+
+  <!-- PHASE 5 -->
+  <div class="phase">
+    <div class="phase-numeral">05</div>
+    <div class="phase-head">
+      <div class="phase-range">4.1 → 5.0</div>
+      <h2>Speak like yourself</h2>
+      <p class="phase-intro">
+        The market wedge. This is where the tenfold value is, and where every
+        incumbent is weakest — because none of them were built by someone who
+        needed it.
+      </p>
+    </div>
+    <div class="steps">
+      <div class="step"><div class="step-v">4.1</div><div><p class="step-what">Baseline: measure word error on accented English and on Turkish</p><p class="step-test">An honest starting number. Published benchmarks are on native-speaker corpora and will not hold.</p></div></div>
+      <div class="step"><div class="step-v">4.2</div><div><p class="step-what">Within-sentence code-switching survives recognition</p><p class="step-test">A bench set of mixed Turkish/English sentences. Competitors detect one language per utterance and destroy these.</p></div></div>
+      <div class="step"><div class="step-v">4.3</div><div><p class="step-what">Speak in your first language, write in your second — as a first-class path, not a mode</p><p class="step-test">Meaning preserved, register appropriate, no translationese.</p></div></div>
+      <div class="step"><div class="step-v">4.4</div><div><p class="step-what">Fluency repair without meaning drift</p><p class="step-test">Non-native phrasings become native phrasings and a native reader cannot tell. Meaning must be identical — measure drift explicitly; it is the risk.</p></div></div>
+      <div class="step"><div class="step-v">4.5</div><div><p class="step-what">Proper nouns and loanwords survive the language boundary</p><p class="step-test">Turkish names in English text keep their diacritics and spelling.</p></div></div>
+      <div class="step"><div class="step-v">4.6</div><div><p class="step-what">Revision instructions work in either language</p><p class="step-test">"Bunu kısalt" and "make this shorter" do the same thing to the same span.</p></div></div>
+      <div class="step"><div class="step-v">4.7</div><div><p class="step-what">The recogniser learns your accent specifically</p><p class="step-test">Word error on your voice at week 1 against week 6.</p></div></div>
+      <div class="step"><div class="step-v">4.8</div><div><p class="step-what">None of this is a setting</p><p class="step-test">No language picker, no mode. It works out of the box or the design is wrong.</p></div></div>
+      <div class="step"><div class="step-v">4.9</div><div><p class="step-what">Second-language test with real users</p><p class="step-test">Five non-native speakers, one hour each. The question is not "did it work" but "would you write more because of this".</p></div></div>
+      <div class="step milestone"><div class="step-v">5.0</div><div><p class="step-what">Milestone — the wedge is real</p><p class="step-test">A non-native speaker prefers Typd to typing in English. That preference, stated unprompted, is the milestone.</p></div></div>
+    </div>
+  </div>
+
+  <!-- PHASE 6 -->
+  <div class="phase">
+    <div class="phase-numeral">06</div>
+    <div class="phase-head">
+      <div class="phase-range">5.1 → 6.0</div>
+      <h2>Trust</h2>
+      <p class="phase-intro">
+        Aggressive cleanup is only usable if the user believes it did not change
+        their meaning. This is the top churn reason in the category, and nobody
+        addresses it.
+      </p>
+    </div>
+    <div class="steps">
+      <div class="step"><div class="step-v">5.1</div><div><p class="step-what">The raw transcript is always recoverable</p><p class="step-test">After any dictation, "what did I actually say" is one gesture away.</p></div></div>
+      <div class="step"><div class="step-v">5.2</div><div><p class="step-what">Show what changed in a revision</p><p class="step-test">The touched span is visibly marked as it lands, then fades. Users notice unintended edits they previously missed.</p></div></div>
+      <div class="step"><div class="step-v">5.3</div><div><p class="step-what">Never silently return the original</p><p class="step-test">If the model declined to change anything, say so. Silent no-ops read as broken.</p></div></div>
+      <div class="step"><div class="step-v">5.4</div><div><p class="step-what">Never silently truncate</p><p class="step-test">Budget exhaustion must be an error, not a half-finished paragraph pasted over a whole one.</p></div></div>
+      <div class="step"><div class="step-v">5.5</div><div><p class="step-what">A confidence signal on poor recognition</p><p class="step-test">When confidence is low the interface says so before the text lands, not after.</p></div></div>
+      <div class="step"><div class="step-v">5.6</div><div><p class="step-what">The injection boundary stays in the bench, permanently</p><p class="step-test">Both suites' injection cases stay green on every prompt change. Already true; keep it true.</p></div></div>
+      <div class="step"><div class="step-v">5.7</div><div><p class="step-what">Nothing leaves the machine that the user did not compose</p><p class="step-test">Audit every outbound request. Screen context is the risk — it can contain anything on screen. Document exactly what is sent.</p></div></div>
+      <div class="step"><div class="step-v">5.8</div><div><p class="step-what">A visible, honest privacy statement inside the product</p><p class="step-test">One sentence, checkable. If a future feature breaks it, the sentence changes or the feature does not ship.</p></div></div>
+      <div class="step"><div class="step-v">5.9</div><div><p class="step-what">Failure modes are boring</p><p class="step-test">Every error leaves the document exactly as it was. Test by killing the process at each pipeline stage.</p></div></div>
+      <div class="step milestone"><div class="step-v">6.0</div><div><p class="step-what">Milestone — trusted with real work</p><p class="step-test">Use it on something that matters without re-reading every word.</p></div></div>
+    </div>
+  </div>
+
+  <!-- PHASE 7 -->
+  <div class="phase">
+    <div class="phase-numeral">07</div>
+    <div class="phase-head">
+      <div class="phase-range">6.1 → 7.0</div>
+      <h2>Reach</h2>
+      <p class="phase-intro">
+        It has to work in the places people actually write. Coverage is
+        unglamorous and it decides whether anyone keeps the app.
+      </p>
+    </div>
+    <div class="steps">
+      <div class="step"><div class="step-v">6.1</div><div><p class="step-what">An application coverage matrix, measured not assumed</p><p class="step-test">Word, Outlook, VS Code, Notepad, Obsidian, Slack, Discord, Chrome, Edge, Zen, Teams, Notion — scored.</p></div></div>
+      <div class="step"><div class="step-v">6.2</div><div><p class="step-what">Fix or explicitly refuse every red cell</p><p class="step-test">An app that cannot be revised safely must refuse loudly, not silently do the wrong thing.</p></div></div>
+      <div class="step"><div class="step-v">6.3</div><div><p class="step-what">Elevated applications</p><p class="step-test">Either a native hook that survives integrity boundaries, or an honest message. Silence is not an option.</p></div></div>
+      <div class="step"><div class="step-v">6.4</div><div><p class="step-what">Display scaling at 100%, 125%, 150% and 175%</p><p class="step-test">Correctly sized and positioned at each. Screenshot each.</p></div></div>
+      <div class="step"><div class="step-v">6.5</div><div><p class="step-what">Multi-monitor with mixed DPI</p><p class="step-test">The overlay appears on the display holding the focused window.</p></div></div>
+      <div class="step"><div class="step-v">6.6</div><div><p class="step-what">Right Alt and other unreachable keys</p><p class="step-test">A native keyboard hook. The hotkey module already exposes the contract for the swap.</p></div></div>
+      <div class="step"><div class="step-v">6.7</div><div><p class="step-what">Hotkey conflict detection at launch</p><p class="step-test">Detect a taken binding and name the application holding it, rather than failing silently.</p></div></div>
+      <div class="step"><div class="step-v">6.8</div><div><p class="step-what">Cold-start and warm-start timings</p><p class="step-test">The first dictation after launch must not pay the model load.</p></div></div>
+      <div class="step"><div class="step-v">6.9</div><div><p class="step-what">Sleep, resume, microphone change, audio device switch</p><p class="step-test">Nothing hangs. The microphone is re-acquired without a restart.</p></div></div>
+      <div class="step milestone"><div class="step-v">7.0</div><div><p class="step-what">Milestone — no app-specific excuses</p><p class="step-test">A week of use with no "it doesn't work in X" moment.</p></div></div>
+    </div>
+  </div>
+
+  <!-- PHASE 8 -->
+  <div class="phase">
+    <div class="phase-numeral">08</div>
+    <div class="phase-head">
+      <div class="phase-range">7.1 → 8.0</div>
+      <h2>Speed</h2>
+      <p class="phase-intro">
+        Latency is not the product, but it is the difference between a tool you
+        reach for and one you think about reaching for.
+      </p>
+    </div>
+    <div class="steps">
+      <div class="step"><div class="step-v">7.1</div><div><p class="step-what">Instrument the whole pipeline honestly</p><p class="step-test">Per-stage timings on every real session, not just on the bench. Find where the seconds actually go.</p></div></div>
+      <div class="step"><div class="step-v">7.2</div><div><p class="step-what">Optimistic paste: raw transcript first, cleaned version swapped in</p><p class="step-test">Measure felt latency separately from actual. If the swap flickers, it fails — high risk, high reward.</p></div></div>
+      <div class="step"><div class="step-v">7.3</div><div><p class="step-what">Keep the last utterance's audio in memory</p><p class="step-test">"Try again" re-runs the same audio with a different mode or hint, with no re-speaking. Structurally impossible for streaming-first competitors.</p></div></div>
+      <div class="step"><div class="step-v">7.4</div><div><p class="step-what">Cut the revision cold start</p><p class="step-test">The bench measured a 21-second first call against 0.5–8 seconds warm. Find and remove it.</p></div></div>
+      <div class="step"><div class="step-v">7.5</div><div><p class="step-what">Edit-operation output for large spans</p><p class="step-test">Emit a targeted replacement, not the whole document. Compare token count and wall time against a full rewrite.</p></div></div>
+      <div class="step"><div class="step-v">7.6</div><div><p class="step-what">Streaming reveal tuned to real token arrival</p><p class="step-test">The overlay's reveal matches the stream, not a canned animation.</p></div></div>
+      <div class="step"><div class="step-v">7.7</div><div><p class="step-what">Re-evaluate the model choice against the bench</p><p class="step-test">Restraint is the axis that matters, not tokens per second. Diffusion models are worth re-testing when their reliability improves.</p></div></div>
+      <div class="step"><div class="step-v">7.8</div><div><p class="step-what">Idle cost</p><p class="step-test">CPU, memory and battery while sitting in the tray all day. A background utility that costs battery gets uninstalled.</p></div></div>
+      <div class="step"><div class="step-v">7.9</div><div><p class="step-what">Continuous-listening cost in session mode</p><p class="step-test">Voice-activity gated so recognition only runs on speech. Measure against always-transcribing.</p></div></div>
+      <div class="step milestone"><div class="step-v">8.0</div><div><p class="step-what">Milestone — it feels instant</p><p class="step-test">Blind A/B against the phase-1 build. Testers pick the faster one without being told which is which.</p></div></div>
+    </div>
+  </div>
+
+  <!-- PHASE 9 -->
+  <div class="phase">
+    <div class="phase-numeral">09</div>
+    <div class="phase-head">
+      <div class="phase-range">8.1 → 9.0</div>
+      <h2>Ship it</h2>
+      <p class="phase-intro">
+        Everything above is for one person. This is where it becomes something
+        other people can install.
+      </p>
+    </div>
+    <div class="steps">
+      <div class="step"><div class="step-v">8.1</div><div><p class="step-what">A signed installer</p><p class="step-test">Installs on a clean Windows machine with no SmartScreen warning.</p></div></div>
+      <div class="step"><div class="step-v">8.2</div><div><p class="step-what">Auto-update that never interrupts a session</p><p class="step-test">Update while a session is open.</p></div></div>
+      <div class="step"><div class="step-v">8.3</div><div><p class="step-what">Licence chosen, third-party notices carried</p><p class="step-test">Every derived component ships its notice.</p></div></div>
+      <div class="step"><div class="step-v">8.4</div><div><p class="step-what">Onboarding that is not a tour</p><p class="step-test">The first successful dictation happens within sixty seconds of install, with no reading. Measure with five people.</p></div></div>
+      <div class="step"><div class="step-v">8.5</div><div><p class="step-what">Crash and error telemetry the privacy claim survives</p><p class="step-test">If it cannot be done without sending user content, it does not ship. Law 1.</p></div></div>
+      <div class="step"><div class="step-v">8.6</div><div><p class="step-what">Pricing decided</p><p class="step-test">Local inference means near-zero marginal cost. Incumbents charge fifteen dollars a month because they cannot follow you down. Use that deliberately.</p></div></div>
+      <div class="step"><div class="step-v">8.7</div><div><p class="step-what">A landing page that shows the loop</p><p class="step-test">The revision loop is the pitch and must be shown, not described. One video, no feature grid.</p></div></div>
+      <div class="step"><div class="step-v">8.8</div><div><p class="step-what">A support surface</p><p class="step-test">One channel, answered. Not a help centre nobody reads.</p></div></div>
+      <div class="step"><div class="step-v">8.9</div><div><p class="step-what">Uninstall is clean and complete</p><p class="step-test">Everything learned goes with it, on request.</p></div></div>
+      <div class="step milestone"><div class="step-v">9.0</div><div><p class="step-what">Milestone — strangers use it</p><p class="step-test">Fifty people who are not you. Watch five of them for an hour.</p></div></div>
+    </div>
+  </div>
+
+  <!-- PHASE 10 -->
+  <div class="phase">
+    <div class="phase-numeral">10</div>
+    <div class="phase-head">
+      <div class="phase-range">9.1 → 10.0</div>
+      <h2>The moat</h2>
+      <p class="phase-intro">
+        Everything above is copyable within a year. This phase is what is not.
+      </p>
+    </div>
+    <div class="steps">
+      <div class="step"><div class="step-v">9.1</div><div><p class="step-what">The personal model is a real artifact, not scattered state</p><p class="step-test">Vocabulary, phrasing, register, correction history — one coherent thing.</p></div></div>
+      <div class="step"><div class="step-v">9.2</div><div><p class="step-what">It measurably improves month over month</p><p class="step-test">Publish your own word-error curve over six months. A flat line means Law 4 is being violated somewhere.</p></div></div>
+      <div class="step"><div class="step-v">9.3</div><div><p class="step-what">The switching cost is real and honest</p><p class="step-test">Six months in, a fresh install of anything else should feel like a downgrade. Test by having someone go back.</p></div></div>
+      <div class="step"><div class="step-v">9.4</div><div><p class="step-what">The model is portable and exportable</p><p class="step-test">Law 3. Users own what they taught it — which also makes the claim credible rather than a lock-in threat.</p></div></div>
+      <div class="step"><div class="step-v">9.5</div><div><p class="step-what">Revision quality improves from accepted and rejected edits</p><p class="step-test">The instructions you keep and the ones you undo are both signal.</p></div></div>
+      <div class="step"><div class="step-v">9.6</div><div><p class="step-what">It learns how you write, not just what words you use</p><p class="step-test">A blind test of whether readers can distinguish Typd-revised text from your own writing.</p></div></div>
+      <div class="step"><div class="step-v">9.7</div><div><p class="step-what">A second user on the same machine stays separate</p><p class="step-test">Profiles do not bleed.</p></div></div>
+      <div class="step"><div class="step-v">9.8</div><div><p class="step-what">The compounding story is legible on day one</p><p class="step-test">New users must understand that it gets better, or they will not stay long enough for it to.</p></div></div>
+      <div class="step"><div class="step-v">9.9</div><div><p class="step-what">Re-run the full bench suite against the phase-1 baseline</p><p class="step-test">Every number better, and every regression explained.</p></div></div>
+      <div class="step milestone"><div class="step-v">10.0</div><div><p class="step-what">Milestone — uncopyable</p><p class="step-test">A competitor could clone every feature in a quarter and still not have this.</p></div></div>
+    </div>
+  </div>
+
+  <section>
+    <h2>What this road refuses</h2>
+    <p>Written down so it stays refused.</p>
+    <ul class="refuses">
+      <li><span class="x">×</span><span><b>No settings dashboard.</b> Law 2. Configuration goes in the environment or is learned. The moment there is a preferences window, the thesis is dead.</span></li>
+      <li><span class="x">×</span><span><b>No cloud recognition.</b> Law 1. Not as an option, not as a "faster mode".</span></li>
+      <li><span class="x">×</span><span><b>No agent, no tool-calling, no "ask anything".</b> It is built, it works, and it is still the wrong product. Typd is a text tool.</span></li>
+      <li><span class="x">×</span><span><b>No feature that works identically on day 1 and day 200.</b> Law 4.</span></li>
+      <li><span class="x">×</span><span><b>No chat interface.</b> The target application is the interface.</span></li>
+      <li><span class="x">×</span><span><b>No mobile.</b> The whole product is a desktop overlay pasting into desktop applications.</span></li>
+      <li><span class="x">×</span><span><b>No second hotkey without a fight.</b> Law 8. If a feature seems to need one, the first question is what on screen could have told us instead.</span></li>
+    </ul>
+  </section>
+
+  <footer>
+    <span>Typd — voice dictation you can talk back to</span>
+    <span>Phase 1 · 0.4–0.8 landed</span>
+  </footer>
+
+</div>

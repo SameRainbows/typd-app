@@ -1,0 +1,1607 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Typd — the pill, refined</title>
+
+<!--
+  A refinement pass, not a redesign.
+
+  The brief was "make it excellent, not different". So this file is a diff you
+  can look at: the shipped pill and the refined pill, driven by one state
+  machine, over one background, at one moment in time. If a change cannot be
+  seen in that comparison it is not a change worth shipping.
+
+  Everything here is self-contained — no fonts, no scripts, no images fetched.
+  The strict CSP on the real overlay (default-src 'none') means anything that
+  works here works there.
+-->
+
+<style>
+/* ===================================================================== page
+   Page chrome uses the same near-black-to-white ramp as the overlay, on the
+   theory that a design document arguing for restraint should not itself be
+   loud. Nothing on this page uses hue except the two backdrops, which need it
+   to stress-test the glass. */
+
+:root {
+  --page:   #F4F5F6;
+  --panel:  #FFFFFF;
+  --sunken: #ECEDEF;
+  --line:   rgba(16, 18, 23, 0.11);
+  --line-2: rgba(16, 18, 23, 0.20);
+  --ink:    #14161B;
+  --muted:  #575D66;
+  --faint:  #8B919B;
+  --pos:    #2A6B48;   /* only used on the changelog verdict chips */
+
+  --font-ui: "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-hd: "Segoe UI Variable Display", "Segoe UI", -apple-system, system-ui, sans-serif;
+  --font-mono: "Cascadia Mono", ui-monospace, "SF Mono", Consolas, monospace;
+}
+
+:root[data-theme="dark"] {
+  --page:   #0C0D10;
+  --panel:  #14161A;
+  --sunken: #0A0B0E;
+  --line:   rgba(255, 255, 255, 0.11);
+  --line-2: rgba(255, 255, 255, 0.20);
+  --ink:    #F4F5F7;
+  --muted:  #9DA3AC;
+  --faint:  #6C727B;
+  --pos:    #7FCBA4;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.wrap {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 40px 24px 90px;
+  display: flex;
+  flex-direction: column;
+  gap: 34px;
+}
+
+.masthead { display: flex; flex-direction: column; gap: 9px; }
+.eyebrow {
+  font-size: 10.5px; letter-spacing: .18em; text-transform: uppercase;
+  color: var(--faint); font-weight: 650;
+}
+.masthead h1 {
+  margin: 0; font-family: var(--font-hd);
+  font-size: clamp(27px, 4vw, 40px); font-weight: 640; letter-spacing: -.028em;
+  text-wrap: balance;
+}
+.masthead p { margin: 0; max-width: 68ch; color: var(--muted); font-size: 15px; }
+
+h2.sec {
+  margin: 0; font-size: 10.5px; letter-spacing: .18em; text-transform: uppercase;
+  color: var(--faint); font-weight: 650;
+}
+.section { display: flex; flex-direction: column; gap: 14px; }
+.lede { margin: 0; max-width: 76ch; color: var(--muted); }
+
+/* ------------------------------------------------------------- controls */
+
+.bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+  padding: 12px; border: 1px solid var(--line); border-radius: 11px;
+  background: var(--panel);
+  position: sticky; top: 12px; z-index: 40;
+  box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 8px 24px rgba(0,0,0,.05);
+}
+:root[data-theme="dark"] .bar { box-shadow: 0 1px 2px rgba(0,0,0,.5), 0 8px 24px rgba(0,0,0,.4); }
+
+.grp {
+  display: flex; gap: 2px; padding: 3px;
+  border: 1px solid var(--line); border-radius: 9px; background: var(--sunken);
+}
+.grp > span {
+  align-self: center; font-size: 10px; letter-spacing: .14em; text-transform: uppercase;
+  color: var(--faint); font-weight: 650; padding: 0 8px 0 6px;
+}
+.grp button, .btn {
+  appearance: none; border: 0; background: transparent; color: var(--muted);
+  font-family: inherit; font-size: 12.5px; font-weight: 550;
+  padding: 6px 11px; border-radius: 6px; cursor: pointer;
+  transition: background 130ms ease, color 130ms ease;
+  white-space: nowrap;
+}
+.grp button:hover, .btn:hover { color: var(--ink); }
+.grp button[aria-pressed="true"] { background: var(--ink); color: var(--page); }
+.btn {
+  border: 1px solid var(--line-2); background: var(--panel);
+  color: var(--ink); font-weight: 600; padding: 8px 14px; border-radius: 9px;
+}
+.btn:active { transform: translateY(1px); }
+.spacer { flex: 1 1 auto; }
+
+/* ---------------------------------------------------------------- stages */
+
+.compare { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+@media (max-width: 900px) { .compare { grid-template-columns: 1fr; } }
+
+.col { display: flex; flex-direction: column; gap: 9px; min-width: 0; }
+.colhead { display: flex; align-items: baseline; gap: 9px; }
+.colhead b { font-size: 11px; letter-spacing: .16em; text-transform: uppercase; font-weight: 700; }
+.colhead i { font-style: normal; font-size: 11.5px; color: var(--faint); font-family: var(--font-mono); }
+
+/* The stage is a stand-in for "whatever application you were typing into".
+   It has to be a real thing with real contrast, not a grey rectangle — the
+   whole argument about translucency only exists over real content. */
+.stage {
+  position: relative; height: 300px; overflow: hidden;
+  border: 1px solid var(--line); border-radius: 11px;
+  background: var(--sunken);
+  display: flex; flex-direction: column; justify-content: flex-end; align-items: center;
+  padding-bottom: 12px;   /* matches body padding-bottom in overlay.css */
+}
+
+/* Scaling simulation. Windows at 150% does not make the pill bigger in the
+   hand — DPI scaling preserves physical size. What it does is put the 1px
+   border on a half device pixel. transform:scale reproduces exactly that, so
+   this toggle is a faithful test rather than a zoom control. */
+.pillzone { transform: scale(var(--k, 1)); transform-origin: 50% 100%; }
+
+/* ------------------------------------------------------------- backdrops */
+
+.bd { position: absolute; inset: 0; }
+.bd[hidden] { display: none; }
+
+/* (a) a plausible editor: sidebar, gutter, syntax colour, real contrast */
+.bd-doc { background: #FBFBFC; display: flex; }
+:root[data-theme="dark"] .bd-doc { background: #16171B; }
+.bd-doc .side {
+  width: 128px; flex: 0 0 128px; background: #F1F2F4;
+  border-right: 1px solid rgba(16,18,23,.09); padding: 12px 10px;
+  display: flex; flex-direction: column; gap: 7px;
+}
+:root[data-theme="dark"] .bd-doc .side { background: #101115; border-right-color: rgba(255,255,255,.07); }
+.bd-doc .side i { display: block; height: 7px; border-radius: 3px; background: rgba(16,18,23,.13); }
+:root[data-theme="dark"] .bd-doc .side i { background: rgba(255,255,255,.13); }
+.bd-doc .side i:nth-child(2) { width: 78%; } .bd-doc .side i:nth-child(3) { width: 61%; }
+.bd-doc .side i:nth-child(4) { width: 88%; } .bd-doc .side i:nth-child(5) { width: 54%; }
+.bd-doc .side i:nth-child(6) { width: 72%; } .bd-doc .side i:nth-child(7) { width: 44%; }
+.bd-doc .body {
+  flex: 1 1 auto; padding: 14px 18px; font-family: var(--font-mono);
+  font-size: 11.5px; line-height: 1.85; white-space: pre; overflow: hidden;
+  color: #3A4048;
+}
+:root[data-theme="dark"] .bd-doc .body { color: #B7BEC8; }
+.bd-doc .kw { color: #8250DF; } .bd-doc .st { color: #0A7C4A; } .bd-doc .nu { color: #B85C00; }
+.bd-doc .cm { color: #8B919B; }
+:root[data-theme="dark"] .bd-doc .kw { color: #C08CF5; }
+:root[data-theme="dark"] .bd-doc .st { color: #5FD39B; }
+:root[data-theme="dark"] .bd-doc .nu { color: #F0A45E; }
+
+/* (b) the hostile case. High-frequency colour directly under the pill, which
+   is what turns saturate() from an effect into a contaminant. */
+.bd-busy {
+  background:
+    repeating-linear-gradient(90deg, rgba(255,255,255,.34) 0 2px, rgba(0,0,0,.10) 2px 4px),
+    conic-gradient(from 20deg at 22% 78%, #E23B3B, #E9A020, #2FA84F, #1E7FD6, #8B3FD0, #E23B3B),
+    conic-gradient(from 200deg at 78% 30%, #12A5A5, #D4256B, #F2C400, #1E3FBF, #12A5A5);
+  background-blend-mode: overlay, normal, normal;
+}
+.bd-busy::after {
+  content: ""; position: absolute; inset: 0;
+  background: repeating-linear-gradient(37deg, rgba(0,0,0,.22) 0 3px, rgba(255,255,255,.22) 3px 6px);
+  mix-blend-mode: overlay;
+}
+
+/* (c) a flat mid-grey — the control condition. Useful for judging shadow
+   weight, which any patterned background hides. */
+.bd-flat { background: #9AA0A8; }
+:root[data-theme="dark"] .bd-flat { background: #4A4F57; }
+
+/* =================================================================== ZOOM */
+
+.zoomrow { display: flex; flex-direction: column; gap: 8px; }
+.zoomcell {
+  overflow-x: auto; overflow-y: hidden;
+  border: 1px solid var(--line); border-radius: 11px;
+  background: linear-gradient(90deg, #EFEFF1 0 55%, #C9CDD3 55% 100%);
+}
+:root[data-theme="dark"] .zoomcell { background: linear-gradient(90deg, #101116 0 55%, #2A2D34 55% 100%); }
+.zoominner { width: 1120px; height: 214px; display: flex; align-items: center; padding-left: 28px; }
+.zoomstage { transform: scale(4); transform-origin: 0 50%; }
+
+/* ============================================================== changelog */
+
+.log { display: flex; flex-direction: column; gap: 0; }
+.entry {
+  display: grid; grid-template-columns: 30px 1fr; gap: 0 14px;
+  padding: 15px 0; border-top: 1px solid var(--line);
+}
+.entry:last-child { border-bottom: 1px solid var(--line); }
+.entry .n {
+  font-family: var(--font-mono); font-size: 11.5px; color: var(--faint);
+  font-variant-numeric: tabular-nums; padding-top: 2px;
+}
+.entry h3 { margin: 0 0 4px; font-size: 14px; font-weight: 640; letter-spacing: -.008em; }
+.entry p { margin: 0; color: var(--muted); max-width: 82ch; }
+.entry p + p { margin-top: 6px; }
+.entry code, .inl {
+  font-family: var(--font-mono); font-size: .885em;
+  background: var(--sunken); border: 1px solid var(--line);
+  border-radius: 4px; padding: 0 4px;
+}
+.tag {
+  display: inline-block; vertical-align: 2px; margin-left: 8px;
+  font-size: 9.5px; letter-spacing: .13em; text-transform: uppercase; font-weight: 700;
+  padding: 2px 6px; border-radius: 4px; border: 1px solid var(--line-2); color: var(--faint);
+}
+.tag.keep { color: var(--pos); border-color: currentColor; }
+.tag.cut  { color: var(--muted); }
+
+.callout {
+  border: 1px solid var(--line); border-left: 3px solid var(--ink);
+  border-radius: 0 9px 9px 0; padding: 13px 16px; background: var(--panel);
+  color: var(--muted); max-width: 84ch;
+}
+.callout b { color: var(--ink); }
+
+.readout {
+  font-family: var(--font-mono); font-size: 11.5px; color: var(--faint);
+  display: flex; gap: 14px; flex-wrap: wrap;
+}
+.readout b { color: var(--ink); font-weight: 600; }
+
+/* ==================================================================== ==== */
+/* ==== CURRENT — a faithful copy of src/renderer/overlay.css ============== */
+/* ==== Prefixed .c- so the two implementations cannot contaminate each ==== */
+/* ==== other. Values are verbatim; only selectors changed.            ==== */
+/* ==================================================================== ==== */
+
+.c-scope {
+  --pill-bg:    rgba(252, 252, 253, 0.95);
+  --pill-line:  rgba(16, 18, 23, 0.10);
+  --pill-sheen: rgba(255, 255, 255, 0.85);
+  --pill-shadow:
+    0 1px 2px rgba(16, 18, 23, .09),
+    0 6px 18px rgba(16, 18, 23, .11),
+    0 16px 40px rgba(16, 18, 23, .09);
+
+  --text:   #14161B;
+  --muted-c:#575D66;
+  --meter:  #1C1F25;
+
+  --chip:       rgba(16, 18, 23, 0.06);
+  --chip-hover: rgba(16, 18, 23, 0.13);
+  --commit:     #16181D;
+  --commit-ink: #FFFFFF;
+  --danger:     #B22D22;
+
+  --font-c: "Segoe UI Variable Display", "Segoe UI", -apple-system, sans-serif;
+  --ease-spring: cubic-bezier(.16, 1.02, .3, 1.0);
+  --ease-exit:   cubic-bezier(.4, 0, .9, .35);
+  --dur-enter: 260ms;
+  --dur-morph: 240ms;
+  --dur-exit:  180ms;
+}
+:root[data-theme="dark"] .c-scope {
+  --pill-bg:    rgba(13, 14, 17, 0.93);
+  --pill-line:  rgba(255, 255, 255, 0.11);
+  --pill-sheen: rgba(255, 255, 255, 0.09);
+  --pill-shadow:
+    0 1px 2px rgba(0, 0, 0, .5),
+    0 8px 22px rgba(0, 0, 0, .55),
+    0 20px 48px rgba(0, 0, 0, .45);
+  --text:   #F4F5F7;
+  --muted-c:#9DA3AC;
+  --meter:  #F4F5F7;
+  --chip:       rgba(255, 255, 255, 0.10);
+  --chip-hover: rgba(255, 255, 255, 0.19);
+  --commit:     #F4F5F7;
+  --commit-ink: #14161B;
+  --danger:     #E8695C;
+}
+
+.c-overlay { display: flex; flex-direction: column; align-items: center; font-family: var(--font-c); }
+
+.c-pill {
+  position: relative;
+  display: flex; align-items: center; gap: 6px;
+  width: 130px; height: 36px; padding: 0 6px;
+  border-radius: 18px;
+  background: var(--pill-bg);
+  border: 1px solid var(--pill-line);
+  box-shadow: var(--pill-shadow);
+  backdrop-filter: blur(18px) saturate(1.6);
+  -webkit-backdrop-filter: blur(18px) saturate(1.6);
+  opacity: 0; transform: translateY(8px) scale(.92);
+  transition:
+    opacity   var(--dur-exit) var(--ease-exit),
+    transform var(--dur-exit) var(--ease-exit),
+    width     var(--dur-morph) var(--ease-spring);
+}
+.c-pill::before {
+  content: ""; position: absolute; inset: 0; border-radius: inherit; padding-top: 1px;
+  background: linear-gradient(var(--pill-sheen), transparent 55%);
+  -webkit-mask: linear-gradient(#000,#000) content-box, linear-gradient(#000,#000);
+  -webkit-mask-composite: xor; mask-composite: exclude; pointer-events: none;
+}
+.c-overlay[data-visible="true"] .c-pill {
+  opacity: 1; transform: translateY(0) scale(1);
+  transition:
+    opacity   var(--dur-enter) var(--ease-spring),
+    transform var(--dur-enter) var(--ease-spring),
+    width     var(--dur-morph) var(--ease-spring);
+}
+.c-overlay[data-state="thinking"]  .c-pill { width: 98px; }
+.c-overlay[data-state="streaming"] .c-pill,
+.c-overlay[data-state="result"]    .c-pill { width: 252px; }
+.c-overlay[data-state="error"]     .c-pill { width: 216px; }
+
+.c-control {
+  flex: 0 0 auto; width: 24px; height: 24px; padding: 0; border: 0;
+  border-radius: 50%; background: transparent;
+  display: grid; place-items: center; cursor: pointer;
+  transition: background 150ms ease, transform 180ms var(--ease-spring);
+}
+.c-control svg { width: 12px; height: 12px; fill: none; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+.c-control.cancel { background: var(--chip); }
+.c-control.cancel svg { stroke: var(--muted-c); }
+.c-control.cancel:hover { background: var(--chip-hover); }
+.c-control.cancel:hover svg { stroke: var(--danger); }
+.c-control.cancel:active { transform: scale(.92); }
+.c-control.confirm { background: var(--commit); box-shadow: 0 1px 2px rgba(0,0,0,.2); }
+.c-control.confirm svg { stroke: var(--commit-ink); }
+.c-control.confirm:hover { transform: scale(1.09); }
+.c-control.confirm:active { transform: scale(.94); }
+
+.c-control.confirm .tick { stroke-dasharray: 22; stroke-dashoffset: 22; }
+.c-overlay[data-visible="true"] .c-control.confirm .tick {
+  animation: c-draw-tick 360ms var(--ease-spring) 140ms forwards;
+}
+@keyframes c-draw-tick { to { stroke-dashoffset: 0; } }
+
+.c-overlay[data-state="thinking"]  .c-control.confirm,
+.c-overlay[data-state="streaming"] .c-control.confirm,
+.c-overlay[data-state="result"]    .c-control.confirm,
+.c-overlay[data-state="error"]     .c-control.confirm { display: none; }
+.c-overlay[data-state="result"] .c-control.cancel,
+.c-overlay[data-state="error"]  .c-control.cancel { display: none; }
+
+.c-meter-slot { flex: 1 1 auto; height: 18px; min-width: 0; }
+.c-meter-slot canvas { width: 100%; height: 100%; display: block; }
+.c-overlay[data-state="streaming"] .c-meter-slot,
+.c-overlay[data-state="result"]    .c-meter-slot,
+.c-overlay[data-state="error"]     .c-meter-slot { display: none; }
+
+.c-result-text {
+  display: none; flex: 1 1 auto; min-width: 0; padding: 0 5px;
+  font-size: 12px; color: var(--muted-c);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  direction: rtl; text-align: left;
+}
+.c-overlay[data-state="streaming"] .c-result-text,
+.c-overlay[data-state="result"]    .c-result-text,
+.c-overlay[data-state="error"]     .c-result-text { display: block; }
+.c-overlay[data-state="result"] .c-result-text { direction: ltr; color: var(--text); font-weight: 560; }
+.c-overlay[data-state="error"]  .c-result-text { direction: ltr; color: var(--danger); }
+
+
+/* ==================================================================== ==== */
+/* ==== REFINED ============================================================ */
+/* ==== Same ramp, same two controls, same six states. Every number that === */
+/* ==== moved is argued for in the changelog at the bottom of the page.  === */
+/* ==================================================================== ==== */
+
+.r-scope {
+  /* The fill goes up, not down. Legibility over arbitrary content is the hard
+     constraint; translucency is a preference. Wispr and Typeless read crisp
+     because their pill is an object, not a window. */
+  --pill-bg:   rgba(253, 253, 254, 0.97);
+  --pill-line: rgba(16, 18, 23, 0.13);
+
+  /* A lit top edge and a shaded lower lip. One gradient, both jobs. In light
+     mode the old sheen was white-on-white and did nothing at all. */
+  --edge-top: rgba(255, 255, 255, 0.95);
+  --edge-bot: rgba(16, 18, 23, 0.07);
+
+  /* Three layers, each doing one job: contact, lift, ambient. Half the reach
+     of the old stack — a 40px ambient blur under a 36px object is fog. */
+  --pill-shadow:
+    0 1px 1px  rgba(16, 18, 23, .06),
+    0 4px 10px rgba(16, 18, 23, .085),
+    0 12px 26px rgba(16, 18, 23, .07);
+
+  --text:  #14161B;
+  --dim:   #5A6068;
+  --meter: #1C1F25;
+
+  --chip:       rgba(16, 18, 23, 0.065);
+  --chip-hover: rgba(16, 18, 23, 0.14);
+  --commit:     #16181D;
+  --commit-ink: #FFFFFF;
+  --danger:     #AF2C21;
+
+  /* Text optical size, not Display. See changelog 12. */
+  --font-r: "Segoe UI Variable Text", "Segoe UI Variable Small", "Segoe UI", -apple-system, sans-serif;
+
+  --ease-spring: cubic-bezier(.16, 1.02, .3, 1.0);
+  --ease-exit:   cubic-bezier(.4, 0, .9, .35);
+  --dur-enter: 200ms;
+  --dur-morph: 260ms;
+  --dur-exit:  140ms;
+
+  /* One device pixel, whatever the scaling factor is. The stage sets this per
+     simulated scale; the shipped stylesheet does it with min-resolution
+     queries, which is the same arithmetic driven by the real DPR. */
+  --hair: 1px;
+}
+:root[data-theme="dark"] .r-scope {
+  --pill-bg:   rgba(17, 18, 22, 0.95);
+  --pill-line: rgba(255, 255, 255, 0.145);
+  --edge-top:  rgba(255, 255, 255, 0.16);
+  --edge-bot:  rgba(0, 0, 0, 0.30);
+  --pill-shadow:
+    0 1px 2px  rgba(0, 0, 0, .45),
+    0 6px 16px rgba(0, 0, 0, .40),
+    0 14px 32px rgba(0, 0, 0, .30);
+  --text:  #F4F5F7;
+  --dim:   #A2A8B1;
+  --meter: #F4F5F7;
+  --chip:       rgba(255, 255, 255, 0.10);
+  --chip-hover: rgba(255, 255, 255, 0.20);
+  --commit:     #F4F5F7;
+  --commit-ink: #14161B;
+  --danger:     #E8695C;
+}
+
+.r-overlay { display: flex; flex-direction: column; align-items: center; font-family: var(--font-r); }
+
+.r-pill {
+  position: relative;
+  display: flex; align-items: center;
+  width: 132px; height: 36px; padding: 0 6px;
+  border-radius: 18px;
+  background: var(--pill-bg);
+  border: var(--hair) solid var(--pill-line);
+  box-shadow: var(--pill-shadow);
+
+  /* saturate() is gone. blur is halved. At 97% fill the blur is insurance
+     against a high-frequency background bleeding through the last 3%, not a
+     look — so it does not need to be expensive. */
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+
+  opacity: 0; transform: translateY(6px) scale(.96);
+  transition:
+    opacity   var(--dur-exit) var(--ease-exit),
+    transform var(--dur-exit) var(--ease-exit),
+    width     var(--dur-morph) var(--ease-spring);
+}
+
+/* The edge. A 1-device-pixel ring, lit at the top and shaded at the bottom,
+   carved out of a filled box with a mask. -webkit- prefixes are fine: the
+   target is exactly one engine. */
+.r-pill::before {
+  content: ""; position: absolute; inset: 0; border-radius: inherit;
+  padding: var(--hair);
+  background: linear-gradient(var(--edge-top), transparent 46%, transparent 56%, var(--edge-bot));
+  -webkit-mask: linear-gradient(#000,#000) content-box, linear-gradient(#000,#000);
+  -webkit-mask-composite: xor; mask-composite: exclude;
+  pointer-events: none;
+}
+
+.r-overlay[data-visible="true"] .r-pill {
+  opacity: 1; transform: translateY(0) scale(1);
+  transition:
+    opacity   var(--dur-enter) var(--ease-spring),
+    transform var(--dur-enter) var(--ease-spring),
+    width     var(--dur-morph) var(--ease-spring);
+}
+
+/* Three widths, not four. 132 - 102 = 30 = exactly the confirm control plus
+   its gap, so the meter never changes size — the thinking morph is the tick
+   leaving and the door closing behind it, one event. */
+.r-overlay[data-state="thinking"]  .r-pill { width: 102px; }
+.r-overlay[data-state="streaming"] .r-pill,
+.r-overlay[data-state="result"]    .r-pill,
+.r-overlay[data-state="error"]     .r-pill { width: 246px; }
+
+/* --------------------------------------------------------------- controls */
+
+/* Explicit margins rather than `gap`, because a collapsed zero-width flex
+   item still gets its gap and the text would jump the 6px. */
+.r-control {
+  flex: 0 0 24px; width: 24px; height: 24px; padding: 0; border: 0;
+  border-radius: 50%; background: transparent;
+  display: grid; place-items: center; cursor: pointer;
+  overflow: hidden;
+  transition:
+    background 150ms ease,
+    flex-basis var(--dur-morph) var(--ease-spring),
+    width      var(--dur-morph) var(--ease-spring),
+    margin     var(--dur-morph) var(--ease-spring),
+    opacity    160ms var(--ease-exit),
+    transform  180ms var(--ease-spring);
+}
+.r-control.cancel  { margin-right: 6px; }
+.r-control.confirm { margin-left: 6px; }
+
+/* Leaving, rather than vanishing. This single rule is most of the difference
+   between "one object changing shape" and "two objects swapping places". */
+.r-control[data-off="true"] {
+  flex-basis: 0; width: 0; margin-left: 0; margin-right: 0;
+  opacity: 0; transform: scale(.55); pointer-events: none;
+}
+
+/* 24 CSS px of SVG on a 24-unit viewBox: one unit is one pixel, so every
+   stroke width in the markup is the width you actually get. */
+.r-control svg { width: 24px; height: 24px; fill: none; stroke-linecap: round; stroke-linejoin: round; display: block; }
+.r-control .x    { stroke-width: 1.7; }
+.r-control .tick { stroke-width: 1.9; }
+
+.r-control.cancel { background: var(--chip); }
+.r-control.cancel svg { stroke: var(--dim); transition: stroke 130ms ease; }
+.r-control.cancel:hover { background: var(--chip-hover); }
+.r-control.cancel:hover svg { stroke: var(--danger); }
+.r-control.cancel:active { transform: scale(.92); }
+
+.r-control.confirm { background: var(--commit); box-shadow: 0 1px 2px rgba(0,0,0,.18); }
+.r-control.confirm svg { stroke: var(--commit-ink); }
+.r-control.confirm:hover { transform: scale(1.07); }
+.r-control.confirm:active { transform: scale(.94); }
+
+/* ----------------------------------------------------------------- middle */
+
+/* Meter and text are stacked, not swapped. Both occupy the slot at all times
+   and cross-fade in place, so nothing reflows at the moment of a state
+   change and the width morph is the only thing moving. */
+.r-mid { position: relative; flex: 1 1 auto; min-width: 0; height: 18px; }
+.r-layer {
+  position: absolute; inset: 0;
+  opacity: 0; transform: translateY(2px); pointer-events: none;
+  transition: opacity 100ms var(--ease-exit), transform 100ms var(--ease-exit);
+}
+.r-layer[data-on="true"] {
+  opacity: 1; transform: translateY(0);
+  transition: opacity 180ms var(--ease-spring) 80ms, transform 180ms var(--ease-spring) 80ms;
+}
+.r-meter-slot canvas { width: 100%; height: 100%; display: block; }
+
+/* The tail is pinned by scrolling, not by `direction: rtl`. RTL reorders
+   trailing neutrals — a sentence ending in a full stop renders the stop at
+   the far left — and the fade tells you there is more behind it better than
+   an ellipsis does. */
+.r-text {
+  display: flex; align-items: center; overflow: hidden;
+  padding: 0 6px; font-size: 12.5px; color: var(--dim); font-weight: 450;
+  white-space: nowrap;
+}
+.r-text > span { display: block; }
+.r-overlay[data-state="streaming"] .r-text {
+  justify-content: flex-end;
+  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 26px);
+  mask-image: linear-gradient(90deg, transparent 0, #000 26px);
+}
+.r-overlay[data-state="result"] .r-text,
+.r-overlay[data-state="error"]  .r-text {
+  justify-content: flex-start; padding-left: 9px;
+  -webkit-mask-image: linear-gradient(270deg, transparent 0, #000 22px);
+  mask-image: linear-gradient(270deg, transparent 0, #000 22px);
+}
+.r-overlay[data-state="result"] .r-text { color: var(--text); font-weight: 600; }
+.r-overlay[data-state="error"]  .r-text { color: var(--danger); font-weight: 550; }
+
+@media (prefers-reduced-motion: reduce) {
+  .c-pill, .c-control, .c-control .tick,
+  .r-pill, .r-control, .r-layer {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+  }
+}
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="eyebrow">Typd — refinement pass 01</div>
+    <h1>Same two circles. Sharper everything between them.</h1>
+    <p>
+      Nothing here is a new idea. The pill stays 36 tall, stays fully round, keeps a
+      cancel on the left and a commit on the right, and keeps the monochrome ramp.
+      What changed is the twenty or so places where the current build is
+      approximately right instead of exactly right — the saturate that pulls the
+      host application's colour into a monochrome design, the meter that fakes
+      motion with a sine wave, the width morph that swaps its contents instead of
+      moving them, the hairline that goes soft at 150%. Both pills below run off
+      one state machine and one amplitude signal, so anything you can see is a
+      real difference.
+    </p>
+  </header>
+
+  <!-- ===================================================== control bar -->
+  <div class="bar" role="group" aria-label="Demo controls">
+    <div class="grp" role="group" aria-label="State">
+      <span>State</span>
+      <button type="button" data-state="idle"      aria-pressed="false">Idle</button>
+      <button type="button" data-state="listening" aria-pressed="true">Listening</button>
+      <button type="button" data-state="thinking"  aria-pressed="false">Thinking</button>
+      <button type="button" data-state="streaming" aria-pressed="false">Streaming</button>
+      <button type="button" data-state="result"    aria-pressed="false">Result</button>
+      <button type="button" data-state="error"     aria-pressed="false">Error</button>
+    </div>
+    <button type="button" class="btn" id="play">Play a session</button>
+    <button type="button" class="btn" id="playErr">Play a failure</button>
+    <div class="spacer"></div>
+    <div class="grp" role="group" aria-label="Backdrop">
+      <span>Behind</span>
+      <button type="button" data-bd="doc"  aria-pressed="true">Editor</button>
+      <button type="button" data-bd="busy" aria-pressed="false">Busy</button>
+      <button type="button" data-bd="flat" aria-pressed="false">Flat</button>
+    </div>
+    <div class="grp" role="group" aria-label="Windows scaling">
+      <span>Scale</span>
+      <button type="button" data-k="1"    aria-pressed="true">100%</button>
+      <button type="button" data-k="1.25" aria-pressed="false">125%</button>
+      <button type="button" data-k="1.5"  aria-pressed="false">150%</button>
+      <button type="button" data-k="2"    aria-pressed="false">200%</button>
+    </div>
+    <button type="button" class="btn" id="theme">Dark</button>
+  </div>
+
+  <!-- ================================================== side by side -->
+  <section class="section">
+    <h2 class="sec">01 — Current vs refined, actual size</h2>
+    <p class="lede">
+      One state machine drives both. The amplitude feeding both meters is the same
+      synthesised syllabic envelope <code>overlay.js</code> falls back to when no
+      microphone is available, so the two meters are seeing identical numbers at
+      every frame. Switch the backdrop to <b>Busy</b> to see what
+      <code>saturate(1.6)</code> does, and the scale control to see what happens to
+      a 1px border at 150%.
+    </p>
+
+    <div class="compare">
+      <div class="col">
+        <div class="colhead"><b>Current</b><i id="curDims">130 × 36</i></div>
+        <div class="stage c-scope" id="curStage"></div>
+      </div>
+      <div class="col">
+        <div class="colhead"><b>Refined</b><i id="refDims">132 × 36</i></div>
+        <div class="stage r-scope" id="refStage"></div>
+      </div>
+    </div>
+
+    <div class="readout">
+      <span>state <b id="roState">listening</b></span>
+      <span>meter slot <b id="roMeter">56 → 58 px</b></span>
+      <span>hairline, simulated <b id="roHair">1.00 → 1.00 device px</b></span>
+    </div>
+  </section>
+
+  <!-- ========================================================== 4× zoom -->
+  <section class="section">
+    <h2 class="sec">02 — Four times, for craft</h2>
+    <p class="lede">
+      Geometric magnification, not an upscaled screenshot: the canvases are sized
+      from their on-screen rect, so the bars are drawn at true 4× resolution and
+      what you are judging is geometry, edges and spacing rather than resampling.
+      The right-hand third of each strip is a darker ground, because a shadow you
+      cannot see over white is still costing you a compositing layer. Step the
+      state above and both strips follow.
+    </p>
+    <div class="zoomrow">
+      <div class="colhead"><b>Current</b><i>4×</i></div>
+      <div class="zoomcell"><div class="zoominner c-scope"><div class="zoomstage" id="curZoom"></div></div></div>
+    </div>
+    <div class="zoomrow">
+      <div class="colhead"><b>Refined</b><i>4×</i></div>
+      <div class="zoomcell"><div class="zoominner r-scope"><div class="zoomstage" id="refZoom"></div></div></div>
+    </div>
+  </section>
+
+  <!-- ======================================================== changelog -->
+  <section class="section">
+    <h2 class="sec">03 — What changed, and why it is better</h2>
+    <p class="lede">
+      Ordered by how much of the difference each one accounts for. Five things I
+      interrogated and left alone are at the bottom; those are findings too, and
+      two of them are the reason this is a refinement rather than a redesign.
+    </p>
+
+    <div class="log">
+
+      <div class="entry">
+        <div class="n">01</div>
+        <div>
+          <h3><code>saturate(1.6)</code> removed from the backdrop filter <span class="tag cut">cut</span></h3>
+          <p>
+            Saturation on a backdrop filter takes whatever hue is behind the pill and
+            pushes it <i>into</i> the pill. Over a terminal the pill goes green, over a
+            red logo it goes pink. A design whose entire premise is monochrome cannot
+            have a filter that imports the host application's colour, and at 95% fill
+            the effect it was buying was invisible anyway — you only ever saw the
+            failure case. Switch the backdrop to <b>Busy</b>: the current pill picks up
+            a wash, the refined one does not.
+          </p>
+          <p>
+            The blur went 18px → 12px at the same time. At a 97% fill the blur is
+            insurance against high-frequency content bleeding through the last 3%, not
+            a look, and a smaller radius is a cheaper compositing pass on a transparent
+            always-on-top window.
+          </p>
+        </div>
+      </div>
+
+      <div class="entry">
+        <div class="n">02</div>
+        <div>
+          <h3>The meter is a scrolling peak history, not eleven bars wiggling</h3>
+          <p>
+            The current row moves even when the level is constant, because each bar
+            multiplies the amplitude by <code>0.68 + 0.32·sin(t·8.6 + phase[i])</code>.
+            That is decoration dressed as data — the row looks busy whether or not
+            anything is happening, which is precisely the "AI slop" register the brief
+            rules out. It also runs eleven bars through 56px of slot, which after
+            device-pixel snapping is two pixels of ink with three of gap: a fence, and
+            at that density it reads as noise rather than as a level.
+          </p>
+          <p>
+            Refined: nine slots across 58px, 3px of ink each, and every bar holds the
+            <i>peak level of one real 52ms window</i>. New samples enter at the right
+            and the row glides left continuously — sub-slot interpolation, so it scrolls
+            rather than steps — with the slot leaving on the left dissolving instead of
+            being clipped. Variation now comes from your actual voice, which produces a
+            far more characterful silhouette than any sine wave ever will, and a moving
+            row now means something is happening. The centre-weight — bars artificially
+            shorter at the edges — had to go with it: in a history every bar must be
+            comparable to every other, so the silhouette comes from the edge fade
+            rather than from lying about amplitude.
+          </p>
+          <p>
+            One more thing fell out of rewriting it: the shipped meter computes
+            <code>maxHalf = h / 2</code>, so a bar at full level is exactly as tall as
+            the canvas and its rounded caps are clipped flat against the top and bottom
+            edges. The loudest syllable is the one moment the meter stops being round.
+            <code>design/overlay-prototype.html</code> had this right —
+            <code>h / 2 - barW / 2</code> — and it was lost on the way into
+            <code>overlay.js</code>. Restored.
+          </p>
+        </div>
+      </div>
+
+      <div class="entry">
+        <div class="n">03</div>
+        <div>
+          <h3>Controls leave instead of vanishing; the morph became one object</h3>
+          <p>
+            The reason the current morph reads as objects swapping is not the width
+            transition — that part is fine. It is that the children use
+            <code>display: none</code>. At the instant of a state change the tick is
+            gone in one frame and the text is present in one frame, while the box takes
+            240ms to travel. Two different clocks, so the eye separates them into two
+            things.
+          </p>
+          <p>
+            Refined: an exiting control animates its own <code>flex-basis</code>, width,
+            margin, opacity and scale on the same 260ms spring as the pill, so you watch
+            it get folded away and the pill close over it. Meter and text are stacked in
+            one slot and cross-fade in place (100ms out, 180ms in at an 80ms delay)
+            rather than replacing each other in the layout. Nothing hard-cuts anywhere.
+          </p>
+        </div>
+      </div>
+
+      <div class="entry">
+        <div class="n">04</div>
+        <div>
+          <h3>Thinking is 102px, not 98 — so the meter never changes width</h3>
+          <p>
+            132 − 102 = 30 = one 24px control plus its 6px margin, exactly. The old
+            130 → 98 was 32, which meant the meter also shrank by 2px on the way in and
+            grew by 2px on the way out. Two pixels is not visible as a size change; it
+            is visible as the row of bars <i>resampling</i>, which is why the thinking
+            transition felt slightly unstable. Now the only thing that moves is the
+            right end of the pill, and the sentence the animation says is "the tick left
+            and the door closed behind it".
+          </p>
+          <p>
+            Error width went 216 → 246, the same as result and streaming. 216 and 252
+            are indistinguishable to the eye but cost a real morph whenever a session
+            ends badly. One fewer arbitrary number.
+          </p>
+        </div>
+      </div>
+
+      <div class="entry">
+        <div class="n">05</div>
+        <div>
+          <h3>The hairline holds at 150% and 200% Windows scaling</h3>
+          <p>
+            36px is the correct height at every scaling factor, because DPI scaling
+            preserves physical size — the pill is the same size in the hand at 100% and
+            150%. What breaks at 150% is not the size, it is the border: 1 CSS px × 1.5
+            = 1.5 device px, which lands on a half pixel and is composited as a soft
+            two-pixel smear. That softness is most of the reason the current pill reads
+            as slightly out of focus next to Wispr's on a scaled display.
+          </p>
+          <p>
+            Refined declares <code>--hair</code> and steps it down as resolution goes
+            up — <code>1px</code>, then <code>0.667px</code> at 1.5dppx, then
+            <code>0.5px</code> at 2dppx — so the border is exactly one device pixel
+            everywhere. Set the scale control to <b>150%</b> and look at the two edges.
+            The same variable drives the <code>::before</code> edge ring, so it does not
+            drift out of register with the border either.
+          </p>
+        </div>
+      </div>
+
+      <div class="entry">
+        <div class="n">06</div>
+        <div>
+          <h3>The self-drawing tick is gone <span class="tag cut">cut</span></h3>
+          <p>
+            A 360ms stroke-dash animation on the most repeated interaction in the
+            product. You see it every single time you press the hotkey, forty times a
+            day, and a flourish at that frequency stops being charming and becomes a
+            stutter between you and the button. The pill's own entrance already carries
+            the arrival; the tick should simply be there when it lands.
+          </p>
+          <p>
+            Worth noting for the record: the path is 15.6 units long and the
+            <code>stroke-dasharray</code> was 22, so 29% of the animation's duration was
+            spent moving a dash offset that had already cleared the end of the line.
+            Nobody noticed, which is the argument.
+          </p>
+        </div>
+      </div>
+
+      <div class="entry">
+        <div class="n">07</div>
+        <div>
+          <h3>Icons authored in device pixels, and made heavier</h3>
+          <p>
+            A 12px <code>&lt;svg&gt;</code> on a 24-unit viewBox halves every number in
+            the path: <code>stroke-width: 2.4</code> ships as a 1.2px line, and the
+            cross itself spans 5px inside a 24px disc. At 1:1 that is a grey smudge, and
+            it is why the cancel control reads as absent rather than as quiet.
+          </p>
+          <p>
+            Refined renders the SVG at 24px on a 24-unit viewBox, so one unit is one
+            pixel and the numbers in the markup are the numbers on screen. The cross is
+            an 8×8 box with a 1.7px stroke; the tick is 1.9px, half a step heavier
+            because it is the primary action and weight is how a monochrome design says
+            primary. Compare them in the 4× strips.
+          </p>
+        </div>
+      </div>
+
+      <div class="entry">
+        <div class="n">08</div>
+        <div>
+          <h3><code>direction: rtl</code> replaced with a scroll pin and an edge fade</h3>
+          <p>
+            Holding the newest words in view by flipping the writing direction is clever
+            and it works right up until the transcript ends in punctuation. Trailing
+            full stops, commas and quotes are bidi-neutral, so RTL relocates them to the
+            far left of the pill — the streaming text renders as
+            <span class="inl">.model the of end the at</span>-style artefacts on
+            perfectly ordinary sentences. Play a session and watch the current pill at
+            the moment the stream finishes.
+          </p>
+          <p>
+            Refined keeps LTR, pins the tail with <code>justify-content: flex-end</code>
+            plus a scroll nudge, and fades the overflowing edge with a mask instead of
+            an ellipsis. The fade is also simply better: an ellipsis is a glyph that says
+            "truncated", a fade is the text going out of the window.
+          </p>
+        </div>
+      </div>
+
+      <div class="entry">
+        <div class="n">09</div>
+        <div>
+          <h3>The shadow stack lost half its reach; dark lost most of it</h3>
+          <p>
+            The ambient layer was <code>0 16px 40px</code> under a 36px-tall object — a
+            shadow larger than the thing casting it, which over a busy background is not
+            depth, it is a smudge. Refined runs
+            <code>1/1 · 4/10 · 12/26</code>, still three layers doing contact, lift and
+            ambient, but sized to the object.
+          </p>
+          <p>
+            In dark mode the old stack ran black at .45–.55 alpha under a near-black
+            pill on a near-black background: expensive, and invisible. What separates a
+            dark pill from a dark backdrop is the lit top edge and the border, not the
+            shadow, so dark now spends its contrast budget there — border to .145, top
+            edge to .16 — and its shadows are cut back.
+          </p>
+        </div>
+      </div>
+
+      <div class="entry">
+        <div class="n">10</div>
+        <div>
+          <h3>The sheen became a real edge, in both themes</h3>
+          <p>
+            <code>--pill-sheen: rgba(255,255,255,0.85)</code> painted on a
+            <code>rgba(252,252,253,0.95)</code> pill. White on white. In light mode the
+            <code>::before</code> was a mask-composite operation producing no pixels.
+          </p>
+          <p>
+            Refined runs one vertical gradient through a full-perimeter 1px ring: light
+            at the top, transparent through the middle, shaded at the bottom. Light mode
+            now gets a defined lower lip, dark mode keeps the lit top edge it always
+            needed, and it is one declaration instead of a per-theme special case.
+          </p>
+        </div>
+      </div>
+
+      <div class="entry">
+        <div class="n">11</div>
+        <div>
+          <h3>Silence is a dotted rule; thinking got quieter</h3>
+          <p>
+            The prototype's note that a flat meter "read as broken" is correct and the
+            idle floor stays. What goes is the floor's own sine wobble: silence should
+            be still, so that the first syllable is the only thing that has ever moved.
+            At rest the nine bars settle to 3px dots at mid-height — a dotted rule,
+            which reads as a live input at rest rather than as a dead one.
+          </p>
+          <p>
+            The thinking sweep peaked at 0.87 of full scale, meaning the pill was more
+            animated while waiting than while you were talking. That inverts the
+            hierarchy. Capped at 0.55 and slowed from ~1.07s to ~1.25s: present,
+            unmistakably working, subordinate to your voice.
+          </p>
+        </div>
+      </div>
+
+      <div class="entry">
+        <div class="n">12</div>
+        <div>
+          <h3>Segoe UI Variable <i>Text</i>, not <i>Display</i>, at 12.5px</h3>
+          <p>
+            Segoe UI Variable ships four optical sizes and Display is cut for 24pt and
+            up: tight sidebearings, closed apertures, fine joins. Setting it at 12px is
+            using the wrong end of the family, and it is why the result text looks a
+            little brittle at actual size. Text is the cut for exactly this range.
+          </p>
+          <p>
+            Size 12 → 12.5px and the result weight 560 → 600, on the reasoning that a
+            fraction more size buys more legibility at a glance than a fraction more
+            weight does, and that this string is read peripherally in under a second.
+            Also removed: <code>-webkit-font-smoothing: antialiased</code>, which is a
+            macOS-only property and has never done anything on Windows.
+          </p>
+        </div>
+      </div>
+
+      <div class="entry">
+        <div class="n">13</div>
+        <div>
+          <h3>The entrance is 200ms and travels less far</h3>
+          <p>
+            260ms, 8px of rise and <code>scale(.92)</code> is a considered entrance for
+            a dialog. This is chrome that has to be present before you have finished
+            pressing the hotkey. 200ms, 6px, <code>scale(.96)</code> — same spring, same
+            character, arrives ahead of your reaction time instead of alongside it. The
+            smaller scale also matters mechanically: scaling a 1px border by .92 makes
+            it 0.92px for the whole entrance, so a shorter throw is a sharper edge.
+          </p>
+        </div>
+      </div>
+
+      <div class="entry">
+        <div class="n">14</div>
+        <div>
+          <h3>The error state keeps its cancel control</h3>
+          <p>
+            Currently error hides both controls and sits there for 2.2 seconds with no
+            way to dismiss it — the one state where a user actively wants the thing gone
+            is the one state that gives them nothing to press. The hit-testing in
+            <code>overlay.js</code> already skips zero-width controls, so keeping the ✕
+            visible costs one selector and no logic.
+          </p>
+        </div>
+      </div>
+
+      <div class="entry">
+        <div class="n">15</div>
+        <div>
+          <h3>Two loose ends worth flagging, not fixed here</h3>
+          <p>
+            <code>overlay.js</code> writes <code>data-mode="dictate|revise"</code> on
+            every session and the stylesheet never reads it, with a comment saying the
+            pill "must not look identical" in revision. That is an unfinished thought,
+            and the honest monochrome answer is a small label above the pill (the
+            prototype had one) rather than anything applied to the pill itself. Deciding
+            that is a design question, not a refinement, so it is out of scope here.
+          </p>
+          <p>
+            The <code>:focus-visible</code> rule is unreachable: both controls carry
+            <code>tabindex="-1"</code> and the window never takes focus. Harmless, but it
+            is a rule that will be maintained forever by someone who assumes it works.
+          </p>
+        </div>
+      </div>
+
+      <div class="entry">
+        <div class="n">—</div>
+        <div>
+          <h3>Interrogated and left alone <span class="tag keep">already right</span></h3>
+          <p>
+            <b>The 36 / 24 / 6 geometry is exact, and I would not touch it.</b> A 24px
+            disc inset 6px in a 36px pill puts its centre at (18, 18) — which is also the
+            centre of the pill's end-cap arc. The two circles are concentric, and the gap
+            between the disc and the pill's edge is a uniform 6px ring the whole way
+            around, not 6px at the sides and something else at the corner. That is
+            deliberate, correct and rare; the only change is that the pill is now 132
+            wide, which puts the thinking state on a whole number and gives the meter
+            58px instead of 56.
+          </p>
+          <p>
+            <b>Full radius (h/2 = 18) is right.</b> Anything less makes it a widget with
+            rounded corners. Fully round is what makes it read as OS chrome, and it is
+            the one thing every good pill in this category agrees on.
+          </p>
+          <p>
+            <b>Animating <code>width</code> is right here</b>, despite the standing advice
+            never to animate layout properties. A transform-based fake would scale the
+            border, the radius and the children along with it; on a 132px box with two
+            children the layout cost is nil, and correctness beats the rule of thumb.
+          </p>
+          <p>
+            <b>The canvas device-pixel snapping in <code>overlay.js</code> is good work.</b>
+            Rounding geometry to whole device pixels, filling rounded rects rather than
+            stroking lines, and refusing any shadow near the meter is exactly why the
+            bars are crisp. The refined meter inherits all three unchanged; only what
+            the bars <i>mean</i> changed.
+          </p>
+          <p>
+            <b>The narrow-then-wide beat is a good idea.</b> 132 → 102 → 246 is an inhale
+            before speaking, and it makes the arrival of the transcript feel earned. Kept
+            exactly, with only the arithmetic corrected.
+          </p>
+          <p>
+            <b>Near-opaque fill over real translucency is the right trade.</b> The pill has
+            to be legible over a black terminal and a white document with the same
+            numbers. That constraint has one answer and it is a solid object; the fill
+            went up, not down.
+          </p>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="callout">
+      <b>One thing I considered and rejected.</b> The brief asks whether the pill
+      itself could carry the level instead of a meter — an edge or a fill that
+      responds to your voice. It could, and it would be the single most
+      distinctive thing on this page. It is also a 132px object with a
+      one-device-pixel border pulsing at syllable rate three inches from where
+      you are reading, and in every version I sketched it read as a glow. The
+      meter stays a bounded region, because the part of the pill that is an
+      object should never be the part that moves.
+    </div>
+  </section>
+</div>
+
+<!-- ==================================================================== -->
+<!-- Both pills are built from one template each, cloned into the stage    -->
+<!-- and the zoom strip, so there is exactly one copy of each markup.      -->
+<!-- ==================================================================== -->
+
+<template id="tplBackdrop">
+  <div class="bd bd-doc" data-bd="doc">
+    <div class="side"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+    <div class="body"><span class="cm">// session.js</span>
+<span class="kw">const</span> RATE = <span class="nu">16000</span>;
+<span class="kw">async function</span> start(mode) {
+  <span class="kw">await</span> warm(<span class="st">'parakeet'</span>);
+  <span class="kw">const</span> ctx = <span class="kw">await</span> readContext();
+  overlay.send(<span class="st">'session:start'</span>, { mode });
+  <span class="kw">return</span> capture(RATE, ctx);
+}</div>
+  </div>
+  <div class="bd bd-busy" data-bd="busy" hidden></div>
+  <div class="bd bd-flat" data-bd="flat" hidden></div>
+</template>
+
+<template id="tplCur">
+  <div class="c-overlay" data-visible="false" data-state="idle">
+    <div class="c-pill">
+      <button class="c-control cancel" type="button" title="Cancel" tabindex="-1">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7 L17 17 M17 7 L7 17" /></svg>
+      </button>
+      <span class="c-meter-slot"><canvas data-meter="cur"></canvas></span>
+      <span class="c-result-text"></span>
+      <button class="c-control confirm" type="button" title="Done" tabindex="-1">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path class="tick" d="M6.6 12.4 L10.5 16.3 L17.4 8.9" /></svg>
+      </button>
+    </div>
+  </div>
+</template>
+
+<template id="tplRef">
+  <div class="r-overlay" data-visible="false" data-state="idle">
+    <div class="r-pill">
+      <button class="r-control cancel" type="button" title="Cancel" tabindex="-1">
+        <!-- 24px on a 24-unit box: one unit is one device pixel at 1:1. -->
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path class="x" d="M8 8 L16 16 M16 8 L8 16" /></svg>
+      </button>
+      <span class="r-mid">
+        <span class="r-layer r-meter-slot" data-on="false"><canvas data-meter="ref"></canvas></span>
+        <span class="r-layer r-text" data-on="false"><span></span></span>
+      </span>
+      <button class="r-control confirm" type="button" title="Done" tabindex="-1">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path class="tick" d="M7.5 12.4 L10.6 15.6 L16.8 9" /></svg>
+      </button>
+    </div>
+  </div>
+</template>
+
+<script>
+'use strict';
+
+(function () {
+
+  var root = document.documentElement;
+  var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* ------------------------------------------------------------- assembly */
+
+  var tplBackdrop = document.getElementById('tplBackdrop');
+  var tplCur = document.getElementById('tplCur');
+  var tplRef = document.getElementById('tplRef');
+
+  function build(host, tpl, withBackdrop) {
+    if (withBackdrop) host.appendChild(tplBackdrop.content.cloneNode(true));
+    var zone = document.createElement('div');
+    zone.className = 'pillzone';
+    zone.appendChild(tpl.content.cloneNode(true));
+    host.appendChild(zone);
+    return zone.firstElementChild;
+  }
+
+  var curStage = document.getElementById('curStage');
+  var refStage = document.getElementById('refStage');
+
+  // Four overlays: two at actual size over a backdrop, two at 4× for craft.
+  var CUR = [ build(curStage, tplCur, true),  build(document.getElementById('curZoom'), tplCur, false) ];
+  var REF = [ build(refStage, tplRef, true),  build(document.getElementById('refZoom'), tplRef, false) ];
+
+  var meters = [];   // { el, kind } — every canvas on the page, drawn from one loop
+  Array.prototype.forEach.call(document.querySelectorAll('canvas[data-meter]'), function (c) {
+    meters.push({ el: c, kind: c.getAttribute('data-meter'), ctx: c.getContext('2d') });
+  });
+
+  /* ------------------------------------------------------- shared signal */
+
+  /* The exact synthetic envelope from overlay.js: a syllabic carrier, a micro
+     tremor, and a phrase gate that drops out between sentences. Both meters
+     read this same number on the same frame, which is the only way the
+     comparison means anything. */
+  function envelope(t) {
+    var syl   = Math.abs(Math.sin(t * 4.1) * Math.sin(t * 2.3 + 1.1));
+    var micro = 0.55 + 0.45 * Math.sin(t * 21.7 + 0.6);
+    var phr   = 0.5 + 0.5 * Math.sin(t * 0.52 - 0.4);
+    return Math.min(1, syl * micro * (phr > 0.2 ? 1 : 0.07) * 1.7);
+  }
+
+  /* ------------------------------------------------------- CURRENT meter */
+
+  var C_BARS = 11;
+  var C_FLOOR = 0.10;
+  var C_MIN_HALF = 1.5;
+  var cBars = new Float32Array(C_BARS);
+  var cPhase = new Float32Array(C_BARS);
+  for (var b = 0; b < C_BARS; b++) cPhase[b] = b * 1.73 + Math.sin(b * 2.31) * 1.4;
+  var cLevel = 0;
+
+  function curStep(t, state) {
+    if (state === 'listening') {
+      cLevel += (envelope(t) - cLevel) * 0.4;
+      for (var i = 0; i < C_BARS; i++) {
+        var weight = 0.5 + 0.5 * Math.sin(((i + 0.5) / C_BARS) * Math.PI);
+        var jitter = 0.68 + 0.32 * Math.sin(t * 8.6 + cPhase[i]);
+        var idle   = C_FLOOR * (0.72 + 0.28 * Math.sin(t * 2.1 + cPhase[i] * 0.6));
+        cBars[i] += (Math.max(idle, cLevel * weight * jitter) - cBars[i]) * 0.34;
+      }
+    } else if (state === 'thinking') {
+      var pos = ((t * 1.5) % 1.6) * (C_BARS + 5) - 2.5;
+      for (var j = 0; j < C_BARS; j++) {
+        var d = j - pos;
+        cBars[j] += (0.07 + 0.8 * Math.exp(-(d * d) / 2.4) - cBars[j]) * 0.32;
+      }
+    } else {
+      for (var k = 0; k < C_BARS; k++) cBars[k] *= 0.82;
+    }
+  }
+
+  function curPaint(ctx, w, h, dpr, ink, state) {
+    ctx.clearRect(0, 0, w, h);
+    if (state !== 'listening' && state !== 'thinking') return;
+
+    var snap = function (v) { return Math.round(v * dpr) / dpr; };
+    var slot = w / C_BARS;
+    var barW = snap(Math.max(2, Math.min(2.6, slot * 0.44)));
+    var mid = h / 2, maxHalf = h / 2;
+
+    ctx.fillStyle = ink;
+    ctx.shadowBlur = 0;
+    ctx.beginPath();
+    for (var m = 0; m < C_BARS; m++) {
+      var half = C_MIN_HALF + cBars[m] * (maxHalf - C_MIN_HALF);
+      var x = snap(slot * (m + 0.5) - barW / 2);
+      var top = snap(mid - half);
+      var barH = Math.max(barW, snap(half * 2));
+      roundRect(ctx, x, top, barW, barH, barW / 2);
+    }
+    ctx.fill();
+  }
+
+  /* ------------------------------------------------------- REFINED meter */
+
+  /* Nine visible slots, twelve stored, so the bar leaving on the left has
+     somewhere to be while it fades. Each entry is the PEAK level over one
+     52ms window — the same thing a hardware meter shows, and the reason the
+     row does not need a jitter term to look alive. */
+  var R_VIS = 9;
+  var R_KEEP = 12;
+  var R_INTERVAL = 52;      // ms per sample; nine of them is ~0.47s of history
+
+  /* Tuned together so that a bar at the floor is exactly as tall as it is
+     wide — silence resolves to a row of dots rather than a row of short
+     lozenges, which is the difference between a dotted rule and a fence. */
+  var R_FLOOR = 0.02;
+  var R_MIN_HALF = 1.35;
+
+  var rHist = new Float32Array(R_KEEP);
+  var rPending = 0;         // running peak since the last push
+  var rLastPush = 0;
+  var rBars = new Float32Array(R_VIS);   // thinking state animates these directly
+
+  function refStep(now, t, state) {
+    if (state === 'listening') {
+      var lv = envelope(t);
+      if (lv > rPending) rPending = lv;
+      while (now - rLastPush >= R_INTERVAL) {
+        rLastPush += R_INTERVAL;
+        for (var s = R_KEEP - 1; s > 0; s--) rHist[s] = rHist[s - 1];
+        rHist[0] = Math.max(R_FLOOR, rPending);
+        rPending = 0;
+      }
+      // Guard against a backgrounded tab dumping a hundred samples at once.
+      if (now - rLastPush > R_INTERVAL * 6) rLastPush = now;
+    } else if (state === 'thinking') {
+      // A single low pulse walking the row. Slower and half the height of the
+      // old sweep: waiting must never out-animate speaking.
+      var pos = ((t * 1.28) % 1.7) * (R_VIS + 4) - 2.0;
+      for (var j = 0; j < R_VIS; j++) {
+        var d = j - pos;
+        rBars[j] += (R_FLOOR + 0.55 * Math.exp(-(d * d) / 2.1) - rBars[j]) * 0.3;
+      }
+      rLastPush = now;
+    } else {
+      for (var k = 0; k < R_KEEP; k++) rHist[k] *= 0.84;
+      for (var m = 0; m < R_VIS; m++) rBars[m] *= 0.84;
+      rLastPush = now;
+    }
+  }
+
+  function refPaint(ctx, w, h, dpr, ink, state, now) {
+    ctx.clearRect(0, 0, w, h);
+    if (state !== 'listening' && state !== 'thinking') return;
+
+    var snap = function (v) { return Math.round(v * dpr) / dpr; };
+    var slot = w / R_VIS;
+    var barW = snap(Math.max(2, Math.min(3, slot * 0.46)));
+    var mid = h / 2;
+
+    /* Half a bar width of headroom, so a bar at full level still shows its
+       round cap. The shipped meter uses h/2 flat, which means the loudest
+       syllable is the one moment the caps get clipped square against the
+       edge of the canvas — the meter goes hard exactly when it peaks. */
+    var maxHalf = h / 2 - barW / 2;
+
+    // Sub-slot offset: the row glides continuously rather than stepping once
+    // every 52ms, which is the whole difference between a scroll and a tick.
+    var frac = state === 'listening'
+      ? Math.min(1, Math.max(0, (now - rLastPush) / R_INTERVAL))
+      : 0;
+
+    ctx.shadowBlur = 0;
+    var fadeOver = slot * 1.3;   // the slot leaving on the left dissolves
+
+    for (var i = 0; i < (state === 'listening' ? R_KEEP : R_VIS); i++) {
+      var v = state === 'listening' ? rHist[i] : rBars[i];
+      // Listening reads right-to-left (newest at the leading edge); the
+      // thinking pulse walks left-to-right, with reading direction.
+      var cx = state === 'listening'
+        ? w - slot * (i + 0.5 + frac)
+        : slot * (i + 0.5);
+      if (cx < -slot || cx > w + slot) continue;
+
+      // Only the scrolling row fades; the thinking grid is fixed and should
+      // not have a dim bar at one end for no reason.
+      var a = state === 'listening' ? Math.min(1, Math.max(0, cx / fadeOver)) : 1;
+      if (a <= 0.01) continue;
+
+      var half = R_MIN_HALF + v * (maxHalf - R_MIN_HALF);
+      var x = snap(cx - barW / 2);
+      var top = snap(mid - half);
+      var barH = Math.max(barW, snap(half * 2));
+
+      ctx.globalAlpha = a;
+      ctx.fillStyle = ink;
+      ctx.beginPath();
+      roundRect(ctx, x, top, barW, barH, barW / 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function roundRect(ctx, x, y, w, h, r) {
+    if (ctx.roundRect) { ctx.roundRect(x, y, w, h, r); return; }
+    r = Math.min(r, w / 2, h / 2);
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  /* ---------------------------------------------------------- canvas size */
+
+  /* Size from the on-screen rect, not from the layout box. Under the 4×
+     transform or the scaling simulation the ratio between them IS the extra
+     scale, so this one line keeps every canvas at true screen resolution in
+     every view on the page. */
+  function sizeCanvas(m) {
+    var el = m.el;
+    var cw = el.clientWidth, ch = el.clientHeight;
+    if (!cw || !ch) return 0;
+    var rect = el.getBoundingClientRect();
+    var k = rect.width > 0 ? rect.width / cw : 1;
+    var dpr = (window.devicePixelRatio || 1) * k;
+    var W = Math.round(cw * dpr), H = Math.round(ch * dpr);
+    if (el.width !== W || el.height !== H) {
+      el.width = W; el.height = H;
+    }
+    m.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return dpr;
+  }
+
+  function inkFor(kind) {
+    var host = document.querySelector(kind === 'cur' ? '.c-scope' : '.r-scope');
+    return getComputedStyle(host).getPropertyValue('--meter').trim() || '#1C1F25';
+  }
+
+  /* --------------------------------------------------------- state machine */
+
+  var STATES = ['idle', 'listening', 'thinking', 'streaming', 'result', 'error'];
+  var state = 'listening';
+  var t0 = performance.now();
+  var seq = 0;                 // invalidates timers from a superseded playthrough
+
+  var STREAM_FULL = 'the overlay is the entire product surface, so it should feel ' +
+                    'like part of the operating system rather than an app you visit.';
+  var RESULT_TEXT = 'Pasted into Visual Studio Code';
+  var ERROR_TEXT  = 'Microphone is in use by another app';
+
+  function apply(state, visible, text) {
+    CUR.forEach(function (o) {
+      o.setAttribute('data-state', state);
+      o.setAttribute('data-visible', visible ? 'true' : 'false');
+      o.querySelector('.c-result-text').textContent = text;
+    });
+    REF.forEach(function (o) {
+      o.setAttribute('data-state', state);
+      o.setAttribute('data-visible', visible ? 'true' : 'false');
+
+      var textLayer = o.querySelector('.r-text');
+      var meterLayer = o.querySelector('.r-meter-slot');
+      var showText = (state === 'streaming' || state === 'result' || state === 'error');
+      textLayer.setAttribute('data-on', showText && visible ? 'true' : 'false');
+      meterLayer.setAttribute('data-on', !showText && visible ? 'true' : 'false');
+      textLayer.firstElementChild.textContent = text;
+
+      // Pin the tail without flipping the writing direction.
+      if (state === 'streaming') textLayer.scrollLeft = textLayer.scrollWidth;
+
+      // Controls fold away rather than disappearing.
+      var noConfirm = (state !== 'listening');
+      var noCancel  = (state === 'result' || state === 'idle');
+      o.querySelector('.r-control.confirm').setAttribute('data-off', noConfirm ? 'true' : 'false');
+      o.querySelector('.r-control.cancel').setAttribute('data-off', noCancel ? 'true' : 'false');
+    });
+
+    document.getElementById('roState').textContent = visible ? state : 'hidden';
+  }
+
+  function setState(s, text) {
+    state = s;
+    apply(s, s !== 'idle', text || '');
+    Array.prototype.forEach.call(document.querySelectorAll('[data-state]'), function (btn) {
+      if (btn.tagName === 'BUTTON') btn.setAttribute('aria-pressed', String(btn.getAttribute('data-state') === s));
+    });
+  }
+
+  function stepTo(s) {
+    seq++;
+    t0 = performance.now();
+    rLastPush = performance.now();
+    if (s === 'listening' || s === 'thinking') { cBars.fill(0); rHist.fill(0); rBars.fill(0); }
+    var text = s === 'streaming' ? STREAM_FULL
+             : s === 'result'    ? RESULT_TEXT
+             : s === 'error'     ? ERROR_TEXT : '';
+    setState(s, text);
+  }
+
+  /* ------------------------------------------------------------- autoplay */
+
+  /* Real timings. 375ms of thinking is the measured Laguna XS first-token
+     latency from bench/RESULTS.md; 900ms of result and 2200ms of error are
+     LINGER_RESULT_MS and the error linger straight out of overlay.js. */
+  var T = { listen: 2600, think: 375, word: 58, result: 900, exit: 220, error: 2200 };
+
+  function play(fail) {
+    var mine = ++seq;
+    var ok = function () { return mine === seq; };
+    var wait = function (ms, fn) { setTimeout(function () { if (ok()) fn(); }, reduced ? Math.min(ms, 120) : ms); };
+
+    t0 = performance.now();
+    rLastPush = performance.now();
+    cBars.fill(0); rHist.fill(0); rBars.fill(0);
+    setState('listening', '');
+
+    wait(T.listen, function () {
+      setState('thinking', '');
+      wait(T.think, function () {
+        if (fail) {
+          setState('error', ERROR_TEXT);
+          wait(T.error, function () {
+            apply('error', false, ERROR_TEXT);
+            wait(T.exit, function () { setState('idle', ''); });
+          });
+          return;
+        }
+        var words = STREAM_FULL.split(' ');
+        var shown = '', i = 0;
+        (function tick() {
+          if (!ok()) return;
+          if (i < words.length) {
+            shown += (shown ? ' ' : '') + words[i++];
+            setState('streaming', shown);
+            setTimeout(tick, reduced ? 6 : T.word);
+            return;
+          }
+          setState('result', RESULT_TEXT);
+          wait(T.result, function () {
+            apply('result', false, RESULT_TEXT);
+            wait(T.exit, function () { setState('idle', ''); });
+          });
+        })();
+      });
+    });
+  }
+
+  /* ------------------------------------------------------------ draw loop */
+
+  function frame(now) {
+    requestAnimationFrame(frame);
+    var t = (now - t0) / 1000;
+
+    curStep(t, state);
+    refStep(now, t, state);
+
+    var curInk = inkFor('cur');
+    var refInk = inkFor('ref');
+
+    // The refined meter's slot stretches while the text states are showing,
+    // because both layers live in the same box. No reason to reallocate a
+    // backing store for a canvas nobody is going to draw into.
+    var live = (state === 'listening' || state === 'thinking');
+
+    for (var i = 0; i < meters.length; i++) {
+      var m = meters[i];
+      if (m.kind === 'ref' && !live) { if (m.el.width) m.ctx.clearRect(0, 0, m.el.width, m.el.height); continue; }
+      var dpr = sizeCanvas(m);
+      if (!dpr) continue;
+      var w = m.el.clientWidth, h = m.el.clientHeight;
+      if (m.kind === 'cur') curPaint(m.ctx, w, h, dpr, curInk, state);
+      else                  refPaint(m.ctx, w, h, dpr, refInk, state, now);
+    }
+  }
+
+  /* -------------------------------------------------------------- wiring */
+
+  function group(sel, attr, fn) {
+    var btns = document.querySelectorAll(sel + ' button');
+    Array.prototype.forEach.call(btns, function (btn) {
+      btn.addEventListener('click', function () {
+        Array.prototype.forEach.call(btns, function (o) {
+          o.setAttribute('aria-pressed', String(o === btn));
+        });
+        fn(btn.getAttribute(attr));
+      });
+    });
+  }
+
+  group('[aria-label="State"]', 'data-state', stepTo);
+  group('[aria-label="Backdrop"]', 'data-bd', function (kind) {
+    Array.prototype.forEach.call(document.querySelectorAll('.bd'), function (bd) {
+      bd.hidden = bd.getAttribute('data-bd') !== kind;
+    });
+  });
+
+  /* The scaling simulation. transform:scale reproduces Windows DPI scaling
+     faithfully for our purposes: a 1px border becomes 1.5 device px and goes
+     soft. --hair is the fix, and it is set here exactly as the shipped
+     stylesheet would set it from a min-resolution query. */
+  var HAIR = { '1': '1px', '1.25': '0.8px', '1.5': '0.667px', '2': '0.5px' };
+  group('[aria-label="Windows scaling"]', 'data-k', function (k) {
+    [curStage, refStage].forEach(function (s) { s.style.setProperty('--k', k); });
+    refStage.style.setProperty('--hair', HAIR[k] || '1px');
+    // Reported in simulated device pixels — the scale control stands in for the
+    // OS scaling factor, so the reviewer's own monitor DPR is not part of it.
+    document.getElementById('roHair').textContent =
+      parseFloat(k).toFixed(2) + ' → ' +
+      (parseFloat(HAIR[k] || '1px') * parseFloat(k)).toFixed(2) + ' device px';
+  });
+
+  document.getElementById('play').addEventListener('click', function () { play(false); });
+  document.getElementById('playErr').addEventListener('click', function () { play(true); });
+
+  var themeBtn = document.getElementById('theme');
+  themeBtn.addEventListener('click', function () {
+    var dark = root.getAttribute('data-theme') === 'dark';
+    root.setAttribute('data-theme', dark ? 'light' : 'dark');
+    themeBtn.textContent = dark ? 'Dark' : 'Light';
+  });
+  if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
+    root.setAttribute('data-theme', 'dark');
+    themeBtn.textContent = 'Light';
+  } else {
+    root.setAttribute('data-theme', 'light');
+  }
+
+  // Clicking either commit control plays a session; either cancel dismisses.
+  // The demo has no pipeline behind it, but the controls should not be dead.
+  Array.prototype.forEach.call(document.querySelectorAll('.c-control.confirm, .r-control.confirm'), function (el) {
+    el.addEventListener('click', function () { play(false); });
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('.c-control.cancel, .r-control.cancel'), function (el) {
+    el.addEventListener('click', function () { seq++; apply(state, false, ''); setTimeout(function () { setState('idle', ''); }, 220); });
+  });
+
+  window.addEventListener('keydown', function (e) {
+    if (e.target && e.target.tagName === 'BUTTON') return;
+    if (e.code === 'Space') { e.preventDefault(); play(false); }
+    if (e.code === 'ArrowRight' || e.code === 'ArrowLeft') {
+      e.preventDefault();
+      var i = STATES.indexOf(state);
+      i = (i + (e.code === 'ArrowRight' ? 1 : STATES.length - 1)) % STATES.length;
+      stepTo(STATES[i]);
+      var btn = document.querySelector('[aria-label="State"] [data-state="' + STATES[i] + '"]');
+      Array.prototype.forEach.call(document.querySelectorAll('[aria-label="State"] button'), function (o) {
+        o.setAttribute('aria-pressed', String(o === btn));
+      });
+    }
+  });
+
+  document.getElementById('roHair').textContent = '1.00 → 1.00 device px';
+
+  stepTo('listening');
+  requestAnimationFrame(function (n) { t0 = n; rLastPush = n; frame(n); });
+})();
+</script>
+
+</body>
+</html>

@@ -1,0 +1,14 @@
+{
+  "00.wav": "Move the retry logic out of the transport layer and into the queue consumer.",
+  "01.wav": "The websocket drops about once an hour, so we lose the whole batch.",
+  "02.wav": "Add a dead letter queue for anything that fails more than three times.",
+  "03.wav": "Set the timeout to two hundred and fifty milliseconds, not two point five seconds.",
+  "04.wav": "Parakeet gets six point three two percent word error rate on the leaderboard.",
+  "05.wav": "Refactor getUserById to take an options object instead of four positional arguments.",
+  "06.wav": "The Poolside endpoint is inference dot poolside dot ai, and the model is Laguna XS.",
+  "07.wav": "I pushed the branch to origin, but the pipeline is still failing on the lint step.",
+  "08.wav": "Kubernetes keeps evicting the pod because the memory limit is too aggressive.",
+  "09.wav": "Because the handshake happens before we know which region to route to, the first request always pays an extra round trip that the rest of the session avoids.",
+  "10.wav": "Schedule it for Tuesday the seventeenth at half past nine in the morning.",
+  "11.wav": "The file is at C colon backslash Users backslash Documents backslash Typd."
+}

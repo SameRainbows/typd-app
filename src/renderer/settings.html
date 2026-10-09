@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:" />
+  <title>Typd Settings</title>
+  <link rel="stylesheet" href="settings.css" />
+</head>
+<body>
+  <header class="bar"><span class="mark" aria-hidden="true"></span>Typd</header>
+
+  <main>
+    <section class="row col">
+      <div class="label">
+        <h2>Microphone</h2>
+        <p>Typd listens to this one.</p>
+      </div>
+      <div class="mic">
+        <select id="mic" aria-label="Microphone"><option value="">Windows default</option></select>
+        <div class="meter" aria-hidden="true"><i id="level"></i></div>
+      </div>
+    </section>
+
+    <section class="row">
+      <div class="label">
+        <h2>Sounds</h2>
+        <p>Soft tones when Typd starts, finishes or fails.</p>
+      </div>
+      <label class="switch"><input type="checkbox" id="sounds" /><span></span></label>
+    </section>
+
+    <section class="row">
+      <div class="label">
+        <h2>Start with Windows</h2>
+        <p>Ready on Right Alt as soon as you sign in.</p>
+      </div>
+      <label class="switch"><input type="checkbox" id="startAtLogin" /><span></span></label>
+    </section>
+
+    <section class="row">
+      <div class="label">
+        <h2>Keep recordings</h2>
+        <p id="recInfo">Saved on this PC to make the model better at your voice.</p>
+        <button class="link" id="openRec" type="button">Open folder</button>
+      </div>
+      <label class="switch"><input type="checkbox" id="keepRecordings" /><span></span></label>
+    </section>
+
+    <section class="row col">
+      <div class="label">
+        <h2>Hotkey</h2>
+        <p>Tap to start, tap again to finish.</p>
+      </div>
+      <div class="seg" role="radiogroup" aria-label="Hotkey">
+        <button type="button" role="radio" data-hotkey="RightAlt">Right Alt</button>
+        <button type="button" role="radio" data-hotkey="CommandOrControl+Shift+Space">Ctrl + Shift + Space</button>
+      </div>
+    </section>
+
+    <p class="error" id="error" hidden></p>
+  </main>
+
+  <footer>
+    <p><strong>Dictation runs on this PC.</strong> Your voice is never sent anywhere.</p>
+    <p class="dim" id="about"></p>
+  </footer>
+
+  <script src="settings.js"></script>
+</body>
+</html>

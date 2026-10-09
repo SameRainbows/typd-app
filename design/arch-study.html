@@ -1,0 +1,1492 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Typd — Bottom Arch Study</title>
+
+<!-- Bottom arch study. Standalone in a browser, like overlay-prototype.html.
+     Style and script are inline here because the file has to open from disk with
+     no server; the shipped renderer keeps them in separate files so the app's
+     `default-src 'none'; script-src 'self'; style-src 'self'` CSP holds. Nothing
+     on this page loads over the network. -->
+
+<style>
+/* ===================================================================== tokens
+ *
+ * Lifted verbatim from src/renderer/overlay.css. If a value here disagrees with
+ * that file, that file is right. The point of a study is to test one idea, not
+ * to quietly redesign the palette underneath it: near-black to near-white with a
+ * barely-there cool cast, plus one danger red, and nothing else. */
+
+:root {
+  --pill-bg:    rgba(252, 252, 253, 0.95);
+  --pill-line:  rgba(16, 18, 23, 0.10);
+  --pill-sheen: rgba(255, 255, 255, 0.85);
+  --pill-shadow:
+    0 1px 2px rgba(16, 18, 23, .09),
+    0 6px 18px rgba(16, 18, 23, .11),
+    0 16px 40px rgba(16, 18, 23, .09);
+
+  --text:   #14161B;
+  --muted:  #575D66;
+  --faint:  #8B919B;
+  --line:   rgba(16, 18, 23, 0.10);
+  --meter:  #1C1F25;
+
+  --chip:       rgba(16, 18, 23, 0.06);
+  --chip-hover: rgba(16, 18, 23, 0.13);
+
+  --commit:     #16181D;
+  --commit-ink: #FFFFFF;
+  --danger:     #B22D22;
+
+  /* The arch's own shade. Deliberately weaker than --pill-shadow: a pill is an
+     object resting above the screen and needs to prove it, whereas the arch is
+     supposed to be the screen. Three stacked shadows would argue against the
+     whole premise. One soft silhouette, and the hairline does the rest. */
+  --arch-shade: rgba(16, 18, 23, 0.16);
+
+  --font-ui: "Segoe UI Variable Display", "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: "Cascadia Mono", "SF Mono", ui-monospace, Consolas, monospace;
+
+  --ease-spring: cubic-bezier(.16, 1.02, .3, 1.0);
+  --ease-exit:   cubic-bezier(.4, 0, .9, .35);
+  --dur-enter: 260ms;
+  --dur-morph: 240ms;
+  --dur-exit:  180ms;
+
+  /* Page chrome around the stage. Same ramp, no new hues. */
+  --page:   #F1F2F4;
+  --card:   #FBFBFC;
+  --rule:   rgba(16, 18, 23, 0.11);
+  --rule-firm: rgba(16, 18, 23, 0.22);
+
+  /* The simulated application behind the overlay. */
+  --app-bg:    #FFFFFF;
+  --app-chrome:#F0F1F3;
+  --app-text:  #23262C;
+  --app-faint: #A8ADB5;
+  --app-rule:  rgba(16, 18, 23, 0.09);
+  --taskbar:   rgba(238, 239, 241, 0.92);
+  --taskbar-line: rgba(16, 18, 23, 0.13);
+  --taskbar-ink:  rgba(16, 18, 23, 0.42);
+}
+
+:root[data-theme="dark"] {
+  --pill-bg:    rgba(13, 14, 17, 0.93);
+  --pill-line:  rgba(255, 255, 255, 0.11);
+  --pill-sheen: rgba(255, 255, 255, 0.09);
+  --pill-shadow:
+    0 1px 2px rgba(0, 0, 0, .5),
+    0 8px 22px rgba(0, 0, 0, .55),
+    0 20px 48px rgba(0, 0, 0, .45);
+
+  --text:   #F4F5F7;
+  --muted:  #9DA3AC;
+  --faint:  #6C727B;
+  --line:   rgba(255, 255, 255, 0.10);
+  --meter:  #F4F5F7;
+
+  --chip:       rgba(255, 255, 255, 0.10);
+  --chip-hover: rgba(255, 255, 255, 0.19);
+
+  --commit:     #F4F5F7;
+  --commit-ink: #14161B;
+  --danger:     #E8695C;
+
+  --arch-shade: rgba(0, 0, 0, 0.55);
+
+  --page:   #0B0C0E;
+  --card:   #131519;
+  --rule:   rgba(255, 255, 255, 0.10);
+  --rule-firm: rgba(255, 255, 255, 0.20);
+
+  --app-bg:    #16181C;
+  --app-chrome:#1E2126;
+  --app-text:  #D7DAE0;
+  --app-faint: #5A606A;
+  --app-rule:  rgba(255, 255, 255, 0.08);
+  --taskbar:   rgba(22, 24, 28, 0.94);
+  --taskbar-line: rgba(255, 255, 255, 0.10);
+  --taskbar-ink:  rgba(255, 255, 255, 0.38);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 15px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 40px 20px 90px;
+  display: flex;
+  flex-direction: column;
+  gap: 30px;
+}
+
+.eyebrow {
+  font-size: 11px; letter-spacing: .17em; text-transform: uppercase;
+  color: var(--faint); font-weight: 650;
+}
+.masthead { display: flex; flex-direction: column; gap: 9px; }
+.masthead h1 {
+  margin: 0; font-size: clamp(27px, 4vw, 40px); font-weight: 650;
+  letter-spacing: -.026em; text-wrap: balance;
+}
+.masthead p { margin: 0; max-width: 68ch; color: var(--muted); }
+
+/* ====================================================================== stage
+ *
+ * A cropped screen. Everything inside is at 1:1 device pixels -- the arch, the
+ * pill, the 24px taskbar icons. That last one matters: nobody has an intuition
+ * for "560px" but everybody knows how big a taskbar icon is, so the icons are
+ * the ruler. Judging an overlay at anything other than actual size is how you
+ * end up shipping something that turns out to be enormous. */
+
+.stage {
+  position: relative;
+  height: 660px;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--rule);
+  background: var(--app-bg);
+  isolation: isolate;
+}
+
+.app { position: absolute; inset: 0 0 48px 0; display: flex; flex-direction: column; }
+.app-chrome {
+  height: 38px; flex: 0 0 auto;
+  background: var(--app-chrome);
+  border-bottom: 1px solid var(--app-rule);
+  display: flex; align-items: center; gap: 10px; padding: 0 14px;
+}
+.app-chrome .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--app-rule); }
+.app-chrome .name { font-size: 12px; color: var(--app-faint); margin-left: 6px; }
+
+.doc {
+  flex: 1 1 auto; overflow: hidden;
+  padding: 34px 0 0;
+  display: flex; justify-content: center;
+}
+.doc-col { width: 660px; max-width: 100%; }
+.doc h2 { margin: 0 0 14px; font-size: 21px; font-weight: 640; color: var(--app-text); letter-spacing: -.015em; }
+.doc p { margin: 0 0 13px; font-size: 14.5px; line-height: 1.72; color: var(--app-text); }
+.doc p.dim { color: var(--app-faint); }
+.caret {
+  display: inline-block; width: 2px; height: 17px; vertical-align: text-bottom;
+  background: var(--app-text); animation: blink 1.1s steps(1, end) infinite;
+}
+@keyframes blink { 0%,55% { opacity: 1 } 56%,100% { opacity: 0 } }
+
+/* The Windows 11 taskbar, at its default 48px. It is here because it is the
+   single fact that decides whether this concept is buildable: `positionOverlay`
+   parks the window against `display.workArea`, and workArea stops at the TOP of
+   this bar. So "the bottom edge of the screen" is, by default, this seam. */
+.taskbar {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 48px;
+  background: var(--taskbar);
+  border-top: 1px solid var(--taskbar-line);
+  backdrop-filter: blur(20px);
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  z-index: 3;
+}
+.taskbar i {
+  width: 24px; height: 24px; border-radius: 5px;
+  background: var(--taskbar-ink); opacity: .55;
+}
+.taskbar i:nth-child(3) { border-radius: 50%; }
+.taskbar .clock {
+  position: absolute; right: 16px;
+  font-size: 11px; line-height: 1.25; text-align: right;
+  color: var(--taskbar-ink); font-variant-numeric: tabular-nums;
+}
+
+/* The anchor line. Overlay sits on it. With anchor=workarea it is the top of the
+   taskbar; with anchor=display it is the true bottom of the panel and the arch
+   draws straight over the taskbar. */
+.anchor {
+  position: absolute; left: 0; right: 0; bottom: 48px; height: 0;
+  z-index: 4; pointer-events: none;
+}
+.stage[data-anchor="display"] .anchor { bottom: 0; z-index: 5; }
+
+.seam {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 1px;
+  background: var(--danger); opacity: 0; transition: opacity 160ms ease;
+}
+.stage[data-seam="true"] .anchor .seam { opacity: .5; }
+
+/* ==================================================================== overlay */
+
+.overlay {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 0;
+  pointer-events: none;   /* click-through, exactly like the real window */
+}
+
+/* ------------------------------------------------------------------- the arch
+ *
+ * Four layers, and each one is here because a simpler version of it was wrong.
+ *
+ *   .shade-blur > .shade-fill   The soft silhouette. Two elements because CSS
+ *                               applies `filter` before `clip-path`, so a single
+ *                               element with both gives you a hard-edged blur.
+ *                               Clip on the inner, blur on the outer.
+ *   .glass                      The fill. A div rather than an SVG path because
+ *                               backdrop-filter does not exist in SVG, and
+ *                               without the backdrop blur the arch reads as a
+ *                               grey shape sitting on the screen rather than as
+ *                               a piece of it.
+ *   svg.edge                    The hairline and the sheen. Separate from the
+ *                               fill because clip-path eats borders, and because
+ *                               the hairline needs to FADE OUT at the two feet.
+ *                               A hairline that runs all the way down to the
+ *                               baseline draws two little terminating ticks at
+ *                               the screen edge, and those ticks are the whole
+ *                               difference between "the edge swelled" and "a
+ *                               shape is sitting on the edge".
+ *   .row                        The controls. */
+
+.archwrap {
+  position: absolute;
+  left: 50%;
+  bottom: -2px;             /* 2px of overhang so there is no seam at the anchor */
+  transform: translateX(-50%);
+  overflow: hidden;         /* clips the shade's spill below the anchor line */
+  opacity: 0;
+  transition: opacity 130ms linear;
+}
+.overlay[data-visible="true"] .archwrap { opacity: 1; }
+.overlay[data-variant="pill"] .archwrap { display: none; }
+
+.shade-blur { position: absolute; inset: 0; filter: blur(13px); transform: translateY(-5px); }
+.shade-fill { position: absolute; inset: 0; background: var(--arch-shade); }
+
+.glass {
+  position: absolute; inset: 0;
+  background: var(--pill-bg);
+  backdrop-filter: blur(18px) saturate(1.6);
+}
+
+svg.edge { position: absolute; inset: 0; overflow: visible; }
+svg.edge .outline { fill: none; stroke: var(--pill-line); stroke-width: 1; }
+svg.edge .sheen   { fill: none; stroke: var(--pill-sheen); stroke-width: 2; }
+
+/* ------------------------------------------------------------------- the row
+ *
+ * Absolute, not flex. This is the load-bearing decision of the whole concept.
+ *
+ * The pill centres a flex row, so when the pill goes 130 -> 98 -> 252 the cancel
+ * disc physically slides 16px right and then 77px left, twice per session, while
+ * the user's cursor may already be travelling toward it. In the arch the two
+ * discs are pinned to fixed offsets from centre and never move for the entire
+ * session. The middle -- meter or text -- grows symmetrically out of the centre
+ * between them. Nothing the user aims at is ever in motion. */
+
+.row {
+  position: absolute; left: 0; right: 0;
+  height: 24px;
+  opacity: 0; transform: translateY(5px);
+  transition: opacity 150ms var(--ease-spring), transform 190ms var(--ease-spring);
+}
+.overlay[data-visible="true"] .row { opacity: 1; transform: translateY(0); }
+
+.control {
+  position: absolute; top: 0;
+  width: 24px; height: 24px; padding: 0; border: 0;
+  border-radius: 50%; background: transparent;
+  display: grid; place-items: center;
+  cursor: pointer; pointer-events: auto;
+  transition: background 150ms ease, transform 180ms var(--ease-spring), opacity 140ms ease;
+}
+.control svg { width: 12px; height: 12px; fill: none; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+.control.cancel  { left: calc(50% - var(--disc) * 1px - 12px); background: var(--chip); }
+.control.confirm { left: calc(50% + var(--disc) * 1px - 12px); background: var(--commit); box-shadow: 0 1px 2px rgba(0,0,0,.2); }
+.control.cancel svg  { stroke: var(--muted); }
+.control.confirm svg { stroke: var(--commit-ink); }
+.control.cancel:hover { background: var(--chip-hover); }
+.control.cancel:hover svg { stroke: var(--danger); }
+.control.cancel:active { transform: scale(.92); }
+.control.confirm:hover { transform: scale(1.09); }
+.control.confirm:active { transform: scale(.94); }
+.control:focus-visible { outline: 2px solid var(--commit); outline-offset: 2px; }
+
+.control.confirm .tick { stroke-dasharray: 22; stroke-dashoffset: 22; }
+.overlay[data-visible="true"] .control.confirm .tick {
+  animation: draw-tick 360ms var(--ease-spring) 140ms forwards;
+}
+@keyframes draw-tick { to { stroke-dashoffset: 0; } }
+
+/* Same visibility table as overlay.css. Copied rather than reinvented, so the
+   comparison is about shape and nothing else. */
+.overlay[data-state="thinking"]  .control.confirm,
+.overlay[data-state="streaming"] .control.confirm,
+.overlay[data-state="result"]    .control.confirm,
+.overlay[data-state="error"]     .control.confirm { display: none; }
+.overlay[data-state="result"] .control.cancel,
+.overlay[data-state="error"]  .control.cancel { display: none; }
+
+.mid {
+  position: absolute; top: 0; left: 50%;
+  transform: translateX(-50%);
+  height: 24px;
+  display: grid; place-items: center;
+  transition: width var(--dur-morph) var(--ease-spring);
+}
+.meter-slot { width: 100%; height: 18px; pointer-events: none; }
+canvas.meter { width: 100%; height: 100%; display: block; }
+.overlay[data-state="streaming"] .meter-slot,
+.overlay[data-state="result"]    .meter-slot,
+.overlay[data-state="error"]     .meter-slot { display: none; }
+
+.result-text {
+  display: none; width: 100%;
+  font-size: 12px; color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  direction: rtl;          /* hold the newest words in view as the stream grows */
+  text-align: left;
+}
+.overlay[data-state="streaming"] .result-text,
+.overlay[data-state="result"]    .result-text,
+.overlay[data-state="error"]     .result-text { display: block; }
+.overlay[data-state="result"] .result-text { direction: ltr; text-align: center; color: var(--text); font-weight: 560; }
+.overlay[data-state="error"]  .result-text { direction: ltr; text-align: center; color: var(--danger); }
+
+/* ------------------------------------------- the pill, as the control sample */
+
+.pill {
+  position: absolute; left: 50%; bottom: 12px;
+  transform: translateX(-50%);
+  display: none; align-items: center; gap: 6px;
+  width: 130px; height: 36px; padding: 0 6px;
+  border-radius: 18px;
+  background: var(--pill-bg);
+  border: 1px solid var(--pill-line);
+  box-shadow: var(--pill-shadow);
+  backdrop-filter: blur(18px) saturate(1.6);
+  opacity: 0;
+  transition:
+    opacity   var(--dur-exit) var(--ease-exit),
+    transform var(--dur-exit) var(--ease-exit),
+    width     var(--dur-morph) var(--ease-spring);
+}
+.overlay[data-variant="pill"] .pill { display: flex; }
+.pill::before {
+  content: ""; position: absolute; inset: 0; border-radius: inherit; padding-top: 1px;
+  background: linear-gradient(var(--pill-sheen), transparent 55%);
+  -webkit-mask: linear-gradient(#000,#000) content-box, linear-gradient(#000,#000);
+  -webkit-mask-composite: xor; mask-composite: exclude; pointer-events: none;
+}
+.overlay[data-variant="pill"] .pill { transform: translateX(-50%) translateY(8px) scale(.92); }
+.overlay[data-variant="pill"][data-visible="true"] .pill {
+  opacity: 1; transform: translateX(-50%) translateY(0) scale(1);
+  transition:
+    opacity   var(--dur-enter) var(--ease-spring),
+    transform var(--dur-enter) var(--ease-spring),
+    width     var(--dur-morph) var(--ease-spring);
+}
+.overlay[data-variant="pill"][data-state="thinking"]  .pill { width: 98px; }
+.overlay[data-variant="pill"][data-state="streaming"] .pill,
+.overlay[data-variant="pill"][data-state="result"]    .pill { width: 252px; }
+.overlay[data-variant="pill"][data-state="error"]     .pill { width: 216px; }
+
+.pill .control { position: static; flex: 0 0 auto; }
+.pill .mid { position: static; transform: none; flex: 1 1 auto; min-width: 0; width: auto !important; }
+.pill .result-text { text-align: left; }
+.overlay[data-variant="pill"][data-state="result"] .pill .result-text,
+.overlay[data-variant="pill"][data-state="error"]  .pill .result-text { text-align: left; }
+
+/* --------------------------------------------------------------- hit regions
+ *
+ * The one thing the concept is most often accused of -- "a big arch is a big
+ * dead zone" -- is false, and this overlay proves it. overlay.js decides
+ * pass-through with `overControl(x, y)`, which walks exactly two bounding rects
+ * plus a 5px pad. The arch's silhouette has no bearing on it. Turn this on and
+ * the dashed boxes are the entire interactive surface, in every variant. */
+.hit {
+  position: absolute; border: 1px dashed var(--danger); border-radius: 8px;
+  opacity: 0; transition: opacity 140ms ease; pointer-events: none;
+}
+.stage[data-hits="true"] .hit { opacity: .85; }
+
+/* =================================================================== controls */
+
+.panel { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; }
+.group { display: flex; flex-direction: column; gap: 5px; }
+.group > span { font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--faint); font-weight: 650; }
+.seg { display: flex; background: var(--card); border: 1px solid var(--rule); border-radius: 9px; padding: 3px; gap: 2px; }
+.seg button {
+  appearance: none; border: 0; background: transparent; color: var(--muted);
+  font-family: inherit; font-size: 12.5px; font-weight: 550;
+  padding: 7px 12px; border-radius: 6px; cursor: pointer; white-space: nowrap;
+  transition: background 140ms ease, color 140ms ease;
+}
+.seg button:hover { color: var(--text); }
+.seg button[aria-pressed="true"] { background: var(--chip-hover); color: var(--text); }
+.solid {
+  appearance: none; border: 1px solid var(--rule-firm); background: var(--card);
+  color: var(--text); font-family: inherit; font-size: 13px; font-weight: 600;
+  padding: 10px 18px; border-radius: 9px; cursor: pointer;
+  transition: transform 110ms var(--ease-spring), border-color 140ms ease;
+}
+.solid:active { transform: scale(.97); }
+.solid kbd { font-family: var(--font-mono); font-size: 11px; color: var(--faint); margin-left: 7px; font-weight: 400; }
+button:focus-visible { outline: 2px solid var(--commit); outline-offset: 2px; }
+
+/* ================================================================== readouts */
+
+.readout {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(158px, 1fr));
+  gap: 1px; background: var(--rule);
+  border: 1px solid var(--rule); border-radius: 10px; overflow: hidden;
+}
+.readout div { background: var(--card); padding: 11px 14px 12px; }
+.readout dt { font-size: 10px; letter-spacing: .13em; text-transform: uppercase; color: var(--faint); font-weight: 650; margin: 0 0 3px; }
+.readout dd { margin: 0; font-family: var(--font-mono); font-size: 15px; color: var(--text); font-variant-numeric: tabular-nums; }
+.readout dd small { font-family: var(--font-ui); font-size: 11.5px; color: var(--faint); margin-left: 5px; }
+
+/* ===================================================================== prose */
+
+.cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 24px; }
+h2.sec { margin: 0 0 2px; font-size: 11px; letter-spacing: .17em; text-transform: uppercase; color: var(--faint); font-weight: 650; }
+.block h3 { margin: 0 0 5px; font-size: 13.5px; font-weight: 640; color: var(--text); }
+.block p { margin: 0 0 9px; font-size: 13.5px; color: var(--muted); }
+.block p:last-child { margin-bottom: 0; }
+.block p b { color: var(--text); font-weight: 620; }
+
+.verdict { display: flex; flex-direction: column; gap: 18px; max-width: 78ch; }
+.verdict p { margin: 0; font-size: 14.5px; color: var(--muted); }
+.verdict p b { color: var(--text); font-weight: 620; }
+.verdict h3 { margin: 8px 0 0; font-size: 15px; font-weight: 650; color: var(--text); letter-spacing: -.01em; }
+
+.table-scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; min-width: 620px; font-size: 13px; }
+th {
+  text-align: left; font-weight: 620; color: var(--faint); font-size: 10px;
+  letter-spacing: .13em; text-transform: uppercase;
+  padding: 0 14px 8px 0; border-bottom: 1px solid var(--rule-firm); white-space: nowrap;
+}
+td { padding: 10px 14px 10px 0; border-bottom: 1px solid var(--rule); color: var(--muted); vertical-align: top; }
+td:first-child { color: var(--text); font-weight: 550; white-space: nowrap; }
+td.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--text); }
+td.win  { color: var(--text); font-weight: 560; }
+td.lose { color: var(--danger); }
+
+.note { font-size: 12.5px; color: var(--faint); max-width: 76ch; margin: 0; }
+
+hr.rule { border: 0; border-top: 1px solid var(--rule); margin: 6px 0 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition-duration: 1ms !important; }
+}
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="eyebrow">Typd — bottom arch study 01</div>
+    <h1>The edge swells, then recedes. It morphs in height, not in width.</h1>
+    <p>A pill floats above the taskbar, which is what an application does. An arch grows out of the
+       screen edge, which is what infrastructure does. The interesting question is not whether that
+       reads better — it does — but what it costs, and the answer turns out to be a specific number
+       of occluded pixels and one hard collision with the Windows taskbar. Everything below is at 1:1.</p>
+  </header>
+
+  <!-- ==================================================================== -->
+
+  <div class="stage" id="stage" data-anchor="workarea" data-hits="false" data-seam="false">
+
+    <div class="app">
+      <div class="app-chrome">
+        <i class="dot"></i><i class="dot"></i><i class="dot"></i>
+        <span class="name">meeting-notes.md — Notepad</span>
+      </div>
+      <div class="doc">
+        <div class="doc-col">
+          <h2>Thursday review — what actually blocks us</h2>
+          <p>The recogniser is not the bottleneck and has not been for two weeks. Parakeet
+             comes back in about 350&nbsp;ms on a warm process, which is well inside the window
+             where nobody notices, and the word error we measured is 7.2%. What people are
+             actually reacting to is the second half of the pipeline.</p>
+          <p>Cleanup is where the time goes. First token lands around 550&nbsp;ms, and because
+             the overlay only starts revealing text at first token, every millisecond of that
+             is dead air with a sweep animation in it. Nobody has complained about the sweep.
+             Several people have complained that it runs for too long.</p>
+          <p class="dim">The obvious move is to stream the recogniser's own output into the
+             overlay immediately and let the cleaned version replace it in place, which trades
+             one kind of latency for one kind of flicker.</p>
+          <p>So the question for Thursday is whether we are willing to pay that flicker<span class="caret"></span></p>
+        </div>
+      </div>
+    </div>
+
+    <div class="taskbar" aria-hidden="true">
+      <i></i><i></i><i></i><i></i><i></i>
+      <span class="clock">14:22<br>19/08/2026</span>
+    </div>
+
+    <div class="anchor">
+      <div class="seam"></div>
+
+      <div class="overlay" id="overlay" data-visible="false" data-state="idle" data-variant="sill">
+
+        <!-- the arch -->
+        <div class="archwrap" id="archwrap">
+          <div class="shade-blur"><div class="shade-fill" id="shadeFill"></div></div>
+          <div class="glass" id="glass"></div>
+          <svg class="edge" id="edgeSvg" aria-hidden="true">
+            <defs>
+              <clipPath id="archClip"><path id="clipPath" d="" /></clipPath>
+              <linearGradient id="fade" x1="0" y1="0" x2="1" y2="0">
+                <stop id="fs0" offset="0"    stop-color="#fff" stop-opacity="0" />
+                <stop id="fs1" offset="0.09" stop-color="#fff" stop-opacity="1" />
+                <stop id="fs2" offset="0.91" stop-color="#fff" stop-opacity="1" />
+                <stop id="fs3" offset="1"    stop-color="#fff" stop-opacity="0" />
+              </linearGradient>
+              <mask id="fadeMask"><rect id="fadeRect" x="0" y="0" width="100%" height="100%" fill="url(#fade)" /></mask>
+            </defs>
+            <g mask="url(#fadeMask)">
+              <path class="sheen"   id="sheenPath"   d="" clip-path="url(#archClip)" />
+              <path class="outline" id="outlinePath" d="" />
+            </g>
+          </svg>
+
+          <div class="row" id="archRow">
+            <button class="control cancel" type="button" title="Cancel" tabindex="-1">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7 L17 17 M17 7 L7 17" /></svg>
+            </button>
+            <span class="mid" id="archMid">
+              <span class="meter-slot"><canvas class="meter" id="archMeter"></canvas></span>
+              <span class="result-text" id="archText"></span>
+            </span>
+            <button class="control confirm" type="button" title="Done" tabindex="-1">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path class="tick" d="M6.6 12.4 L10.5 16.3 L17.4 8.9" /></svg>
+            </button>
+          </div>
+        </div>
+
+        <!-- the pill, unchanged from src/renderer, as the control sample -->
+        <div class="pill" id="pill">
+          <button class="control cancel" type="button" title="Cancel" tabindex="-1">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7 L17 17 M17 7 L7 17" /></svg>
+          </button>
+          <span class="mid">
+            <span class="meter-slot"><canvas class="meter" id="pillMeter"></canvas></span>
+            <span class="result-text" id="pillText"></span>
+          </span>
+          <button class="control confirm" type="button" title="Done" tabindex="-1">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path class="tick" d="M6.6 12.4 L10.5 16.3 L17.4 8.9" /></svg>
+          </button>
+        </div>
+
+      </div>
+    </div>
+
+    <div class="hit" id="hitA"></div>
+    <div class="hit" id="hitB"></div>
+  </div>
+
+  <!-- ==================================================================== -->
+
+  <div class="panel">
+    <div class="group">
+      <span>Variant</span>
+      <div class="seg" role="group" aria-label="Variant">
+        <button type="button" data-variant="sill" aria-pressed="true">A · Sill</button>
+        <button type="button" data-variant="dome" aria-pressed="false">B · Dome</button>
+        <button type="button" data-variant="pill" aria-pressed="false">Pill (today)</button>
+      </div>
+    </div>
+
+    <div class="group">
+      <span>State</span>
+      <div class="seg" role="group" aria-label="State">
+        <button type="button" data-state="idle" aria-pressed="true">Idle</button>
+        <button type="button" data-state="listening" aria-pressed="false">Listening</button>
+        <button type="button" data-state="thinking" aria-pressed="false">Thinking</button>
+        <button type="button" data-state="streaming" aria-pressed="false">Streaming</button>
+        <button type="button" data-state="result" aria-pressed="false">Result</button>
+        <button type="button" data-state="error" aria-pressed="false">Error</button>
+      </div>
+    </div>
+
+    <div class="group">
+      <span>Session</span>
+      <button type="button" class="solid" id="play">Auto-play <kbd>Space</kbd></button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="group">
+      <span>Backdrop</span>
+      <div class="seg" role="group" aria-label="Theme">
+        <button type="button" data-theme="light" aria-pressed="true">Light</button>
+        <button type="button" data-theme="dark" aria-pressed="false">Dark</button>
+      </div>
+    </div>
+
+    <div class="group">
+      <span>Anchored to</span>
+      <div class="seg" role="group" aria-label="Anchor">
+        <button type="button" data-anchor="workarea" aria-pressed="true">Work area (taskbar top)</button>
+        <button type="button" data-anchor="display" aria-pressed="false">Display edge (over taskbar)</button>
+      </div>
+    </div>
+
+    <div class="group">
+      <span>Overlays</span>
+      <div class="seg" role="group" aria-label="Overlays">
+        <button type="button" data-toggle="hits" aria-pressed="false">Hit regions</button>
+        <button type="button" data-toggle="seam" aria-pressed="false">Anchor line</button>
+        <button type="button" data-toggle="breathe" aria-pressed="true">Breathe</button>
+      </div>
+    </div>
+  </div>
+
+  <dl class="readout">
+    <div><dt>Rise</dt><dd id="rRise">0<small>px above anchor</small></dd></div>
+    <div><dt>Span</dt><dd id="rSpan">560<small>px, fixed</small></dd></div>
+    <div><dt>Text slot</dt><dd id="rSlot">—<small>pill: 210</small></dd></div>
+    <div><dt>Occluded</dt><dd id="rArea">—<small>vs pill</small></dd></div>
+    <div><dt>Dead zone</dt><dd id="rDead">—<small>2 controls + 5px</small></dd></div>
+  </dl>
+
+  <p class="note">Rise updates every frame, so <em>Breathe</em> is visible in it. Text slot is the
+     measured chord of the arch at the text's own mid-height, minus padding, capped by the cancel
+     disc where the cancel disc is shown. The pill's slot is 210&nbsp;px in streaming (252 − 12
+     padding − 24 cancel − 6 gap). Dead zone is computed from the real
+     <code>overControl()</code> rule in <code>overlay.js</code>, which is why it does not move
+     when the variant does.</p>
+
+  <hr class="rule" />
+
+  <!-- ==================================================================== -->
+
+  <section>
+    <h2 class="sec">The two variants</h2>
+    <div class="cols">
+      <div class="block">
+        <h3>A · Sill — 560 wide, 40–48 tall</h3>
+        <p>A long, shallow swell with a flat crown, shoulders melting tangentially into the edge
+           over 168&nbsp;px each. Reads as the bottom of the display deforming rather than as an
+           object arriving.</p>
+        <p><b>The trade:</b> it is correct for every state and it looks like almost nothing —
+           at 48&nbsp;px of rise across 560&nbsp;px it is a swell, not an arch, and it occludes
+           a 560&nbsp;px band of whatever you were reading.</p>
+      </div>
+      <div class="block">
+        <h3>B · Dome — 240 wide, 72–84 tall</h3>
+        <p>Short span, real curvature, an actual arch. It is the better-looking object by a wide
+           margin, it is the one that photographs well, and its rise change between states is
+           genuinely legible in peripheral vision.</p>
+        <p><b>The trade:</b> it cannot hold a line of text. The chord at text height measures
+           153&nbsp;px, so <em>Pasted into Notepad</em> lands in a 125&nbsp;px slot and ellipsises;
+           in streaming, where the cancel disc is still on screen, it collapses to 68&nbsp;px.
+           Step to Streaming and watch it fail.</p>
+      </div>
+      <div class="block">
+        <h3>Why the shoulders are cubics, not arcs</h3>
+        <p>A circular arc meets the baseline at an angle, which draws two visible corners at the
+           screen edge, and two corners is a shape sitting on the edge. The shoulders here are
+           cubic Béziers with control points at .68 and .32, so the curve arrives at the baseline
+           with zero slope and the last 25&nbsp;px of each foot are within a pixel and a half of
+           flat. There is no corner to see.</p>
+        <p>The hairline is masked to fade out over the lower half of each shoulder for the same
+           reason: a stroke that terminates on the baseline puts the corner back.</p>
+      </div>
+    </div>
+  </section>
+
+  <hr class="rule" />
+
+  <!-- ==================================================================== -->
+
+  <section>
+    <h2 class="sec">Width or height — the actual answer</h2>
+    <div class="verdict">
+      <p><b>Height. The span must never change.</b> The two feet are the arch's entire contract
+         with the screen edge; they are what says <em>this is where the display swells</em>. Slide
+         them and the arch stops being a deformation of the edge and becomes a widget that resizes
+         itself, which is precisely the thing the pill already does and precisely the thing the
+         concept was supposed to escape. A fixed span with a changing rise reads as breath. A
+         changing span reads as a window being dragged.</p>
+
+      <p>There is a second reason, and it is the better one. With a fixed span, the controls can be
+         pinned to fixed offsets from centre and the rise can change <b>without moving a single
+         thing the user is aiming at</b>. Today the pill's 130 → 98 → 252 morph translates the
+         cancel disc 16&nbsp;px right and then 77&nbsp;px left, twice per session, while the cursor
+         may already be in flight toward it. Switch to <em>Pill</em> above and step
+         Listening → Thinking → Streaming, watching only the cross. Then do the same on
+         <em>Sill</em>. The cross does not move. For a control surface — and the README insists
+         this is a control surface, not a status light — that is the strongest argument the arch
+         has, and it is not an aesthetic one.</p>
+
+      <p>The cost of that decision is that the morph nearly disappears. The Sill's whole state
+         range is 40 → 32 → 48&nbsp;px of rise: eight pixels of extra headroom to say
+         <em>the model finished thinking</em>. The pill's 130 → 252 is unmissable in peripheral
+         vision; the Sill's is not. <b>State stops being carried by the container and has to be
+         carried entirely by content</b> — the meter's sweep, the text arriving. That is a real
+         loss and it is not recoverable without breaking the fixed span.</p>
+    </div>
+  </section>
+
+  <hr class="rule" />
+
+  <!-- ==================================================================== -->
+
+  <section>
+    <h2 class="sec">Does the arch beat the pill</h2>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>State</th><th>Verdict</th><th>Why</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>Enter / exit</td><td class="win">Arch, clearly</td>
+            <td>The pill fakes its arrival with <code>translateY(8px) scale(.92)</code> — a
+                transform standing in for a physical event. The arch's arrival <em>is</em> the
+                physical event: rise tweens 0 → 40 on the same 260&nbsp;ms spring and the edge
+                genuinely swells. No transform, no scale, nothing to disbelieve.</td>
+          </tr>
+          <tr>
+            <td>Listening</td><td class="win">Arch</td>
+            <td>The meter is already centre-weighted — <code>0.5 + 0.5·sin(πi/n)</code> in
+                <code>overlay.js</code> makes the middle bars taller. Put a centre-weighted row
+                inside a centre-tall arch and the two silhouettes agree; inside a rectangle they
+                argue. Turn <em>Breathe</em> on and the crown also carries a slow phrase-rate
+                swell, well below syllable rate so it never jitters at the edge of vision.</td>
+          </tr>
+          <tr>
+            <td>Thinking</td><td class="win">Arch, mildly</td>
+            <td>Rise drops 8&nbsp;px and holds. Reads as held breath. The pill's 130 → 98 snap
+                reads as the window shrinking, which is an odd thing for a machine to do while it
+                is working. Both are quiet; the arch is quieter.</td>
+          </tr>
+          <tr>
+            <td>Streaming</td><td class="lose">Pill, or a wash</td>
+            <td>Text wants one wide constant-height line. The Sill lands on 210&nbsp;px — exactly
+                the pill's slot, by coincidence of the disc constraint — so it is a wash, bought
+                at twice the occluded area. The Dome lands on 68&nbsp;px and is unusable.</td>
+          </tr>
+          <tr>
+            <td>Result</td><td class="win">Arch (Sill only)</td>
+            <td>Both discs are hidden, so the whole chord is available: 364&nbsp;px against the
+                pill's 210. <em>Pasted into Notepad</em> never ellipsises, and longer app names
+                stop being a problem. The Dome gets 125&nbsp;px and is already failing.</td>
+          </tr>
+          <tr>
+            <td>Error</td><td class="win">Arch (Sill only)</td>
+            <td>Same geometry as Result, and error strings are the longest strings the overlay
+                ever shows — the pill has to widen to 216&nbsp;px and still truncates. The arch
+                itself stays monochrome; only the text takes <code>--danger</code>. Colouring the
+                arch would be the wrong instinct.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <hr class="rule" />
+
+  <!-- ==================================================================== -->
+
+  <section>
+    <h2 class="sec">What it costs</h2>
+    <div class="cols">
+      <div class="block">
+        <h3>Occlusion, not dead zone</h3>
+        <p>The brief's worry — a big arch is a big dead zone — is <b>false as the code stands</b>.
+           <code>overControl(x, y)</code> in <code>overlay.js</code> walks exactly two bounding
+           rects plus a 5&nbsp;px pad; the silhouette is never consulted. Turn on
+           <em>Hit regions</em>: 2,312&nbsp;px² with both controls up, 1,156&nbsp;px² once
+           confirm is hidden — identical in all three variants, arch or pill.</p>
+        <p>What the arch actually costs is <b>visibility</b>. The Sill occludes 2.0× the pill's
+           area in streaming and 3.4× in listening, in a band across the bottom of whatever you
+           were reading — which, in an editor, is often the line you are dictating into.</p>
+      </div>
+
+      <div class="block">
+        <h3>The taskbar is the real problem</h3>
+        <p><code>positionOverlay</code> parks against <code>display.workArea</code>, and workArea
+           stops at the <b>top of the taskbar</b>. So "the bottom edge of the screen" is, by
+           default, a seam with its own border and its own fill. Toggle <em>Anchor line</em>: the
+           arch's feet melt into a line that is already there, and the illusion is half dead on
+           arrival.</p>
+        <p>Fixing it means <code>display.bounds</code> instead — toggle <em>Display edge</em>.
+           Now it genuinely grows out of the screen, and it also grows over Start and the pinned
+           icons, and it needs ~48&nbsp;px more rise to clear them. Auto-hide taskbars and
+           side-docked taskbars break it outright. <b>Pick one; there is no third option.</b></p>
+      </div>
+
+      <div class="block">
+        <h3>Two smaller bills</h3>
+        <p><b>Compositing.</b> A 560&nbsp;px <code>backdrop-filter: blur(18px)</code> on an
+           always-on-top window with <code>backgroundThrottling: false</code> is roughly 4× the
+           blurred surface of the pill, running whenever the overlay is up. Measure it before
+           committing; it is the kind of thing that only shows up on a laptop on battery.</p>
+        <p><b>Ask Anything.</b> That mode wants a card above the control, and a 400&nbsp;px card
+           sitting on a 560&nbsp;px arch is bottom-heavy in a way the 130&nbsp;px pill never was.
+           The arch is a bigger commitment than the state it currently has to serve.</p>
+      </div>
+    </div>
+  </section>
+
+  <hr class="rule" />
+
+  <!-- ==================================================================== -->
+
+  <section>
+    <h2 class="sec">Verdict</h2>
+    <div class="verdict">
+      <h3>Ship the Sill, or ship nothing. Do not ship the Dome.</h3>
+      <p>The Dome is the better object and the worse product. It is the one that looks like an
+         arch, it is the one worth a screenshot, and it cannot hold a line of text — 68&nbsp;px in
+         streaming is not a near miss, it is a different feature. That failure is structural, not a
+         tuning problem: <b>an arch's interior is widest at the baseline and narrowest at the
+         crown, so text wants the baseline — which is the one place it can never sit, because the
+         baseline is the screen edge.</b> Every arch is a container that is widest exactly where it
+         is least usable. A rounded rectangle has no such gradient, which is the unglamorous reason
+         the pill keeps winning the text states.</p>
+
+      <p>Now the uncomfortable part. Follow every pressure honestly — text needs width, so widen;
+         occlusion needs restraint, so flatten; controls need to stop moving, so fix the span —
+         and you arrive at 560 × 48. <b>That is not an arch. It is a swell, and it is most of the
+         way back to a very wide rounded rectangle.</b> The design converges on the pill from the
+         other side. What survives the convergence is exactly one property: the thing is
+         <em>attached</em>. It has no floating gap under it, no drop shadow pretending it hovers,
+         no bottom edge at all. That single property is the entire thesis of the README, and the
+         Sill is the cheapest honest way to buy it.</p>
+
+      <p>So the recommendation is narrow. <b>Take the edge-anchoring, drop the arch.</b> Keep the
+         pill's rectangular interior for text, remove the 6&nbsp;px <code>LIFT</code>, and let the
+         box's bottom corners run out into tangential shoulders that dissolve into the edge —
+         which is what the Sill already is at low rise. You get the infrastructure read, the fixed
+         controls, and the wider Result and Error slots, and you pay 2× occlusion and one
+         irreversible decision about the taskbar. If the taskbar decision cannot be made — if
+         auto-hide has to keep working — <b>the concept is not shippable and the pill stays</b>,
+         because an arch growing out of a seam is worse than a pill that never claimed to be
+         attached in the first place.</p>
+
+      <p class="note">One thing this study does not settle: none of it has been seen against a
+         maximised video, a game, or a light-on-dark IDE at 125% scaling, which is where a
+         560&nbsp;px band across the bottom edge is most likely to become intolerable. That is a
+         build-it-and-live-with-it question, not a prototype question.</p>
+    </div>
+  </section>
+
+</div>
+
+<script>
+'use strict';
+(function () {
+
+  /* ==================================================================== easing
+   *
+   * The CSS curves, evaluated in JS. The rise has to be tweened in script rather
+   * than transitioned in CSS: `clip-path: path()` only interpolates when the two
+   * command lists match, and the Breathe option rewrites the path every frame
+   * anyway, which a running transition would fight. So the curves are
+   * reimplemented here to the same numbers -- .16/1.02/.3/1 and .4/0/.9/.35 --
+   * rather than approximated, or the arch's motion would quietly diverge from
+   * everything else on screen. */
+
+  function cubicBezier(p1x, p1y, p2x, p2y) {
+    var cx = 3 * p1x, bx = 3 * (p2x - p1x) - cx, ax = 1 - cx - bx;
+    var cy = 3 * p1y, by = 3 * (p2y - p1y) - cy, ay = 1 - cy - by;
+    function sx(t) { return ((ax * t + bx) * t + cx) * t; }
+    function sy(t) { return ((ay * t + by) * t + cy) * t; }
+    function dx(t) { return (3 * ax * t + 2 * bx) * t + cx; }
+    return function (x) {
+      if (x <= 0) return 0;
+      if (x >= 1) return 1;
+      var t = x, i, e, d;
+      for (i = 0; i < 8; i++) {
+        e = sx(t) - x;
+        if (Math.abs(e) < 1e-6) return sy(t);
+        d = dx(t);
+        if (Math.abs(d) < 1e-6) break;
+        t -= e / d;
+      }
+      var lo = 0, hi = 1;
+      t = x;
+      for (i = 0; i < 24; i++) {
+        e = sx(t);
+        if (Math.abs(e - x) < 1e-6) break;
+        if (x > e) lo = t; else hi = t;
+        t = (hi + lo) / 2;
+      }
+      return sy(t);
+    };
+  }
+
+  var EASE_SPRING = cubicBezier(0.16, 1.02, 0.30, 1.00);
+  var EASE_EXIT   = cubicBezier(0.40, 0.00, 0.90, 0.35);
+
+  /* The shoulder profile. Height as a fraction of rise, given position as a
+     fraction of shoulder width. Control points at .68 and .32 push both ends
+     flat, which is what makes the foot melt into the edge instead of landing on
+     it. The inverse -- position given height -- is the same curve with each
+     pair swapped, which is exact rather than a numerical solve, and it is what
+     lets the chord width below be a measurement rather than a guess. */
+  var SHOULDER     = cubicBezier(0.68, 0.00, 0.32, 1.00);
+  var SHOULDER_INV = cubicBezier(0.00, 0.68, 1.00, 0.32);
+
+  /* ================================================================= variants
+   *
+   * `disc` is not a taste decision. The cancel and confirm discs are 24px and
+   * they must fit under the curve at the LOWEST rise they are ever shown at,
+   * which is listening. Solve height(x) >= pad + 24 + 4 at that rise and you get
+   * the largest offset from centre the discs can take; push them further out and
+   * they poke through the shoulder. That number then caps the streaming text
+   * slot, because the text has to grow out of the centre without reaching them.
+   * The arch's geometry sets its own typographic budget. */
+
+  var HEAD = 40;        // headroom above the tallest rise, so the blurred shade is not clipped
+  var OVER = 2;         // overhang below the anchor, so there is no antialiasing seam
+
+  var VARIANTS = {
+    sill: {
+      label: 'A · Sill',
+      span: 560, shoulder: 168, plateau: 224,
+      pad: 10, disc: 125, meter: 96,
+      rise: { listening: 40, thinking: 32, streaming: 48, result: 48, error: 48 }
+    },
+    dome: {
+      label: 'B · Dome',
+      span: 240, shoulder: 104, plateau: 32,
+      pad: 10, disc: 54, meter: 74,
+      rise: { listening: 72, thinking: 62, streaming: 84, result: 84, error: 84 }
+    }
+  };
+
+  var TASKBAR = 48;     // Windows 11 default. The whole anchor question, in one number.
+
+  /* ==================================================================== nodes */
+
+  var root     = document.documentElement;
+  var stage    = document.getElementById('stage');
+  var overlay  = document.getElementById('overlay');
+  var archwrap = document.getElementById('archwrap');
+  var glass    = document.getElementById('glass');
+  var shade    = document.getElementById('shadeFill');
+  var edgeSvg  = document.getElementById('edgeSvg');
+  var clipPath = document.getElementById('clipPath');
+  var sheenP   = document.getElementById('sheenPath');
+  var outlineP = document.getElementById('outlinePath');
+  var fadeRect = document.getElementById('fadeRect');
+  var fs1      = document.getElementById('fs1');
+  var fs2      = document.getElementById('fs2');
+  var archRow  = document.getElementById('archRow');
+  var archMid  = document.getElementById('archMid');
+  var archText = document.getElementById('archText');
+  var pill     = document.getElementById('pill');
+  var pillText = document.getElementById('pillText');
+  var hitA     = document.getElementById('hitA');
+  var hitB     = document.getElementById('hitB');
+
+  var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  var variant = 'sill';
+  var state   = 'idle';
+  var anchor  = 'workarea';
+  var breathe = true;
+  var seq     = 0;      // invalidates timers from a superseded session, as in overlay.js
+
+  /* ================================================================= geometry */
+
+  function cfg() { return VARIANTS[variant]; }
+
+  /* Extra rise needed when the arch is anchored to the physical display edge:
+     the taskbar eats the bottom 48px, so the visible arch above it is unchanged
+     only if the whole thing grows by that much. This is the honest version of
+     "grows over the taskbar" -- it is not free, it is 48px more of everything. */
+  function anchorLift() { return anchor === 'display' ? TASKBAR : 0; }
+
+  function layerH() {
+    var v = cfg(), max = 0, k;
+    for (k in v.rise) if (v.rise[k] > max) max = v.rise[k];
+    return HEAD + max + anchorLift() + OVER;
+  }
+
+  /* The silhouette. Six commands, no sampling, so it stays exact at any rise and
+     costs nothing to rebuild per frame. Baseline sits on the bottom of the layer
+     box; `r` already includes the overhang and the anchor lift. */
+  function pathFor(r, closed) {
+    var v = cfg();
+    var H = layerH();
+    var y0 = H, y1 = H - r;
+    var a = v.shoulder, p = v.plateau, s = v.span;
+    var x1 = a, x2 = a + p;
+    var d =
+      'M0,' + y0 +
+      'C' + (a * 0.68).toFixed(2) + ',' + y0 + ' ' + (a * 0.32).toFixed(2) + ',' + y1.toFixed(2) + ' ' + x1 + ',' + y1.toFixed(2) +
+      'L' + x2 + ',' + y1.toFixed(2) +
+      'C' + (x2 + a * 0.32).toFixed(2) + ',' + y1.toFixed(2) + ' ' + (x2 + a * 0.68).toFixed(2) + ',' + y0 + ' ' + s + ',' + y0;
+    return closed ? d + 'Z' : d;
+  }
+
+  /* Interior width available at height `y` above the baseline. The measurement
+     the whole argument turns on: it is maximal at y = 0 and collapses toward the
+     crown, which is the opposite of what a line of text wants. */
+  function chordAt(y, r) {
+    var v = cfg();
+    if (r <= 0) return 0;
+    if (y >= r) return v.plateau;
+    var inset = SHOULDER_INV(y / r) * v.shoulder;
+    return Math.max(0, v.span - 2 * inset);
+  }
+
+  /* Occluded area. Integral of the two shoulder profiles plus the plateau; the
+     shoulder curve is symmetric about its midpoint so its integral is exactly
+     half its bounding box, which makes this closed-form. */
+  function areaFor(r) {
+    var v = cfg();
+    return r * (v.plateau + v.shoulder);
+  }
+
+  var PILL_W = { listening: 130, thinking: 98, streaming: 252, result: 252, error: 216 };
+  var PILL_SLOT = 210;    // 252 - 12 padding - 24 cancel - 6 gap
+
+  /* How wide the middle slot may be, per state. Two independent caps: the chord
+     of the arch at the text's own mid-height, and -- while the cancel disc is on
+     screen -- the clear space between the discs. Whichever bites first.
+     `rise` is the bare rise above the anchor; the overhang and the anchor lift
+     have to be folded back in before measuring, or the chord is taken against
+     the wrong baseline and the number is quietly optimistic. */
+  function slotFor(st, rise) {
+    var v = cfg();
+    if (st === 'listening' || st === 'thinking') return v.meter;
+    var rTot = rise + OVER + anchorLift();
+    var yMid = v.pad + 12 + OVER + anchorLift();
+    var cap = chordAt(yMid, rTot) - 28;
+    if (st === 'streaming') cap = Math.min(cap, 2 * (v.disc - 20));
+    return Math.max(24, Math.min(cap, 364));
+  }
+
+  /* ==================================================================== paint */
+
+  var lastPath = '';
+
+  function paintArch(r) {
+    var v = cfg();
+    var H = layerH();
+    /* The anchor lift is added unconditionally, not only once the arch is up.
+       Gating it on r > 0 put a 48px discontinuity on the first frame of the
+       enter tween in display-edge mode -- the arch appeared to jump out of the
+       taskbar rather than grow through it. */
+    var rr = r + OVER + anchorLift();
+
+    archwrap.style.width  = v.span + 'px';
+    archwrap.style.height = H + 'px';
+    archwrap.style.bottom = -OVER + 'px';
+    edgeSvg.setAttribute('viewBox', '0 0 ' + v.span + ' ' + H);
+    edgeSvg.setAttribute('width', v.span);
+    edgeSvg.setAttribute('height', H);
+    fadeRect.setAttribute('width', v.span);
+    fadeRect.setAttribute('height', H);
+
+    var closed = pathFor(rr, true);
+    if (closed !== lastPath) {
+      lastPath = closed;
+      var open = pathFor(rr, false);
+      glass.style.clipPath = 'path("' + closed + '")';
+      shade.style.clipPath = 'path("' + closed + '")';
+      clipPath.setAttribute('d', closed);
+      sheenP.setAttribute('d', open);
+      outlineP.setAttribute('d', open);
+    }
+
+    /* Fade the hairline out over the lower half of each shoulder. Hard-coding a
+       percentage would put the fade in the wrong place the moment the variant
+       changes, so it is derived from the shoulder width. */
+    var f = (v.shoulder * 0.5) / v.span;
+    fs1.setAttribute('offset', f.toFixed(4));
+    fs2.setAttribute('offset', (1 - f).toFixed(4));
+
+    archwrap.style.opacity = r > 0.4 ? '1' : '0';
+
+    /* Row sits at a FIXED height above the anchor. It does not ride the crown --
+       if it did, every state change would jog the controls vertically and the
+       one advantage the arch has over the pill would be gone. */
+    archRow.style.bottom = (v.pad + OVER + anchorLift()) + 'px';
+    archRow.style.setProperty('--disc', v.disc);
+    archMid.style.width = slotFor(state === 'idle' ? 'listening' : state, Math.max(r, 1)) + 'px';
+  }
+
+  function positionOverlayBox() {
+    /* Mirrors positionOverlay() in src/main/overlay-window.js: workArea stops at
+       the top of the taskbar, bounds does not. */
+    stage.setAttribute('data-anchor', anchor);
+  }
+
+  /* ================================================================ hit region
+   *
+   * Drawn from the live bounding rects, exactly the way overControl() reads
+   * them, so the number in the readout is the number the app would compute. */
+  var HIT_PAD = 5;
+  function paintHits() {
+    var host = variant === 'pill' ? pill : archRow;
+    var btns = host.querySelectorAll('.control');
+    var boxes = [hitA, hitB];
+    var sr = stage.getBoundingClientRect();
+    var total = 0;
+    for (var i = 0; i < boxes.length; i++) {
+      var b = btns[i];
+      var r = b ? b.getBoundingClientRect() : null;
+      if (!r || !r.width || getComputedStyle(b).display === 'none') {
+        boxes[i].style.width = '0px';
+        boxes[i].style.height = '0px';
+        continue;
+      }
+      boxes[i].style.left   = (r.left - sr.left - HIT_PAD) + 'px';
+      boxes[i].style.top    = (r.top  - sr.top  - HIT_PAD) + 'px';
+      boxes[i].style.width  = (r.width  + HIT_PAD * 2) + 'px';
+      boxes[i].style.height = (r.height + HIT_PAD * 2) + 'px';
+      total += (r.width + HIT_PAD * 2) * (r.height + HIT_PAD * 2);
+    }
+    return Math.round(total);
+  }
+
+  /* ===================================================================== rise */
+
+  var riseFrom = 0, riseTo = 0, riseAt = 0, riseT0 = 0, riseDur = 0, riseEase = EASE_SPRING;
+
+  function targetRise(st) {
+    if (st === 'idle') return 0;
+    return cfg().rise[st] || 0;
+  }
+
+  function tweenRise(to, dur, ease) {
+    riseFrom = riseAt;
+    riseTo = to;
+    riseDur = reduced ? 1 : dur;
+    riseEase = ease;
+    riseT0 = performance.now();
+  }
+
+  /* ==================================================================== meter
+   *
+   * Verbatim from overlay.js, both canvases driven from the same arrays, so the
+   * only difference between the arch and the pill on screen is the container. */
+
+  var BARS = 11, IDLE_FLOOR = 0.10, MIN_HALF = 1.5;
+  var bars = new Float32Array(BARS);
+  var phase = new Float32Array(BARS);
+  for (var b = 0; b < BARS; b++) phase[b] = b * 1.73 + Math.sin(b * 2.31) * 1.4;
+
+  var canvases = [document.getElementById('archMeter'), document.getElementById('pillMeter')];
+  var ctxs = [canvases[0].getContext('2d'), canvases[1].getContext('2d')];
+  var t0 = 0, level = 0;
+
+  function sizeCanvas(i) {
+    var c = canvases[i], r = c.getBoundingClientRect();
+    if (!r.width) return;
+    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    c.width = Math.round(r.width * dpr);
+    c.height = Math.round(r.height * dpr);
+    ctxs[i].setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  function envelope(t) {
+    var syl = Math.abs(Math.sin(t * 4.1) * Math.sin(t * 2.3 + 1.1));
+    var micro = 0.55 + 0.45 * Math.sin(t * 21.7 + 0.6);
+    var phr = 0.5 + 0.5 * Math.sin(t * 0.52 - 0.4);
+    return Math.min(1, syl * micro * (phr > 0.2 ? 1 : 0.07) * 1.7);
+  }
+
+  function meterColour() {
+    return getComputedStyle(root).getPropertyValue('--meter').trim() || '#1C1F25';
+  }
+
+  function drawMeter(i) {
+    var ctx = ctxs[i], c = canvases[i];
+    var w = c.clientWidth, h = c.clientHeight;
+    if (!w || !h) return;
+    ctx.clearRect(0, 0, w, h);
+    if (state !== 'listening' && state !== 'thinking') return;
+
+    var dpr = ctx.getTransform().a || 1;
+    var snap = function (v) { return Math.round(v * dpr) / dpr; };
+    var slot = w / BARS;
+    var barW = snap(Math.max(2, Math.min(2.6, slot * 0.44)));
+    var mid = h / 2, maxHalf = h / 2;
+
+    ctx.fillStyle = meterColour();
+    ctx.shadowBlur = 0;
+    ctx.beginPath();
+    for (var m = 0; m < BARS; m++) {
+      var half = MIN_HALF + bars[m] * (maxHalf - MIN_HALF);
+      var x = snap(slot * (m + 0.5) - barW / 2);
+      ctx.roundRect(x, snap(mid - half), barW, Math.max(barW, snap(half * 2)), barW / 2);
+    }
+    ctx.fill();
+  }
+
+  /* =================================================================== readout */
+
+  var rRise = document.getElementById('rRise');
+  var rSpan = document.getElementById('rSpan');
+  var rSlot = document.getElementById('rSlot');
+  var rArea = document.getElementById('rArea');
+  var rDead = document.getElementById('rDead');
+
+  function num(el, main, sub) {
+    el.innerHTML = main + (sub ? '<small>' + sub + '</small>' : '');
+  }
+
+  function updateReadout(dead) {
+    var st = state === 'idle' ? 'listening' : state;
+    if (variant === 'pill') {
+      num(rRise, '—', 'fixed 36px tall');
+      num(rSpan, PILL_W[st], 'px, morphs');
+      num(rSlot, st === 'listening' || st === 'thinking' ? 58 : PILL_SLOT, 'px');
+      num(rArea, (PILL_W[st] * 36).toLocaleString(), 'px² · 1.0×');
+    } else {
+      var r = targetRise(state);
+      num(rRise, riseAt.toFixed(1), 'px above anchor');
+      num(rSpan, cfg().span, 'px, fixed');
+      num(rSlot, Math.round(slotFor(st, r || cfg().rise[st])),
+          'pill: ' + (st === 'listening' || st === 'thinking' ? 58 : PILL_SLOT));
+      var a = areaFor(cfg().rise[st]);
+      var pa = PILL_W[st] * 36;
+      num(rArea, Math.round(a).toLocaleString(), 'px² · ' + (a / pa).toFixed(1) + '×');
+    }
+    num(rDead, dead.toLocaleString(), 'px² · 2 controls + 5px');
+  }
+
+  /* ===================================================================== loop */
+
+  function frame(now) {
+    requestAnimationFrame(frame);
+    var t = (now - t0) / 1000;
+
+    /* rise tween */
+    if (riseDur > 0) {
+      var p = Math.min(1, (now - riseT0) / riseDur);
+      riseAt = riseFrom + (riseTo - riseFrom) * riseEase(p);
+      if (p >= 1) { riseAt = riseTo; riseDur = 0; }
+    }
+
+    /* meter physics, straight out of overlay.js */
+    if (state === 'listening') {
+      level += (envelope(t) - level) * 0.4;
+      for (var i = 0; i < BARS; i++) {
+        var weight = 0.5 + 0.5 * Math.sin(((i + 0.5) / BARS) * Math.PI);
+        var jitter = 0.68 + 0.32 * Math.sin(t * 8.6 + phase[i]);
+        var idle = IDLE_FLOOR * (0.72 + 0.28 * Math.sin(t * 2.1 + phase[i] * 0.6));
+        bars[i] += (Math.max(idle, level * weight * jitter) - bars[i]) * 0.34;
+      }
+    } else if (state === 'thinking') {
+      var pos = ((t * 1.5) % 1.6) * (BARS + 5) - 2.5;
+      for (var j = 0; j < BARS; j++) {
+        var d = j - pos;
+        bars[j] += (0.07 + 0.8 * Math.exp(-(d * d) / 2.4) - bars[j]) * 0.32;
+      }
+    } else {
+      for (var k = 0; k < BARS; k++) bars[k] *= 0.82;
+    }
+
+    /* Breathe. Phrase-rate, not syllable-rate, and capped at 2.5px. The obvious
+       version -- drive the crown straight off the live level -- was wrong: at
+       the very bottom of the field of view, anything moving at syllable rate is
+       a flicker you cannot stop noticing, and it made the whole screen edge look
+       unstable. Slow and small, or not at all. */
+    var breath = 0;
+    if (breathe && !reduced && state === 'listening') {
+      breath = (0.5 + 0.5 * Math.sin(t * 0.9 - 0.4)) * 2.5 * (0.35 + 0.65 * level);
+    }
+
+    if (variant !== 'pill') paintArch(riseAt + breath);
+    drawMeter(0);
+    drawMeter(1);
+    updateReadout(paintHits());
+  }
+
+  /* ==================================================================== states */
+
+  function setState(s) {
+    state = s;
+    overlay.setAttribute('data-state', s);
+    overlay.setAttribute('data-visible', s === 'idle' ? 'false' : 'true');
+
+    if (s === 'idle') {
+      tweenRise(0, 180, EASE_EXIT);
+    } else if (riseAt < 0.5) {
+      tweenRise(targetRise(s), 260, EASE_SPRING);   // enter: the swell IS the animation
+    } else {
+      tweenRise(targetRise(s), 240, EASE_SPRING);   // morph
+    }
+
+    Array.prototype.forEach.call(document.querySelectorAll('[data-state]'), function (btn) {
+      if (btn.tagName === 'BUTTON') btn.setAttribute('aria-pressed', String(btn.dataset.state === s));
+    });
+    sizeCanvas(0); sizeCanvas(1);
+
+    /* Paint one frame synchronously as well. requestAnimationFrame is throttled
+       to nothing in a background tab, and a study whose readouts show em-dashes
+       until you happen to focus it is a study nobody trusts. */
+    settle();
+  }
+
+  function settle() {
+    if (variant !== 'pill') paintArch(riseAt);
+    updateReadout(paintHits());
+  }
+
+  function setText(v) { archText.textContent = v; pillText.textContent = v; }
+
+  /* Canned copy, matching what overlay.js actually renders: `verb + target` on
+     done, the raw message on error. */
+  var DICTATED = "Let's push the review to Thursday so the numbers land before anyone has to argue about them.";
+  var DONE = 'Pasted into Notepad';
+  var FAIL = 'Cleanup model unreachable';
+
+  function jumpTo(s) {
+    seq++;
+    setState(s);
+    if (s === 'streaming') setText(DICTATED);
+    else if (s === 'result') setText(DONE);
+    else if (s === 'error') setText(FAIL);
+    else setText('');
+    if (s !== 'idle') t0 = performance.now();
+  }
+
+  /* Auto-play, on the real clock. 350ms recogniser + 550ms to first token comes
+     from the README's pipeline diagram; 900ms of linger is LINGER_RESULT_MS and
+     180ms of exit is EXIT_MS, both from overlay.js. */
+  function autoplay() {
+    var mine = ++seq;
+    var scale = reduced ? 0.05 : 1;
+    var at = function (ms, fn) { setTimeout(function () { if (mine === seq) fn(); }, ms * scale); };
+
+    setText('');
+    t0 = performance.now();
+    bars.fill(0);
+    level = 0;
+    setState('listening');
+
+    at(2600, function () { setState('thinking'); });
+    at(2600 + 900, function () {
+      setState('streaming');
+      var words = DICTATED.split(' '), shown = '', i = 0;
+      (function step() {
+        if (mine !== seq) return;
+        if (i < words.length) {
+          shown += (shown ? ' ' : '') + words[i++];
+          setText(shown);
+          setTimeout(step, 42 * scale);
+          return;
+        }
+        setState('result');
+        setText(DONE);
+        at(900, function () {
+          setState('idle');
+          setTimeout(function () { if (mine === seq) setText(''); }, 220 * scale);
+        });
+      })();
+    });
+  }
+
+  /* ==================================================================== wiring */
+
+  function press(list, attr, apply) {
+    Array.prototype.forEach.call(document.querySelectorAll(list), function (btn) {
+      btn.addEventListener('click', function () {
+        Array.prototype.forEach.call(document.querySelectorAll(list), function (o) {
+          o.setAttribute('aria-pressed', String(o === btn));
+        });
+        apply(btn.getAttribute(attr));
+      });
+    });
+  }
+
+  press('.seg [data-variant]', 'data-variant', function (v) {
+    variant = v;
+    overlay.setAttribute('data-variant', v);
+    lastPath = '';
+    if (v !== 'pill') { riseAt = targetRise(state); riseDur = 0; }
+    sizeCanvas(0); sizeCanvas(1);
+    settle();
+  });
+
+  press('.seg [data-state]', 'data-state', function (s) { jumpTo(s); });
+
+  press('.seg [data-theme]', 'data-theme', function (th) { root.setAttribute('data-theme', th); });
+
+  press('.seg [data-anchor]', 'data-anchor', function (a) {
+    anchor = a;
+    lastPath = '';
+    positionOverlayBox();
+    settle();
+  });
+
+  Array.prototype.forEach.call(document.querySelectorAll('.seg [data-toggle]'), function (btn) {
+    btn.addEventListener('click', function () {
+      var on = btn.getAttribute('aria-pressed') !== 'true';
+      btn.setAttribute('aria-pressed', String(on));
+      var k = btn.getAttribute('data-toggle');
+      if (k === 'breathe') breathe = on;
+      else stage.setAttribute('data-' + k, String(on));
+    });
+  });
+
+  document.getElementById('play').addEventListener('click', autoplay);
+
+  Array.prototype.forEach.call(document.querySelectorAll('.control.cancel'), function (b) {
+    b.addEventListener('click', function () { jumpTo('idle'); });
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('.control.confirm'), function (b) {
+    b.addEventListener('click', function () { if (state === 'listening') autoplayFromCommit(); });
+  });
+
+  function autoplayFromCommit() {
+    var mine = ++seq;
+    setState('thinking');
+    setTimeout(function () {
+      if (mine !== seq) return;
+      setState('streaming'); setText(DICTATED);
+      setTimeout(function () {
+        if (mine !== seq) return;
+        setState('result'); setText(DONE);
+        setTimeout(function () { if (mine === seq) setState('idle'); }, 900);
+      }, 900);
+    }, 900);
+  }
+
+  window.addEventListener('keydown', function (e) {
+    if (e.code === 'Space' && !e.repeat) {
+      if (document.activeElement && document.activeElement.tagName === 'BUTTON') return;
+      e.preventDefault();
+      autoplay();
+    }
+    if (e.code === 'Escape') jumpTo('idle');
+  });
+
+  window.addEventListener('resize', function () { sizeCanvas(0); sizeCanvas(1); });
+
+  /* The middle slot transitions its width over 240ms, so a one-shot resize on
+     state change catches the canvas at the wrong size for a quarter of a second
+     and the bars land on half-pixels. Same fix overlay.js uses. */
+  var ro = new ResizeObserver(function () { sizeCanvas(0); sizeCanvas(1); });
+  ro.observe(canvases[0]);
+  ro.observe(canvases[1]);
+
+  root.setAttribute('data-theme',
+    window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  Array.prototype.forEach.call(document.querySelectorAll('.seg [data-theme]'), function (o) {
+    o.setAttribute('aria-pressed', String(o.getAttribute('data-theme') === root.getAttribute('data-theme')));
+  });
+
+  positionOverlayBox();
+  paintArch(0);
+  sizeCanvas(0); sizeCanvas(1);
+  requestAnimationFrame(function (n) { t0 = n; frame(n); });
+})();
+</script>
+
+</body>
+</html>

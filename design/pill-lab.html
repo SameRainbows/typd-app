@@ -1,0 +1,2155 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Typd — pill lab</title>
+
+<!--
+  An instrument, not a study.
+
+  design/pill-refined.html made the argument. This file makes the argument
+  adjustable: every number that document defends is a live control here, the
+  refined values are the zero position, and nothing in the lab decides anything.
+  If a knob has an opinion baked into it, that is a bug.
+
+  Three rules held while building it:
+
+  1. The subject is shown at actual size, over real content, and never moves
+     when the panel does. A pill judged at 2x is a pill judged wrong; the
+     magnifier is next to it, never instead of it.
+  2. The lab's own chrome is amber-on-slate and unmistakably not the pill. Two
+     monochrome objects on one screen is one too many.
+  3. Tuning has to be able to leave the room. Export emits the stylesheet block
+     and the meter constants, so a session here ends in a paste, not a note.
+
+  Self-contained: no fonts, no images, no requests. What runs here runs under
+  the overlay's default-src 'none'.
+-->
+
+<style>
+/* ==================================================================== chrome
+   The rail is deliberately a fixed dark instrument panel in both themes, and
+   the one hue in the file is on it. The pill is monochrome; anything monochrome
+   near it competes for the same judgement. */
+
+:root {
+  --rail:      #0F1216;
+  --rail-2:    #161A20;
+  --rail-3:    #1D222A;
+  --rail-line: rgba(255,255,255,.09);
+  --rail-ink:  #E7EAEE;
+  --rail-dim:  #8D96A3;
+  --rail-faint:#5C646F;
+  --accent:    #E3A857;
+  --accent-dim:#8A6631;
+  --warn:      #E0705F;
+
+  --bench:      #E9EAEC;
+  --bench-2:    #FFFFFF;
+  --bench-ink:  #14161B;
+  --bench-dim:  #5B616A;
+  --bench-line: rgba(16,18,23,.13);
+
+  --font-ui: "Segoe UI Variable Text", "Segoe UI", -apple-system, system-ui, sans-serif;
+  --font-mono: "Cascadia Mono", ui-monospace, Consolas, monospace;
+}
+:root[data-theme="dark"] {
+  --bench:      #131417;
+  --bench-2:    #1A1C21;
+  --bench-ink:  #F1F2F4;
+  --bench-dim:  #98A0AA;
+  --bench-line: rgba(255,255,255,.13);
+}
+
+* { box-sizing: border-box; }
+
+html, body { height: 100%; }
+body {
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  background: var(--bench);
+  color: var(--bench-ink);
+  overflow: hidden;
+}
+
+/* Two independent scroll containers. The whole point is that opening a group
+   in the rail cannot move the subject by a single pixel. */
+.lab {
+  display: grid;
+  grid-template-columns: 372px minmax(0, 1fr);
+  height: 100vh;
+}
+.rail  { background: var(--rail); color: var(--rail-ink); overflow-y: auto; overflow-x: hidden; border-right: 1px solid #000; }
+.bench { overflow-y: auto; padding: 18px 22px 60px; }
+
+/* Below the width where both columns fit, the subject goes first and the whole
+   page scrolls as one. A rail that pushes the pill off the edge is worse than
+   no rail. */
+@media (max-width: 900px) {
+  .lab { grid-template-columns: 1fr; grid-template-rows: auto auto; height: auto; }
+  body { overflow: auto; }
+  .rail { order: 2; border-right: 0; border-top: 1px solid #000; }
+  .bench { order: 1; }
+}
+
+/* ------------------------------------------------------------- rail header */
+
+.railhead {
+  position: sticky; top: 0; z-index: 30;
+  background: linear-gradient(var(--rail) 78%, rgba(15,18,22,0));
+  padding: 14px 14px 10px;
+}
+.brand { display: flex; align-items: baseline; gap: 8px; margin-bottom: 10px; }
+.brand b { font-size: 12px; letter-spacing: .17em; text-transform: uppercase; color: var(--accent); font-weight: 700; }
+.brand i { font-style: normal; font-size: 10.5px; color: var(--rail-faint); font-family: var(--font-mono); }
+
+.abrow { display: flex; gap: 6px; align-items: center; }
+.abbtn {
+  appearance: none; border: 1px solid var(--rail-line); background: var(--rail-2);
+  color: var(--rail-dim); font: inherit; font-size: 12px; font-weight: 600;
+  padding: 7px 10px; border-radius: 7px; cursor: pointer; white-space: nowrap;
+}
+.abbtn:hover { color: var(--rail-ink); border-color: rgba(255,255,255,.2); }
+.abbtn[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #1A1206; }
+.abbtn.wide { flex: 1 1 auto; }
+.abbtn.danger:hover { color: var(--warn); border-color: var(--warn); }
+
+.ablive {
+  font-family: var(--font-mono); font-size: 10.5px; color: var(--rail-faint);
+  padding: 6px 2px 0; line-height: 1.5;
+}
+.ablive b { color: var(--accent); }
+
+/* Editing A would silently rewrite the thing you are comparing against, so the
+   panel locks instead. Better a disabled control than a lost baseline. */
+.rail[data-locked="true"] .groups { opacity: .45; pointer-events: none; }
+.lockbar {
+  display: none; margin-top: 8px; padding: 7px 9px; border-radius: 7px;
+  background: rgba(227,168,87,.12); border: 1px solid var(--accent-dim);
+  color: var(--accent); font-size: 11.5px;
+}
+.rail[data-locked="true"] .lockbar { display: block; }
+
+/* ------------------------------------------------------------------ groups */
+
+.groups { padding: 4px 14px 40px; }
+
+details.g { border-top: 1px solid var(--rail-line); }
+details.g > summary {
+  list-style: none; cursor: pointer; padding: 11px 2px 10px;
+  display: flex; align-items: center; gap: 8px;
+  font-size: 10.5px; letter-spacing: .15em; text-transform: uppercase;
+  color: var(--rail-dim); font-weight: 700;
+}
+details.g > summary::-webkit-details-marker { display: none; }
+details.g > summary::before {
+  content: "+"; font-family: var(--font-mono); color: var(--accent);
+  font-size: 12px; letter-spacing: 0; width: 10px;
+}
+details.g[open] > summary::before { content: "\2212"; }
+details.g[open] > summary { color: var(--rail-ink); }
+summary .themetag {
+  margin-left: auto; font-size: 9px; letter-spacing: .12em;
+  padding: 2px 6px; border-radius: 4px; border: 1px solid var(--rail-line);
+  color: var(--rail-faint); font-weight: 700;
+}
+.gnote {
+  font-size: 11.5px; color: var(--rail-faint); line-height: 1.5;
+  margin: 0 0 10px; padding: 0 2px; letter-spacing: 0; text-transform: none;
+}
+.gbody { padding-bottom: 12px; }
+
+/* ------------------------------------------------------------------- rows */
+
+.row { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; margin-bottom: 9px; }
+.row > label { font-size: 12px; color: var(--rail-dim); align-self: center; }
+.row .val { display: flex; align-items: center; gap: 4px; }
+.row .unit { font-family: var(--font-mono); font-size: 10px; color: var(--rail-faint); width: 20px; }
+
+input[type="number"] {
+  width: 62px; background: var(--rail-3); color: var(--rail-ink);
+  border: 1px solid var(--rail-line); border-radius: 5px;
+  font-family: var(--font-mono); font-size: 11.5px; padding: 3px 5px;
+  text-align: right;
+}
+input[type="number"]:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+input[type="number"]:disabled { color: var(--rail-faint); background: #12151A; }
+
+input[type="range"] {
+  grid-column: 1 / -1; width: 100%; margin: 2px 0 0; height: 16px;
+  appearance: none; background: transparent; cursor: pointer;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 3px; border-radius: 2px; background: var(--rail-3);
+}
+input[type="range"]::-webkit-slider-thumb {
+  appearance: none; width: 13px; height: 13px; border-radius: 50%;
+  background: var(--rail-ink); border: 0; margin-top: -5px;
+}
+input[type="range"]:focus::-webkit-slider-thumb { background: var(--accent); }
+input[type="range"]:disabled::-webkit-slider-thumb { background: var(--rail-faint); }
+
+input[type="color"] {
+  width: 34px; height: 24px; padding: 0; border: 1px solid var(--rail-line);
+  border-radius: 5px; background: var(--rail-3); cursor: pointer;
+}
+input[type="text"], select {
+  background: var(--rail-3); color: var(--rail-ink); border: 1px solid var(--rail-line);
+  border-radius: 5px; font-family: var(--font-mono); font-size: 11.5px; padding: 4px 5px;
+}
+.row.wide input[type="text"], .row.wide select { grid-column: 1 / -1; width: 100%; }
+
+.chk { display: flex; align-items: center; gap: 7px; margin: 0 0 10px; cursor: pointer; }
+.chk input { accent-color: var(--accent); width: 14px; height: 14px; }
+.chk span { font-size: 12px; color: var(--rail-dim); }
+.chk:hover span { color: var(--rail-ink); }
+
+.sub {
+  margin: 2px 0 10px; padding: 9px 10px 2px;
+  border: 1px solid var(--rail-line); border-radius: 8px; background: rgba(255,255,255,.017);
+}
+.sub > h4 {
+  margin: 0 0 8px; font-size: 9.5px; letter-spacing: .14em; text-transform: uppercase;
+  color: var(--rail-faint); font-weight: 700;
+}
+
+/* ------------------------------------------------------------------ bezier */
+
+.bez { display: grid; grid-template-columns: 132px 1fr; gap: 10px; align-items: start; margin-bottom: 10px; }
+.bez svg { background: var(--rail-3); border: 1px solid var(--rail-line); border-radius: 8px; display: block; touch-action: none; }
+.bez .nums { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+.bez .nums input { width: 100%; }
+.bez .ping {
+  grid-column: 1 / -1; height: 20px; border-radius: 5px; background: var(--rail-3);
+  border: 1px solid var(--rail-line); position: relative; overflow: hidden; cursor: pointer;
+}
+.bez .ping i {
+  position: absolute; top: 50%; left: 4px; width: 10px; height: 10px; margin-top: -5px;
+  border-radius: 50%; background: var(--accent); transform: translateX(0);
+}
+.bez .ping.go i { transform: translateX(calc(100% + var(--travel, 90px))); }
+
+/* =================================================================== bench */
+
+.tools {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  padding: 9px 10px; border-radius: 10px;
+  background: var(--rail); border: 1px solid #000;
+  margin-bottom: 16px; position: sticky; top: 0; z-index: 20;
+}
+.seg { display: flex; gap: 2px; padding: 3px; border-radius: 8px; background: var(--rail-2); border: 1px solid var(--rail-line); }
+.seg > span {
+  align-self: center; font-size: 9px; letter-spacing: .13em; text-transform: uppercase;
+  color: var(--rail-faint); font-weight: 700; padding: 0 7px 0 5px;
+}
+.seg button {
+  appearance: none; border: 0; background: transparent; color: var(--rail-dim);
+  font: inherit; font-size: 11.5px; font-weight: 600; padding: 5px 9px;
+  border-radius: 5px; cursor: pointer; white-space: nowrap;
+}
+.seg button:hover { color: var(--rail-ink); }
+.seg button[aria-pressed="true"] { background: var(--accent); color: #1A1206; }
+.tools .abbtn { padding: 6px 10px; }
+.tools .sp { flex: 1 1 auto; }
+
+.benchgrid { display: grid; gap: 16px; }
+
+.card {
+  background: var(--bench-2); border: 1px solid var(--bench-line);
+  border-radius: 11px; overflow: hidden;
+}
+.cardhead {
+  display: flex; align-items: baseline; gap: 10px; padding: 10px 13px;
+  border-bottom: 1px solid var(--bench-line);
+}
+.cardhead b { font-size: 10px; letter-spacing: .16em; text-transform: uppercase; color: var(--bench-dim); font-weight: 700; }
+.cardhead i { font-style: normal; font-family: var(--font-mono); font-size: 11px; color: var(--bench-dim); margin-left: auto; }
+
+/* The stage is a fixed 340px tall no matter what the pill does, and the pill is
+   pinned to its bottom edge exactly as overlay.css pins it to the window's.
+   A subject that drifts while you tune it is untunable. */
+.stage {
+  position: relative; height: 340px; overflow: hidden;
+  display: flex; flex-direction: column; justify-content: flex-end; align-items: center;
+  padding-bottom: 12px;
+}
+.zone { transform: scale(var(--k, 1)); transform-origin: 50% 100%; }
+
+.idlemark {
+  position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%);
+  font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .1em;
+  color: rgba(128,132,140,.75); text-transform: uppercase; pointer-events: none;
+  display: none;
+}
+.stage[data-idle="true"] .idlemark { display: block; }
+
+/* backdrops, carried over unchanged from pill-refined.html — they are the
+   grounds that study's conclusions were reached over, so changing them would
+   quietly move the goalposts */
+.bd { position: absolute; inset: 0; }
+.bd[hidden] { display: none; }
+.bd-doc { background: #FBFBFC; display: flex; }
+:root[data-theme="dark"] .bd-doc { background: #16171B; }
+.bd-doc .side { width: 128px; flex: 0 0 128px; background: #F1F2F4; border-right: 1px solid rgba(16,18,23,.09); padding: 12px 10px; display: flex; flex-direction: column; gap: 7px; }
+:root[data-theme="dark"] .bd-doc .side { background: #101115; border-right-color: rgba(255,255,255,.07); }
+.bd-doc .side i { display: block; height: 7px; border-radius: 3px; background: rgba(16,18,23,.13); }
+:root[data-theme="dark"] .bd-doc .side i { background: rgba(255,255,255,.13); }
+.bd-doc .side i:nth-child(2) { width: 78%; } .bd-doc .side i:nth-child(3) { width: 61%; }
+.bd-doc .side i:nth-child(4) { width: 88%; } .bd-doc .side i:nth-child(5) { width: 54%; }
+.bd-doc .side i:nth-child(6) { width: 72%; } .bd-doc .side i:nth-child(7) { width: 44%; }
+.bd-doc .body { flex: 1 1 auto; padding: 14px 18px; font-family: var(--font-mono); font-size: 11.5px; line-height: 1.85; white-space: pre; overflow: hidden; color: #3A4048; }
+:root[data-theme="dark"] .bd-doc .body { color: #B7BEC8; }
+.bd-doc .kw { color: #8250DF; } .bd-doc .st { color: #0A7C4A; } .bd-doc .nu { color: #B85C00; } .bd-doc .cm { color: #8B919B; }
+:root[data-theme="dark"] .bd-doc .kw { color: #C08CF5; }
+:root[data-theme="dark"] .bd-doc .st { color: #5FD39B; }
+:root[data-theme="dark"] .bd-doc .nu { color: #F0A45E; }
+
+.bd-busy {
+  background:
+    repeating-linear-gradient(90deg, rgba(255,255,255,.34) 0 2px, rgba(0,0,0,.10) 2px 4px),
+    conic-gradient(from 20deg at 22% 78%, #E23B3B, #E9A020, #2FA84F, #1E7FD6, #8B3FD0, #E23B3B),
+    conic-gradient(from 200deg at 78% 30%, #12A5A5, #D4256B, #F2C400, #1E3FBF, #12A5A5);
+  background-blend-mode: overlay, normal, normal;
+}
+.bd-busy::after {
+  content: ""; position: absolute; inset: 0;
+  background: repeating-linear-gradient(37deg, rgba(0,0,0,.22) 0 3px, rgba(255,255,255,.22) 3px 6px);
+  mix-blend-mode: overlay;
+}
+.bd-flat { background: #9AA0A8; }
+:root[data-theme="dark"] .bd-flat { background: #4A4F57; }
+
+/* Magnifier. Split ground because a shadow you cannot see over white is still
+   costing you a compositing layer. */
+.zoomcell { overflow: auto; background: linear-gradient(90deg, #EFEFF1 0 56%, #C6CAD1 56% 100%); }
+:root[data-theme="dark"] .zoomcell { background: linear-gradient(90deg, #101116 0 56%, #2A2D34 56% 100%); }
+.zoominner { height: 260px; display: flex; align-items: center; padding-left: 34px; min-width: 1200px; }
+.zoomstage { transform: scale(var(--z, 4)); transform-origin: 0 50%; }
+
+.readout {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 1px; background: var(--bench-line);
+}
+.readout div { background: var(--bench-2); padding: 9px 13px; }
+.readout dt { font-size: 9.5px; letter-spacing: .13em; text-transform: uppercase; color: var(--bench-dim); font-weight: 700; margin: 0 0 3px; }
+.readout dd { margin: 0; font-family: var(--font-mono); font-size: 12px; }
+.readout dd.bad { color: #C0392B; }
+:root[data-theme="dark"] .readout dd.bad { color: #FF8A78; }
+.readout dd.ok { color: #2A6B48; }
+:root[data-theme="dark"] .readout dd.ok { color: #7FCBA4; }
+
+.obs { padding: 13px; font-size: 12.5px; line-height: 1.6; color: var(--bench-dim); }
+.obs ol { margin: 0 0 12px; padding-left: 20px; }
+.obs li { margin-bottom: 8px; }
+.obs b { color: var(--bench-ink); }
+.obs code { font-family: var(--font-mono); font-size: .9em; background: rgba(128,128,128,.13); border-radius: 3px; padding: 0 3px; }
+.obs textarea {
+  width: 100%; min-height: 90px; resize: vertical; background: transparent;
+  color: var(--bench-ink); border: 1px solid var(--bench-line); border-radius: 8px;
+  font-family: var(--font-mono); font-size: 11.5px; padding: 8px; line-height: 1.6;
+}
+
+/* ------------------------------------------------------------------ export */
+
+.sheet {
+  position: fixed; inset: 0; z-index: 100; background: rgba(6,8,11,.62);
+  display: none; padding: 34px; backdrop-filter: blur(3px);
+}
+.sheet[data-open="true"] { display: block; }
+.sheetbox {
+  max-width: 940px; height: 100%; margin: 0 auto; display: flex; flex-direction: column;
+  background: var(--rail); border: 1px solid var(--rail-line); border-radius: 12px; overflow: hidden;
+}
+.sheethead { display: flex; gap: 8px; align-items: center; padding: 11px 13px; border-bottom: 1px solid var(--rail-line); }
+.sheethead b { color: var(--accent); font-size: 11px; letter-spacing: .16em; text-transform: uppercase; }
+.sheet textarea {
+  flex: 1 1 auto; width: 100%; resize: none; background: #0A0C0F; color: #D6DBE2;
+  border: 0; padding: 14px 16px; font-family: var(--font-mono); font-size: 11.5px; line-height: 1.62;
+}
+.sheet textarea:focus { outline: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .pl-pill, .pl-control, .pl-layer, .bez .ping i { transition-duration: 1ms !important; }
+}
+
+/* ==================================================================== ==== */
+/* ==== THE SUBJECT ======================================================== */
+/* ==== The refined pill, every number behind a custom property. Nothing  === */
+/* ==== here decides anything: the defaults live in the SPEC below and    === */
+/* ==== the baseline column of that table is pill-refined.html verbatim.  === */
+/* ==================================================================== ==== */
+
+.pl-overlay { display: flex; flex-direction: column; align-items: center; font-family: var(--font); }
+
+.pl-pill {
+  position: relative;
+  display: flex; align-items: center;
+  width: var(--w-listen); height: var(--h); padding: 0 var(--pad);
+  border-radius: var(--r);
+  background: var(--fill);
+  border: var(--hair) solid var(--line-c);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(var(--blur)) saturate(var(--sat));
+  -webkit-backdrop-filter: blur(var(--blur)) saturate(var(--sat));
+  opacity: 0; transform: translateY(var(--rise)) scale(var(--escale));
+  transition:
+    opacity   var(--d-exit) var(--exit-ease),
+    transform var(--d-exit) var(--exit-ease),
+    width     var(--d-morph) var(--spring);
+}
+.pl-pill::before {
+  content: ""; position: absolute; inset: 0; border-radius: inherit;
+  padding: var(--hair);
+  background: linear-gradient(var(--edge-top), transparent var(--edge-a), transparent var(--edge-b), var(--edge-bot));
+  -webkit-mask: linear-gradient(#000,#000) content-box, linear-gradient(#000,#000);
+  -webkit-mask-composite: xor; mask-composite: exclude;
+  pointer-events: none;
+}
+.pl-overlay[data-visible="true"] .pl-pill {
+  opacity: 1; transform: translateY(0) scale(1);
+  transition:
+    opacity   var(--d-enter) var(--spring),
+    transform var(--d-enter) var(--spring),
+    width     var(--d-morph) var(--spring);
+}
+.pl-overlay[data-state="thinking"]  .pl-pill { width: var(--w-think); }
+.pl-overlay[data-state="streaming"] .pl-pill { width: var(--w-stream); }
+.pl-overlay[data-state="result"]    .pl-pill { width: var(--w-result); }
+.pl-overlay[data-state="error"]     .pl-pill { width: var(--w-error); }
+
+.pl-control {
+  position: relative;
+  flex: 0 0 var(--cd); width: var(--cd); height: var(--cd); padding: 0; border: 0;
+  border-radius: 50%; background: transparent;
+  display: grid; place-items: center; cursor: pointer; overflow: hidden;
+  transition:
+    background 150ms ease,
+    flex-basis var(--d-morph) var(--spring),
+    width      var(--d-morph) var(--spring),
+    margin     var(--d-morph) var(--spring),
+    opacity    160ms var(--exit-ease),
+    transform  180ms var(--spring);
+}
+.pl-control.cancel  { margin-right: var(--gap); }
+.pl-control.confirm { margin-left: var(--gap); }
+.pl-control[data-off="true"] {
+  flex-basis: 0; width: 0; margin-left: 0; margin-right: 0;
+  opacity: 0; transform: scale(.55); pointer-events: none;
+}
+.pl-control svg {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: var(--icon); height: var(--icon);
+  fill: none; stroke-linecap: round; stroke-linejoin: round; display: block;
+}
+.pl-control .x    { stroke-width: var(--sw-x); }
+.pl-control .tick { stroke-width: var(--sw-tick); }
+
+.pl-control.cancel { background: var(--chip); }
+.pl-control.cancel svg { stroke: var(--dim); transition: stroke 130ms ease; }
+.pl-control.cancel:hover { background: var(--chip-h); }
+.pl-control.cancel:hover svg { stroke: var(--danger); }
+.pl-control.cancel:active { transform: scale(.92); }
+.pl-control.confirm { background: var(--commit); box-shadow: 0 1px 2px rgba(0,0,0,.18); }
+.pl-control.confirm svg { stroke: var(--commit-ink); }
+.pl-control.confirm:hover { transform: scale(1.07); }
+.pl-control.confirm:active { transform: scale(.94); }
+
+.pl-mid { position: relative; flex: var(--mid-flex, 1 1 auto); width: var(--mid-w, auto); min-width: 0; height: var(--mid-h); }
+.pl-layer {
+  position: absolute; inset: 0;
+  opacity: 0; transform: translateY(2px); pointer-events: none;
+  transition: opacity var(--fade-out) var(--exit-ease), transform var(--fade-out) var(--exit-ease);
+}
+.pl-layer[data-on="true"] {
+  opacity: 1; transform: translateY(0);
+  transition: opacity var(--fade-in) var(--spring) var(--fade-delay), transform var(--fade-in) var(--spring) var(--fade-delay);
+}
+.pl-meter-slot canvas { width: 100%; height: 100%; display: block; }
+
+.pl-text {
+  display: flex; align-items: center; overflow: hidden;
+  padding: 0 var(--pad);
+  font-size: var(--fs); color: var(--dim); font-weight: var(--fw);
+  letter-spacing: var(--ls); white-space: nowrap;
+}
+.pl-text > span { display: block; }
+.pl-overlay[data-state="streaming"] .pl-text {
+  justify-content: flex-end;
+  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 26px);
+  mask-image: linear-gradient(90deg, transparent 0, #000 26px);
+}
+.pl-overlay[data-state="result"] .pl-text,
+.pl-overlay[data-state="error"]  .pl-text {
+  justify-content: flex-start; padding-left: calc(var(--pad) + 3px);
+  -webkit-mask-image: linear-gradient(270deg, transparent 0, #000 22px);
+  mask-image: linear-gradient(270deg, transparent 0, #000 22px);
+}
+.pl-overlay[data-state="result"] .pl-text { color: var(--text); font-weight: var(--fw-result); }
+.pl-overlay[data-state="error"]  .pl-text { color: var(--danger); font-weight: var(--fw-error); }
+</style>
+
+<div class="lab">
+
+  <!-- ==================================================================== -->
+  <aside class="rail" id="rail" data-locked="false">
+    <div class="railhead">
+      <div class="brand"><b>Pill lab</b><i>baseline: pill-refined</i></div>
+
+      <div class="abrow">
+        <button type="button" class="abbtn" id="abA" aria-pressed="false" title="Show the held settings">A</button>
+        <button type="button" class="abbtn" id="abB" aria-pressed="true" title="Show the settings you are editing">B</button>
+        <button type="button" class="abbtn wide" id="hold" title="Copy B over A — this is the thing you are comparing against">Hold as A</button>
+        <button type="button" class="abbtn" id="pull" title="Copy A back over B">A&rarr;B</button>
+      </div>
+      <div class="ablive" id="abDiff">no differences held</div>
+
+      <div class="abrow" style="margin-top:8px">
+        <button type="button" class="abbtn wide" id="exportBtn">Export</button>
+        <button type="button" class="abbtn wide danger" id="resetBtn" title="Back to the refined baseline. Your current settings are moved into A first, so A&rarr;B undoes it.">Reset to refined</button>
+      </div>
+
+      <div class="lockbar">Showing <b>A</b>. Edits are paused so the comparison cannot drift &mdash; press <b>B</b> or <kbd>`</kbd> to resume.</div>
+    </div>
+
+    <div class="groups" id="groups"></div>
+  </aside>
+
+  <!-- ==================================================================== -->
+  <main class="bench">
+
+    <div class="tools">
+      <div class="seg" role="group" aria-label="State">
+        <span>State</span>
+        <button type="button" data-state="idle">Idle</button>
+        <button type="button" data-state="listening" aria-pressed="true">Listening</button>
+        <button type="button" data-state="thinking">Thinking</button>
+        <button type="button" data-state="streaming">Streaming</button>
+        <button type="button" data-state="result">Result</button>
+        <button type="button" data-state="error">Error</button>
+      </div>
+      <button type="button" class="abbtn" id="play">Play session</button>
+      <button type="button" class="abbtn" id="playErr">Play failure</button>
+      <div class="sp"></div>
+      <div class="seg" role="group" aria-label="Behind">
+        <span>Behind</span>
+        <button type="button" data-bd="doc" aria-pressed="true">Editor</button>
+        <button type="button" data-bd="busy">Busy</button>
+        <button type="button" data-bd="flat">Flat</button>
+      </div>
+      <div class="seg" role="group" aria-label="Scaling">
+        <span>DPR</span>
+        <button type="button" data-k="1" aria-pressed="true">1&times;</button>
+        <button type="button" data-k="1.25">1.25&times;</button>
+        <button type="button" data-k="1.5">1.5&times;</button>
+        <button type="button" data-k="2">2&times;</button>
+      </div>
+      <div class="seg" role="group" aria-label="Theme">
+        <span>Theme</span>
+        <button type="button" data-theme="light" aria-pressed="true">Light</button>
+        <button type="button" data-theme="dark">Dark</button>
+      </div>
+    </div>
+
+    <div class="benchgrid">
+
+      <section class="card">
+        <div class="cardhead"><b>Actual size</b><i id="dims">132 &times; 36</i></div>
+        <div class="stage" id="stage"></div>
+        <div class="readout" id="readout">
+          <div><dt>State</dt><dd id="roState">listening</dd></div>
+          <div><dt>Meter slot</dt><dd id="roSlot">&mdash;</dd></div>
+          <div><dt>Bar / gap</dt><dd id="roBar">&mdash;</dd></div>
+          <div><dt>Hairline</dt><dd id="roHair">&mdash;</dd></div>
+          <div><dt>Morph arithmetic</dt><dd id="roMorph">&mdash;</dd></div>
+          <div><dt>Glyph box</dt><dd id="roIcon">&mdash;</dd></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="cardhead">
+          <b>Magnifier</b>
+          <div class="seg" role="group" aria-label="Zoom" style="margin-left:auto">
+            <button type="button" data-z="2">2&times;</button>
+            <button type="button" data-z="3">3&times;</button>
+            <button type="button" data-z="4" aria-pressed="true">4&times;</button>
+            <button type="button" data-z="6">6&times;</button>
+            <button type="button" data-z="8">8&times;</button>
+          </div>
+        </div>
+        <div class="zoomcell"><div class="zoominner"><div class="zoomstage" id="zoom"></div></div></div>
+      </section>
+
+      <section class="card">
+        <div class="cardhead"><b>Observations</b><i>found while building, not fixed here</i></div>
+        <div class="obs">
+          <ol>
+            <li><b>The magnifier draws at true resolution, the stage does not lie about DPR.</b>
+              The scale control multiplies with your <i>own</i> monitor's DPR. The hairline
+              readout reports simulated device pixels only &mdash; on a display already at 125%,
+              what you see at the &ldquo;1.5&times;&rdquo; setting is 1.875&times;. Judge the numbers, not the photons.</li>
+            <li><b><code>--faint</code> and <code>--line</code> in <code>overlay.css</code> are defined and never used.</b>
+              Both themes declare them; no rule reads either. Not exposed in this lab, because
+              exposing a token nothing consumes would be a knob wired to nothing.</li>
+            <li><b><code>EXIT_MS</code> in <code>overlay.js</code> duplicates <code>--dur-exit</code> by hand.</b>
+              Change the exit duration here and the stylesheet is right but the dismiss timer
+              is not. The export emits the constant alongside the CSS for exactly this reason.</li>
+            <li><b>Cap headroom set to 0 reproduces the shipped clipping bug.</b>
+              <code>overlay.js</code> uses <code>maxHalf = h / 2</code>, so a bar at full level has
+              its round caps clipped square. Set <i>cap headroom</i> to 0, play a session and watch
+              the peaks go flat &mdash; that is what ships today.</li>
+            <li><b>Backdrop saturate is exposed at 1.0.</b> The refined pass removed it and argued why.
+              It is a live control here because a lab that hides a rejected option cannot be used to
+              re-test the rejection; 1.0 is off, and export omits it when it is off.</li>
+          </ol>
+          <textarea id="notes" placeholder="Your own notes. Saved with the settings."></textarea>
+        </div>
+      </section>
+
+    </div>
+  </main>
+</div>
+
+<!-- ==================================================================== -->
+<div class="sheet" id="sheet">
+  <div class="sheetbox">
+    <div class="sheethead">
+      <b id="sheetTitle">Export</b>
+      <div class="seg" role="group" aria-label="Export kind">
+        <button type="button" data-x="css" aria-pressed="true">Stylesheet</button>
+        <button type="button" data-x="json">Settings JSON</button>
+      </div>
+      <div class="sp" style="flex:1 1 auto"></div>
+      <button type="button" class="abbtn" id="copyBtn">Copy</button>
+      <button type="button" class="abbtn" id="applyJson" hidden>Apply JSON</button>
+      <button type="button" class="abbtn" id="closeSheet">Close</button>
+    </div>
+    <textarea id="sheetText" spellcheck="false"></textarea>
+  </div>
+</div>
+
+<!-- One template, cloned into the stage and the magnifier, so there is exactly
+     one copy of the markup and the two views cannot diverge. -->
+<template id="tplPill">
+  <div class="pl-overlay" data-visible="false" data-state="idle">
+    <div class="pl-pill">
+      <button class="pl-control cancel" type="button" title="Cancel" tabindex="-1">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path class="x" d="M8 8 L16 16 M16 8 L8 16" /></svg>
+      </button>
+      <span class="pl-mid">
+        <span class="pl-layer pl-meter-slot" data-on="false"><canvas></canvas></span>
+        <span class="pl-layer pl-text" data-on="false"><span></span></span>
+      </span>
+      <button class="pl-control confirm" type="button" title="Done" tabindex="-1">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path class="tick" d="M7.5 12.4 L10.6 15.6 L16.8 9" /></svg>
+      </button>
+    </div>
+  </div>
+</template>
+
+<template id="tplBackdrop">
+  <div class="bd bd-doc" data-bd="doc">
+    <div class="side"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+    <div class="body"><span class="cm">// session.js</span>
+<span class="kw">const</span> RATE = <span class="nu">16000</span>;
+<span class="kw">async function</span> start(mode) {
+  <span class="kw">await</span> warm(<span class="st">'parakeet'</span>);
+  <span class="kw">const</span> ctx = <span class="kw">await</span> readContext();
+  overlay.send(<span class="st">'session:start'</span>, { mode });
+  <span class="kw">return</span> capture(RATE, ctx);
+}</div>
+  </div>
+  <div class="bd bd-busy" data-bd="busy" hidden></div>
+  <div class="bd bd-flat" data-bd="flat" hidden></div>
+</template>
+
+<script>
+'use strict';
+
+(function () {
+
+  var root = document.documentElement;
+  var KEY = 'typd.pill-lab.v1';
+
+  /* ===================================================================== spec
+     One table. Every default in it is pill-refined.html verbatim, which is what
+     makes "Reset to refined" a fact rather than an approximation. `theme: true`
+     means the parameter is stored per theme and the panel edits whichever theme
+     is on the stage — the same split the stylesheet already has. */
+
+  var FACES = [
+    ['text',    '"Segoe UI Variable Text", "Segoe UI Variable Small", "Segoe UI", -apple-system, sans-serif', 'Segoe UI Variable Text (refined)'],
+    ['small',   '"Segoe UI Variable Small", "Segoe UI", sans-serif', 'Segoe UI Variable Small'],
+    ['display', '"Segoe UI Variable Display", "Segoe UI", sans-serif', 'Segoe UI Variable Display (shipped)'],
+    ['segoe',   '"Segoe UI", sans-serif', 'Segoe UI'],
+    ['system',  'system-ui, sans-serif', 'system-ui'],
+    ['custom',  '', 'Custom…']
+  ];
+
+  /**
+   * The glyph box, never wider than the button holding it.
+   *
+   * No cap. An earlier version clamped this to the disc, which stopped the
+   * glyph sliding but also made the control do nothing past 24 -- the slider
+   * moved and the pill did not.
+   *
+   * The slide was never about size. `.pl-control` keeps `overflow: hidden`
+   * because the fold-away morph animates width to 0 and the glyph would
+   * otherwise spill across the pill on the way out; but a grid item larger than
+   * its container has its leading overflow clipped rather than shared, so it
+   * drifts off-centre. The svg is absolutely centred instead, which does not
+   * depend on the container's size, and the circle then trims an oversized
+   * glyph evenly. Too big now looks too big rather than looking broken.
+   */
+  function iconBox() { return V('icon'); }
+
+  function n(id, label, min, max, step, def, unit, extra) {
+    var o = { id: id, t: 'num', label: label, min: min, max: max, step: step, def: def, unit: unit || '' };
+    if (extra) for (var k in extra) o[k] = extra[k];
+    return o;
+  }
+  function tn(id, label, min, max, step, defL, defD, unit) {
+    return { id: id, t: 'num', label: label, min: min, max: max, step: step, def: defL, defDark: defD, unit: unit || '', theme: true };
+  }
+  function col(id, label, defL, defD) {
+    return { id: id, t: 'color', label: label, def: defL, defDark: defD, theme: true };
+  }
+  function bool(id, label, def) { return { id: id, t: 'bool', label: label, def: def }; }
+
+  var SPEC = [
+    {
+      id: 'geom', name: 'Geometry', open: true,
+      note: 'A 24px disc inset 6px in a 36px pill is concentric with the end-cap arc — the 6px ring around it is uniform the whole way round. If you move height, inset or diameter, that stops being true; the readout below the stage tells you when it has.',
+      items: [
+        n('h',       'Pill height',        24, 64,  1,   36, 'px'),
+        bool('rFull','Corner radius follows height (fully round)', true),
+        n('r',       'Corner radius',       0, 40,  0.5, 18, 'px', { lockedBy: 'rFull' }),
+        n('cd',      'Control diameter',   10, 64,  1,   24, 'px'),
+        n('pad',     'Control inset',       0, 20,  0.5,  6, 'px'),
+        n('gap',     'Gap, control to slot',0, 24,  0.5,  6, 'px'),
+        { t: 'sub', name: 'State widths' },
+        n('wListen', 'Listening',          70, 380, 1,  132, 'px'),
+        n('wThink',  'Thinking',           60, 380, 1,  102, 'px'),
+        n('wStream', 'Streaming',         100, 540, 1,  246, 'px'),
+        n('wResult', 'Result',            100, 540, 1,  246, 'px'),
+        n('wError',  'Error',             100, 540, 1,  246, 'px'),
+        { t: 'endsub' },
+        { t: 'sub', name: 'Icons' },
+        n('icon',    'Icon box',           10, 64,  1,   24, 'px'),
+        n('swX',     'Cancel stroke',     0.5,  4,  0.05, 1.7, 'px'),
+        n('swTick',  'Commit stroke',     0.5,  4,  0.05, 1.9, 'px'),
+        { t: 'endsub' }
+      ]
+    },
+    {
+      id: 'surf', name: 'Surface', open: true, themed: true,
+      note: 'Fill, blur, edge and shadow are stored per theme and the panel edits the one on the stage. Flip the theme in the toolbar to tune the other.',
+      items: [
+        tn('fillA',  'Fill opacity',        0, 1, 0.005, 0.97, 0.95, ''),
+        n('blur',    'Backdrop blur',       0, 40, 0.5, 12, 'px'),
+        n('sat',     'Backdrop saturate',   1, 2, 0.05, 1, '×'),
+        { t: 'sub', name: 'Hairline' },
+        n('hair',    'Border width',     0.25, 3, 0.05, 1, 'dp'),
+        bool('hairSnap', 'Snap to whole device pixels', true),
+        tn('lineA',  'Border alpha',        0, 0.6, 0.005, 0.13, 0.145, ''),
+        { t: 'endsub' },
+        { t: 'sub', name: 'Edge (the sheen)' },
+        tn('edgeTopA','Top light alpha',    0, 1, 0.005, 0.95, 0.16, ''),
+        tn('edgeBotA','Bottom shade alpha', 0, 1, 0.005, 0.07, 0.30, ''),
+        n('edgeA',   'Top light ends at',   0, 100, 1, 46, '%'),
+        n('edgeB',   'Bottom shade starts', 0, 100, 1, 56, '%'),
+        { t: 'endsub' },
+        { t: 'sub', name: 'Shadow — contact' },
+        tn('s1x', 'X', -20, 20, 0.5, 0, 0, 'px'), tn('s1y', 'Y', -20, 40, 0.5, 1, 1, 'px'),
+        tn('s1b', 'Blur', 0, 60, 0.5, 1, 2, 'px'), tn('s1s', 'Spread', -20, 20, 0.5, 0, 0, 'px'),
+        tn('s1a', 'Opacity', 0, 1, 0.005, 0.06, 0.45, ''),
+        { t: 'endsub' },
+        { t: 'sub', name: 'Shadow — lift' },
+        tn('s2x', 'X', -20, 20, 0.5, 0, 0, 'px'), tn('s2y', 'Y', -20, 40, 0.5, 4, 6, 'px'),
+        tn('s2b', 'Blur', 0, 80, 0.5, 10, 16, 'px'), tn('s2s', 'Spread', -20, 20, 0.5, 0, 0, 'px'),
+        tn('s2a', 'Opacity', 0, 1, 0.005, 0.085, 0.40, ''),
+        { t: 'endsub' },
+        { t: 'sub', name: 'Shadow — ambient' },
+        tn('s3x', 'X', -20, 20, 0.5, 0, 0, 'px'), tn('s3y', 'Y', -20, 60, 0.5, 12, 14, 'px'),
+        tn('s3b', 'Blur', 0, 120, 1, 26, 32, 'px'), tn('s3s', 'Spread', -20, 20, 0.5, 0, 0, 'px'),
+        tn('s3a', 'Opacity', 0, 1, 0.005, 0.07, 0.30, ''),
+        { t: 'endsub' }
+      ]
+    },
+    {
+      id: 'meter', name: 'Meter', open: true,
+      note: 'Nine slots of peak history, newest at the right, gliding left. Cap headroom is the one that reproduces the shipped bug at 0.',
+      items: [
+        bool('mwAuto', 'Slot fills the pill', true),
+        n('mw',      'Slot width',         20, 320, 1, 58, 'px', { lockedBy: 'mwAuto' }),
+        n('mh',      'Slot height',         6, 34, 1, 18, 'px'),
+        n('bars',    'Bar count',           3, 24, 1, 9, ''),
+        n('barW',    'Bar width',           1, 10, 0.1, 3, 'px'),
+        bool('barFit', 'Fit bars to the slot (gap is derived)', true),
+        n('barGap',  'Bar gap',             0, 14, 0.1, 3.44, 'px', { lockedBy: 'barFit' }),
+        bool('barRFull', 'Round caps (radius = half the bar)', true),
+        n('barR',    'Bar radius',          0, 6, 0.05, 1.5, 'px', { lockedBy: 'barRFull' }),
+        { t: 'sub', name: 'Behaviour' },
+        n('win',     'Peak window',        10, 220, 1, 52, 'ms'),
+        n('glide',   'Glide interpolation', 0, 1, 0.01, 1, '×'),
+        n('dissolve','Edge dissolve',       0, 4, 0.05, 1.3, 'sl'),
+        bool('headAuto', 'Cap headroom = half a bar', true),
+        n('head',    'Cap headroom',        0, 8, 0.05, 1.5, 'px', { lockedBy: 'headAuto' }),
+        n('floor',   'Silence floor',       0, 0.3, 0.005, 0.02, ''),
+        n('rest',    'Resting half-height', 0.25, 8, 0.05, 1.35, 'px'),
+        { t: 'endsub' },
+        { t: 'sub', name: 'Thinking pulse' },
+        n('pulseH',  'Height',              0, 1, 0.01, 0.55, ''),
+        n('pulseR',  'Rate',              0.3, 3, 0.01, 1.28, '×'),
+        n('pulseS',  'Smoothing',        0.05, 1, 0.01, 0.30, ''),
+        { t: 'endsub' }
+      ]
+    },
+    {
+      id: 'motion', name: 'Motion',
+      note: 'Drag the handles. Y runs past 0 and 1 on purpose — the spring overshoots at 1.02 and clipping the field would hide it.',
+      items: [
+        n('dEnter', 'Enter',  40, 700, 5, 200, 'ms'),
+        n('dMorph', 'Morph',  40, 700, 5, 260, 'ms'),
+        n('dExit',  'Exit',   20, 500, 5, 140, 'ms'),
+        n('rise',   'Rise distance', 0, 24, 0.5, 6, 'px'),
+        n('escale', 'Enter scale', 0.8, 1, 0.005, 0.96, '×'),
+        { t: 'sub', name: 'Slot cross-fade' },
+        n('fadeOut',  'Out',   10, 400, 5, 100, 'ms'),
+        n('fadeIn',   'In',    10, 500, 5, 180, 'ms'),
+        n('fadeDelay','Delay',  0, 300, 5,  80, 'ms'),
+        { t: 'endsub' },
+        { id: 'spring', t: 'bez', label: 'Spring', def: [0.16, 1.02, 0.3, 1.0] },
+        { id: 'exit',   t: 'bez', label: 'Exit',   def: [0.4, 0, 0.9, 0.35] }
+      ]
+    },
+    {
+      id: 'type', name: 'Type',
+      note: 'Segoe UI Variable ships four optical sizes; Display is cut for 24pt and up. The face control is where that argument is re-testable.',
+      items: [
+        n('fs',       'Size',            7, 22, 0.5, 12.5, 'px'),
+        n('fw',       'Weight, streaming', 100, 900, 10, 450, ''),
+        n('fwResult', 'Weight, result',    100, 900, 10, 600, ''),
+        n('fwError',  'Weight, error',     100, 900, 10, 550, ''),
+        n('ls',       'Letter-spacing', -0.05, 0.1, 0.002, 0, 'em'),
+        { id: 'face', t: 'sel', label: 'Face', def: 'text', options: FACES },
+        { id: 'faceCustom', t: 'text', label: 'Custom stack', def: '"Segoe UI", sans-serif' }
+      ]
+    },
+    {
+      id: 'colour', name: 'Colour', themed: true,
+      note: 'Each token is a colour plus, where the stylesheet has one, a separate alpha. Stored per theme; the panel edits the theme on the stage.',
+      items: [
+        col('cFill',      'Pill fill',        '#FDFDFE', '#111216'),
+        col('cLine',      'Border',           '#101217', '#FFFFFF'),
+        col('cEdgeTop',   'Edge, top light',  '#FFFFFF', '#FFFFFF'),
+        col('cEdgeBot',   'Edge, bottom',     '#101217', '#000000'),
+        col('cShadow',    'Shadow',           '#101217', '#000000'),
+        col('cText',      'Text',             '#14161B', '#F4F5F7'),
+        col('cDim',       'Text, dim',        '#5A6068', '#A2A8B1'),
+        col('cMeter',     'Meter ink',        '#1C1F25', '#F4F5F7'),
+        col('cChip',      'Cancel chip',      '#101217', '#FFFFFF'),
+        tn('chipA',       'Chip alpha',       0, 1, 0.005, 0.065, 0.10, ''),
+        tn('chipHA',      'Chip alpha, hover',0, 1, 0.005, 0.14,  0.20, ''),
+        col('cCommit',    'Commit disc',      '#16181D', '#F4F5F7'),
+        col('cCommitInk', 'Commit glyph',     '#FFFFFF', '#14161B'),
+        col('cDanger',    'Danger',           '#AF2C21', '#E8695C')
+      ]
+    }
+  ];
+
+  var MAP = {};
+  SPEC.forEach(function (g) {
+    g.items.forEach(function (it) { if (it.id) MAP[it.id] = it; });
+  });
+
+  /* ==================================================================== state */
+
+  function clone(v) { return (v && v.slice) ? v.slice() : v; }
+
+  function baseline() {
+    var o = {};
+    for (var id in MAP) {
+      var it = MAP[id];
+      o[id] = it.theme ? { l: clone(it.def), d: clone(it.defDark) } : clone(it.def);
+    }
+    return o;
+  }
+  function copy(src) {
+    var o = {};
+    for (var id in src) {
+      var v = src[id];
+      o[id] = (v && typeof v === 'object' && !v.slice) ? { l: clone(v.l), d: clone(v.d) } : clone(v);
+    }
+    return o;
+  }
+
+  var B = baseline();      // what you are editing
+  var A = baseline();      // what you are comparing against
+  var showA = false;
+
+  var UI = { theme: 'light', bd: 'doc', k: 1, z: 4, state: 'listening', notes: '', open: {} };
+
+  function bank() { return showA ? A : B; }
+  function raw(id) { return bank()[id]; }
+  function V(id) {
+    var it = MAP[id], v = bank()[id];
+    var base = it.theme ? (UI.theme === 'dark' ? v.d : v.l) : v;
+    // Linked parameters are read through here so nothing downstream has to know
+    // whether a number was typed or derived.
+    if (id === 'r'     && bank().rFull)     return bank().h / 2;
+    if (id === 'barR'  && bank().barRFull)  return V('barW') / 2;
+    if (id === 'head'  && bank().headAuto)  return V('barW') / 2;
+    return base;
+  }
+  function put(id, v) {
+    var it = MAP[id];
+    if (it.theme) { if (UI.theme === 'dark') B[id].d = v; else B[id].l = v; }
+    else B[id] = v;
+  }
+
+  /* =============================================================== rendering */
+
+  function hexToRgb(hex) {
+    var h = String(hex).replace('#', '');
+    if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+    var i = parseInt(h, 16);
+    return [(i >> 16) & 255, (i >> 8) & 255, i & 255];
+  }
+  function rgba(hex, a) {
+    var c = hexToRgb(hex);
+    return 'rgba(' + c[0] + ', ' + c[1] + ', ' + c[2] + ', ' + round(a, 3) + ')';
+  }
+  function round(v, d) {
+    var f = Math.pow(10, d == null ? 2 : d);
+    return Math.round(v * f) / f;
+  }
+  function bezStr(v) { return 'cubic-bezier(' + v.map(function (x) { return round(x, 3); }).join(', ') + ')'; }
+
+  function faceStack() {
+    var key = raw('face');
+    if (key === 'custom') return raw('faceCustom') || 'sans-serif';
+    for (var i = 0; i < FACES.length; i++) if (FACES[i][0] === key) return FACES[i][1];
+    return FACES[0][1];
+  }
+
+  function shadowLayers() {
+    var out = [];
+    for (var i = 1; i <= 3; i++) {
+      out.push(V('s' + i + 'x') + 'px ' + V('s' + i + 'y') + 'px ' + V('s' + i + 'b') + 'px ' +
+               V('s' + i + 's') + 'px ' + rgba(V('cShadow'), V('s' + i + 'a')));
+    }
+    return out;
+  }
+  function shadowStr() { return shadowLayers().join(', '); }
+
+  /* The hairline, honestly. Windows DPI scaling preserves physical size, so the
+     stage scales and the border has to be divided back down to stay one device
+     pixel. Turning the snap off is how you reproduce the 1.5dppx smear. */
+  function hairCss() {
+    return raw('hairSnap') ? (V('hair') / UI.k) : V('hair');
+  }
+
+  var SCOPES = [];
+
+  function applyCss() {
+    var css = {
+      '--h': V('h') + 'px',
+      '--r': V('r') + 'px',
+      '--cd': V('cd') + 'px',
+      '--pad': V('pad') + 'px',
+      '--gap': V('gap') + 'px',
+      '--w-listen': V('wListen') + 'px',
+      '--w-think': V('wThink') + 'px',
+      '--w-stream': V('wStream') + 'px',
+      '--w-result': V('wResult') + 'px',
+      '--w-error': V('wError') + 'px',
+      '--icon': iconBox() + 'px',
+      '--sw-x': V('swX'),
+      '--sw-tick': V('swTick'),
+
+      '--fill': rgba(V('cFill'), V('fillA')),
+      '--line-c': rgba(V('cLine'), V('lineA')),
+      '--blur': V('blur') + 'px',
+      '--sat': V('sat'),
+      '--hair': round(hairCss(), 4) + 'px',
+      '--shadow': shadowStr(),
+      '--edge-top': rgba(V('cEdgeTop'), V('edgeTopA')),
+      '--edge-bot': rgba(V('cEdgeBot'), V('edgeBotA')),
+      '--edge-a': V('edgeA') + '%',
+      '--edge-b': V('edgeB') + '%',
+
+      '--mid-h': V('mh') + 'px',
+      '--mid-flex': raw('mwAuto') ? '1 1 auto' : '0 0 auto',
+      '--mid-w': raw('mwAuto') ? 'auto' : (V('mw') + 'px'),
+
+      '--d-enter': V('dEnter') + 'ms',
+      '--d-morph': V('dMorph') + 'ms',
+      '--d-exit': V('dExit') + 'ms',
+      '--rise': V('rise') + 'px',
+      '--escale': V('escale'),
+      '--fade-out': V('fadeOut') + 'ms',
+      '--fade-in': V('fadeIn') + 'ms',
+      '--fade-delay': V('fadeDelay') + 'ms',
+      '--spring': bezStr(raw('spring')),
+      '--exit-ease': bezStr(raw('exit')),
+
+      '--font': faceStack(),
+      '--fs': V('fs') + 'px',
+      '--fw': V('fw'),
+      '--fw-result': V('fwResult'),
+      '--fw-error': V('fwError'),
+      '--ls': V('ls') + 'em',
+
+      '--text': V('cText'),
+      '--dim': V('cDim'),
+      '--meter-ink': V('cMeter'),
+      '--chip': rgba(V('cChip'), V('chipA')),
+      '--chip-h': rgba(V('cChip'), V('chipHA')),
+      '--commit': V('cCommit'),
+      '--commit-ink': V('cCommitInk'),
+      '--danger': V('cDanger')
+    };
+    SCOPES.forEach(function (el) {
+      for (var k in css) el.style.setProperty(k, css[k]);
+    });
+  }
+
+  /* ================================================================ assembly */
+
+  var tplPill = document.getElementById('tplPill');
+  var tplBackdrop = document.getElementById('tplBackdrop');
+  var stage = document.getElementById('stage');
+  var zoomHost = document.getElementById('zoom');
+
+  stage.appendChild(tplBackdrop.content.cloneNode(true));
+  var idleMark = document.createElement('div');
+  idleMark.className = 'idlemark';
+  idleMark.textContent = 'idle — the overlay is hidden';
+  stage.appendChild(idleMark);
+
+  function mount(host, cls) {
+    var zone = document.createElement('div');
+    zone.className = cls;
+    zone.appendChild(tplPill.content.cloneNode(true));
+    host.appendChild(zone);
+    SCOPES.push(zone);
+    return zone.firstElementChild;
+  }
+  var OVERLAYS = [mount(stage, 'zone'), mount(zoomHost, 'zoomzone')];
+
+  var meters = [];
+  Array.prototype.forEach.call(document.querySelectorAll('.pl-meter-slot canvas'), function (c) {
+    meters.push({ el: c, ctx: c.getContext('2d') });
+  });
+
+  /* ================================================================== signal */
+
+  /* The synthetic envelope from overlay.js, unchanged. Using the shipped
+     fallback rather than a nicer curve means the silhouette you tune against is
+     the silhouette the app produces when there is no microphone. */
+  function envelope(t) {
+    var syl   = Math.abs(Math.sin(t * 4.1) * Math.sin(t * 2.3 + 1.1));
+    var micro = 0.55 + 0.45 * Math.sin(t * 21.7 + 0.6);
+    var phr   = 0.5 + 0.5 * Math.sin(t * 0.52 - 0.4);
+    return Math.min(1, syl * micro * (phr > 0.2 ? 1 : 0.07) * 1.7);
+  }
+
+  var hist = new Float32Array(32);   // peak history, index 0 is newest
+  var pulse = new Float32Array(32);  // thinking pulse, drawn left to right
+  var pending = 0, lastPush = 0;
+
+  function keep() { return Math.min(31, Math.round(V('bars')) + 3); }
+
+  function step(now, t, state) {
+    var interval = V('win');
+    var K = keep();
+    if (state === 'listening') {
+      var lv = envelope(t);
+      if (lv > pending) pending = lv;
+      while (now - lastPush >= interval) {
+        lastPush += interval;
+        for (var s = K - 1; s > 0; s--) hist[s] = hist[s - 1];
+        hist[0] = Math.max(V('floor'), pending);
+        pending = 0;
+      }
+      if (now - lastPush > interval * 6) lastPush = now;   // a backgrounded tab
+    } else if (state === 'thinking') {
+      var count = Math.round(V('bars'));
+      var pos = ((t * V('pulseR')) % 1.7) * (count + 4) - 2.0;
+      for (var j = 0; j < count; j++) {
+        var d = j - pos;
+        pulse[j] += (V('floor') + V('pulseH') * Math.exp(-(d * d) / 2.1) - pulse[j]) * V('pulseS');
+      }
+      lastPush = now;
+    } else {
+      for (var k = 0; k < 32; k++) { hist[k] *= 0.84; pulse[k] *= 0.84; }
+      lastPush = now;
+    }
+  }
+
+  var lastSlot = 0, lastBarW = 0, lastGap = 0;
+
+  function paint(m, now, state) {
+    var el = m.el;
+    var w = el.clientWidth, h = el.clientHeight;
+    if (!w || !h) return;
+
+    // Size from the on-screen rect, so the magnifier and the scale simulation
+    // both draw at true device resolution rather than being upscaled.
+    var rect = el.getBoundingClientRect();
+    var kk = rect.width > 0 ? rect.width / w : 1;
+    var dpr = (window.devicePixelRatio || 1) * kk;
+    var W = Math.round(w * dpr), H = Math.round(h * dpr);
+    if (el.width !== W || el.height !== H) { el.width = W; el.height = H; }
+    m.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    var ctx = m.ctx;
+    ctx.clearRect(0, 0, w, h);
+    if (state !== 'listening' && state !== 'thinking') return;
+
+    var snap = function (v) { return Math.round(v * dpr) / dpr; };
+    var count = Math.round(V('bars'));
+    var slot = raw('barFit') ? (w / count) : (V('barW') + V('barGap'));
+    var barW = snap(Math.max(1, Math.min(V('barW'), slot)));
+    var radius = Math.min(V('barR'), barW / 2);
+    var mid = h / 2;
+    var maxHalf = Math.max(barW / 2, h / 2 - V('head'));
+    var rest = Math.min(V('rest'), maxHalf);
+
+    lastSlot = w; lastBarW = barW; lastGap = slot - barW;
+
+    var frac = state === 'listening'
+      ? Math.min(1, Math.max(0, (now - lastPush) / V('win'))) * V('glide')
+      : 0;
+    var fadeOver = Math.max(0.001, slot * V('dissolve'));
+    var total = state === 'listening' ? keep() : count;
+
+    ctx.shadowBlur = 0;
+    // Read the ink once per canvas, not once per bar: getComputedStyle inside
+    // the bar loop is a forced style recalc at sixty frames a second.
+    ctx.fillStyle = getComputedStyle(el).getPropertyValue('--meter-ink').trim() || '#1C1F25';
+
+    for (var i = 0; i < total; i++) {
+      var v = state === 'listening' ? hist[i] : pulse[i];
+      var cx = state === 'listening' ? w - slot * (i + 0.5 + frac) : slot * (i + 0.5);
+      if (cx < -slot || cx > w + slot) continue;
+
+      var a = state === 'listening' ? Math.min(1, Math.max(0, cx / fadeOver)) : 1;
+      if (a <= 0.01) continue;
+
+      var half = rest + v * (maxHalf - rest);
+      var x = snap(cx - barW / 2);
+      var top = snap(mid - half);
+      var barH = Math.max(barW, snap(half * 2));
+
+      ctx.globalAlpha = a;
+      ctx.beginPath();
+      roundRect(ctx, x, top, barW, barH, radius);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function roundRect(ctx, x, y, w, h, r) {
+    if (ctx.roundRect) { ctx.roundRect(x, y, w, h, r); return; }
+    r = Math.min(r, w / 2, h / 2);
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  /* =========================================================== state machine */
+
+  var STATES = ['idle', 'listening', 'thinking', 'streaming', 'result', 'error'];
+  var state = 'listening';
+  var t0 = performance.now();
+  var seq = 0;
+
+  var STREAM_FULL = 'the overlay is the entire product surface, so it should feel ' +
+                    'like part of the operating system rather than an app you visit.';
+  var RESULT_TEXT = 'Pasted into Visual Studio Code';
+  var ERROR_TEXT  = 'Microphone is in use by another app';
+
+  function present(s, visible, text) {
+    OVERLAYS.forEach(function (o) {
+      o.setAttribute('data-state', s);
+      o.setAttribute('data-visible', visible ? 'true' : 'false');
+
+      var textLayer = o.querySelector('.pl-text');
+      var meterLayer = o.querySelector('.pl-meter-slot');
+      var showText = (s === 'streaming' || s === 'result' || s === 'error');
+      textLayer.setAttribute('data-on', showText && visible ? 'true' : 'false');
+      meterLayer.setAttribute('data-on', !showText && visible ? 'true' : 'false');
+      textLayer.firstElementChild.textContent = text;
+      if (s === 'streaming') textLayer.scrollLeft = textLayer.scrollWidth;
+
+      var noConfirm = (s !== 'listening');
+      var noCancel  = (s === 'result' || s === 'idle');
+      o.querySelector('.pl-control.confirm').setAttribute('data-off', noConfirm ? 'true' : 'false');
+      o.querySelector('.pl-control.cancel').setAttribute('data-off', noCancel ? 'true' : 'false');
+    });
+    stage.setAttribute('data-idle', (!visible || s === 'idle') ? 'true' : 'false');
+    document.getElementById('roState').textContent = visible ? s : 'hidden';
+  }
+
+  function setState(s, text) {
+    state = s;
+    UI.state = s;
+    present(s, s !== 'idle', text || '');
+    segPress('State', 'data-state', s);
+  }
+
+  function stepTo(s) {
+    seq++;
+    t0 = performance.now();
+    lastPush = performance.now();
+    if (s === 'listening' || s === 'thinking') { hist.fill(0); pulse.fill(0); }
+    setState(s, s === 'streaming' ? STREAM_FULL : s === 'result' ? RESULT_TEXT : s === 'error' ? ERROR_TEXT : '');
+    save();
+  }
+
+  /* Real timings: 375ms of thinking is the measured first-token latency from
+     bench/RESULTS.md, 900ms and 2200ms are the lingers out of overlay.js. */
+  var T = { listen: 2600, think: 375, word: 58, result: 900, exit: 220, error: 2200 };
+
+  function play(fail) {
+    var mine = ++seq;
+    var ok = function () { return mine === seq; };
+    var wait = function (ms, fn) { setTimeout(function () { if (ok()) fn(); }, ms); };
+
+    t0 = performance.now();
+    lastPush = performance.now();
+    hist.fill(0); pulse.fill(0);
+    setState('listening', '');
+
+    wait(T.listen, function () {
+      setState('thinking', '');
+      wait(T.think, function () {
+        if (fail) {
+          setState('error', ERROR_TEXT);
+          wait(T.error, function () {
+            present('error', false, ERROR_TEXT);
+            wait(T.exit, function () { setState('idle', ''); });
+          });
+          return;
+        }
+        var words = STREAM_FULL.split(' ');
+        var shown = '', i = 0;
+        (function tick() {
+          if (!ok()) return;
+          if (i < words.length) {
+            shown += (shown ? ' ' : '') + words[i++];
+            setState('streaming', shown);
+            setTimeout(tick, T.word);
+            return;
+          }
+          setState('result', RESULT_TEXT);
+          wait(T.result, function () {
+            present('result', false, RESULT_TEXT);
+            wait(T.exit, function () { setState('idle', ''); });
+          });
+        })();
+      });
+    });
+  }
+
+  /* ============================================================= the panel */
+
+  var groupsEl = document.getElementById('groups');
+  var widgets = {};    // id -> refresh()
+
+  /* A locked slider that keeps showing its last typed number is lying: the
+     value in force is the measured one. These two report what the meter is
+     actually drawing, so the disabled box is still telling the truth. */
+  var DERIVED = {
+    mw:     function () { return round(lastSlot, 1); },
+    barGap: function () { return round(lastGap, 2); }
+  };
+
+  function el(tag, cls, txt) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (txt != null) e.textContent = txt;
+    return e;
+  }
+
+  function buildPanel() {
+    SPEC.forEach(function (g) {
+      var d = el('details', 'g');
+      d.open = UI.open[g.id] != null ? UI.open[g.id] : !!g.open;
+      d.addEventListener('toggle', function () { UI.open[g.id] = d.open; save(); });
+
+      var s = el('summary');
+      s.appendChild(el('span', null, g.name));
+      if (g.themed) {
+        var tag = el('span', 'themetag', 'per theme');
+        tag.setAttribute('data-themetag', '1');
+        s.appendChild(tag);
+      }
+      d.appendChild(s);
+
+      var body = el('div', 'gbody');
+      if (g.note) body.appendChild(el('p', 'gnote', g.note));
+
+      var target = body;
+      g.items.forEach(function (it) {
+        if (it.t === 'sub') {
+          var box = el('div', 'sub');
+          box.appendChild(el('h4', null, it.name));
+          body.appendChild(box);
+          target = box;
+          return;
+        }
+        if (it.t === 'endsub') { target = body; return; }
+        target.appendChild(buildRow(it));
+      });
+
+      d.appendChild(body);
+      groupsEl.appendChild(d);
+    });
+  }
+
+  function buildRow(it) {
+    if (it.t === 'num')   return rowNum(it);
+    if (it.t === 'color') return rowColor(it);
+    if (it.t === 'bool')  return rowBool(it);
+    if (it.t === 'sel')   return rowSel(it);
+    if (it.t === 'text')  return rowText(it);
+    if (it.t === 'bez')   return rowBez(it);
+    return el('div');
+  }
+
+  function rowNum(it) {
+    var row = el('div', 'row');
+    var lab = el('label', null, it.label);
+    var val = el('div', 'val');
+    var num = document.createElement('input');
+    num.type = 'number';
+    num.min = it.min; num.max = it.max; num.step = it.step;
+    var unit = el('span', 'unit', it.unit);
+    var rng = document.createElement('input');
+    rng.type = 'range';
+    rng.min = it.min; rng.max = it.max; rng.step = it.step;
+
+    lab.setAttribute('for', 'f_' + it.id);
+    num.id = 'f_' + it.id;
+    val.appendChild(num); val.appendChild(unit);
+    row.appendChild(lab); row.appendChild(val); row.appendChild(rng);
+
+    function commit(v) {
+      v = Math.max(it.min, Math.min(it.max, Number(v)));
+      if (isNaN(v)) return;
+      put(it.id, v);
+      changed();
+    }
+    num.addEventListener('input', function () { commit(num.value); });
+    rng.addEventListener('input', function () { commit(rng.value); });
+
+    widgets[it.id] = function () {
+      var locked = it.lockedBy ? !!bank()[it.lockedBy] : false;
+      var v = (locked && DERIVED[it.id]) ? DERIVED[it.id]() : V(it.id);
+      num.disabled = locked; rng.disabled = locked;
+      if (document.activeElement !== num) num.value = round(v, 4);
+      rng.value = v;
+    };
+    return row;
+  }
+
+  function rowColor(it) {
+    var row = el('div', 'row');
+    var lab = el('label', null, it.label);
+    var val = el('div', 'val');
+    var pick = document.createElement('input');
+    pick.type = 'color';
+    var hex = document.createElement('input');
+    hex.type = 'text'; hex.style.width = '78px';
+    val.appendChild(hex); val.appendChild(pick);
+    row.appendChild(lab); row.appendChild(val);
+
+    pick.addEventListener('input', function () { put(it.id, pick.value.toUpperCase()); changed(); });
+    hex.addEventListener('change', function () {
+      var v = hex.value.trim();
+      if (/^#?[0-9a-fA-F]{6}$/.test(v)) { put(it.id, (v[0] === '#' ? v : '#' + v).toUpperCase()); changed(); }
+      else widgets[it.id]();
+    });
+
+    widgets[it.id] = function () {
+      var v = V(it.id);
+      pick.value = v;
+      if (document.activeElement !== hex) hex.value = v;
+    };
+    return row;
+  }
+
+  function rowBool(it) {
+    var lab = el('label', 'chk');
+    var box = document.createElement('input');
+    box.type = 'checkbox';
+    lab.appendChild(box);
+    lab.appendChild(el('span', null, it.label));
+    box.addEventListener('change', function () { put(it.id, box.checked); changed(); });
+    widgets[it.id] = function () { box.checked = !!bank()[it.id]; };
+    return lab;
+  }
+
+  function rowSel(it) {
+    var row = el('div', 'row wide');
+    row.appendChild(el('label', null, it.label));
+    var sel = document.createElement('select');
+    it.options.forEach(function (o) {
+      var op = document.createElement('option');
+      op.value = o[0]; op.textContent = o[2];
+      sel.appendChild(op);
+    });
+    row.appendChild(el('div'));
+    row.appendChild(sel);
+    sel.addEventListener('change', function () { put(it.id, sel.value); changed(); });
+    widgets[it.id] = function () { sel.value = bank()[it.id]; };
+    return row;
+  }
+
+  function rowText(it) {
+    var row = el('div', 'row wide');
+    row.appendChild(el('label', null, it.label));
+    var inp = document.createElement('input');
+    inp.type = 'text';
+    row.appendChild(el('div'));
+    row.appendChild(inp);
+    inp.addEventListener('input', function () { put(it.id, inp.value); changed(); });
+    widgets[it.id] = function () { if (document.activeElement !== inp) inp.value = bank()[it.id]; };
+    return row;
+  }
+
+  /* A curve you can grab. Four number boxes describe a bezier; they do not let
+     you feel one, and this is the one parameter in the file where the feel is
+     the whole point. */
+  function rowBez(it) {
+    var wrap = el('div', 'bez');
+    var NS = 'http://www.w3.org/2000/svg';
+    var svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 100 100');
+    svg.setAttribute('width', '132'); svg.setAttribute('height', '132');
+
+    // The field runs -0.5..1.5 in y so an overshooting spring is visible rather
+    // than clipped against the top of the box.
+    var Y0 = 1.5, Y1 = -0.5;
+    function px(x) { return x * 100; }
+    function py(y) { return (Y0 - y) / (Y0 - Y1) * 100; }
+    function ux(x) { return x / 100; }
+    function uy(y) { return Y0 - (y / 100) * (Y0 - Y1); }
+
+    function line(x1, y1, x2, y2, o, dash) {
+      var l = document.createElementNS(NS, 'line');
+      l.setAttribute('x1', x1); l.setAttribute('y1', y1);
+      l.setAttribute('x2', x2); l.setAttribute('y2', y2);
+      l.setAttribute('stroke', '#8D96A3'); l.setAttribute('stroke-opacity', o);
+      l.setAttribute('stroke-width', '0.8');
+      if (dash) l.setAttribute('stroke-dasharray', '2 2');
+      return l;
+    }
+    svg.appendChild(line(0, py(0), 100, py(0), 0.45, true));
+    svg.appendChild(line(0, py(1), 100, py(1), 0.45, true));
+
+    var h1 = document.createElementNS(NS, 'line');
+    var h2 = document.createElementNS(NS, 'line');
+    [h1, h2].forEach(function (l) {
+      l.setAttribute('stroke', '#E3A857'); l.setAttribute('stroke-opacity', '0.5');
+      l.setAttribute('stroke-width', '0.9');
+      svg.appendChild(l);
+    });
+    var path = document.createElementNS(NS, 'path');
+    path.setAttribute('fill', 'none'); path.setAttribute('stroke', '#E7EAEE'); path.setAttribute('stroke-width', '1.8');
+    svg.appendChild(path);
+
+    var dots = [document.createElementNS(NS, 'circle'), document.createElementNS(NS, 'circle')];
+    dots.forEach(function (c) {
+      c.setAttribute('r', '4'); c.setAttribute('fill', '#E3A857'); c.style.cursor = 'grab';
+      svg.appendChild(c);
+    });
+
+    var nums = el('div', 'nums');
+    var inputs = [];
+    ['x1', 'y1', 'x2', 'y2'].forEach(function (nm, i) {
+      var inp = document.createElement('input');
+      inp.type = 'number'; inp.step = '0.01';
+      inp.min = (i % 2 === 0) ? 0 : -1; inp.max = (i % 2 === 0) ? 1 : 2;
+      inp.title = it.label + ' ' + nm;
+      inp.addEventListener('input', function () {
+        var v = raw(it.id).slice();
+        v[i] = Number(inp.value);
+        put(it.id, v); changed();
+      });
+      inputs.push(inp);
+      nums.appendChild(inp);
+    });
+
+    var ping = el('div', 'ping');
+    ping.title = 'Click to run the curve';
+    var dot = el('i');
+    ping.appendChild(dot);
+    ping.addEventListener('click', function () {
+      dot.style.transition = 'none';
+      ping.classList.remove('go');
+      void dot.offsetWidth;
+      dot.style.transition = 'transform ' + (it.id === 'exit' ? V('dExit') : V('dEnter')) + 'ms ' + bezStr(raw(it.id));
+      dot.style.setProperty('--travel', (ping.clientWidth - 26) + 'px');
+      ping.classList.add('go');
+    });
+    nums.appendChild(ping);
+
+    var head = el('div', 'row');
+    head.appendChild(el('label', null, it.label));
+    head.appendChild(el('div'));
+
+    var host = el('div');
+    host.appendChild(head);
+    wrap.appendChild(svg);
+    wrap.appendChild(nums);
+    host.appendChild(wrap);
+
+    var drag = -1;
+    function pointAt(ev) {
+      var r = svg.getBoundingClientRect();
+      return [ux((ev.clientX - r.left) / r.width * 100), uy((ev.clientY - r.top) / r.height * 100)];
+    }
+    svg.addEventListener('pointerdown', function (ev) {
+      if (showA) return;
+      var p = pointAt(ev), v = raw(it.id);
+      var d0 = Math.hypot(p[0] - v[0], p[1] - v[1]);
+      var d1 = Math.hypot(p[0] - v[2], p[1] - v[3]);
+      drag = d0 <= d1 ? 0 : 1;
+      svg.setPointerCapture(ev.pointerId);
+      move(ev);
+    });
+    svg.addEventListener('pointermove', move);
+    svg.addEventListener('pointerup', function () { drag = -1; });
+    svg.addEventListener('pointercancel', function () { drag = -1; });
+    function move(ev) {
+      if (drag < 0) return;
+      var p = pointAt(ev);
+      var v = raw(it.id).slice();
+      v[drag * 2] = Math.max(0, Math.min(1, round(p[0], 3)));
+      v[drag * 2 + 1] = Math.max(-1, Math.min(2, round(p[1], 3)));
+      put(it.id, v); changed();
+    }
+
+    widgets[it.id] = function () {
+      var v = raw(it.id);
+      path.setAttribute('d', 'M0,' + py(0) + ' C' + px(v[0]) + ',' + py(v[1]) + ' ' + px(v[2]) + ',' + py(v[3]) + ' 100,' + py(1));
+      h1.setAttribute('x1', 0); h1.setAttribute('y1', py(0));
+      h1.setAttribute('x2', px(v[0])); h1.setAttribute('y2', py(v[1]));
+      h2.setAttribute('x1', 100); h2.setAttribute('y1', py(1));
+      h2.setAttribute('x2', px(v[2])); h2.setAttribute('y2', py(v[3]));
+      dots[0].setAttribute('cx', px(v[0])); dots[0].setAttribute('cy', py(v[1]));
+      dots[1].setAttribute('cx', px(v[2])); dots[1].setAttribute('cy', py(v[3]));
+      for (var i = 0; i < 4; i++) if (document.activeElement !== inputs[i]) inputs[i].value = v[i];
+    };
+    return host;
+  }
+
+  function refreshPanel() {
+    for (var id in widgets) widgets[id]();
+    Array.prototype.forEach.call(document.querySelectorAll('[data-themetag]'), function (t) {
+      t.textContent = UI.theme === 'dark' ? 'editing dark' : 'editing light';
+    });
+  }
+
+  /* ================================================================ readouts */
+
+  function diffCount() {
+    var c = 0;
+    for (var id in MAP) {
+      var a = JSON.stringify(A[id]), b = JSON.stringify(B[id]);
+      if (a !== b) c++;
+    }
+    return c;
+  }
+
+  function readouts() {
+    document.getElementById('dims').textContent =
+      Math.round(V(state === 'thinking' ? 'wThink'
+                 : state === 'streaming' ? 'wStream'
+                 : state === 'result' ? 'wResult'
+                 : state === 'error' ? 'wError' : 'wListen')) + ' × ' + V('h');
+
+    document.getElementById('roSlot').textContent = lastSlot ? round(lastSlot, 1) + ' px' : '—';
+    document.getElementById('roBar').textContent =
+      lastBarW ? round(lastBarW, 2) + ' / ' + round(lastGap, 2) + ' px' : '—';
+
+    var css = hairCss();
+    var dev = css * UI.k;
+    var hairEl = document.getElementById('roHair');
+    var off = Math.abs(dev - Math.round(dev));
+    hairEl.textContent = round(css, 3) + ' css × ' + UI.k + ' = ' + round(dev, 3) + ' device px';
+    hairEl.className = off > 0.02 ? 'bad' : 'ok';
+    hairEl.title = off > 0.02
+      ? 'Lands off a device pixel boundary; composited as a soft smear.'
+      : 'Whole device pixels.';
+
+    // The icon box readout has to say when it is being capped, or the slider
+    // looks broken rather than constrained.
+    var iEl = document.getElementById('roIcon');
+    if (iEl) {
+      // The ink occupies the middle third of the 24-unit viewBox, so the mark
+      // you can actually see is a third of the box you are setting. Saying so
+      // is the difference between a number and a useful number.
+      var ink = round(V('icon') / 3, 1);
+      var over = V('icon') > V('cd');
+      iEl.textContent = V('icon') + 'px box → ' + ink + 'px mark, in a ' + V('cd') + 'px disc';
+      iEl.className = over ? 'bad' : 'ok';
+      iEl.title = over
+        ? 'The box is wider than its disc, so the circle is clipping it. The ' +
+          'glyph stays centred — raise Control diameter to give it room.'
+        : 'The glyph box fits inside the disc.';
+    }
+
+    // 132 - 102 = 30 = one control plus its gap. When that identity holds the
+    // thinking morph leaves the meter exactly where it was.
+    var delta = V('wListen') - V('wThink');
+    var want = V('cd') + V('gap');
+    var mEl = document.getElementById('roMorph');
+    mEl.textContent = 'listen − think = ' + round(delta, 1) + ', control + gap = ' + round(want, 1);
+    var okm = Math.abs(delta - want) < 0.01;
+    mEl.className = okm ? 'ok' : 'bad';
+    mEl.title = okm
+      ? 'The meter keeps its width through the thinking morph.'
+      : 'The meter resizes by ' + round(delta - want, 2) + 'px during the thinking morph.';
+
+    // The two measured boxes follow the canvas, so they refresh on the tick
+    // rather than only when something is dragged.
+    if (widgets.mw) widgets.mw();
+    if (widgets.barGap) widgets.barGap();
+
+    var dc = diffCount();
+    document.getElementById('abDiff').innerHTML = dc
+      ? '<b>' + dc + '</b> parameter' + (dc === 1 ? ' differs' : 's differ') + ' between A and B'
+      : 'A and B are identical';
+  }
+
+  /* ================================================================== export */
+
+  function hairQueries() {
+    if (!raw('hairSnap')) {
+      return ['  /* Snapping is off in the lab: the border stays ' + V('hair') +
+              'px at every scale, which is the 1.5dppx smear. */'];
+    }
+    var base = V('hair');
+    return [
+      '/* One device pixel, whatever the scaling factor. 1 CSS px at 1.5dppx is',
+      '   1.5 device px, which lands on a half pixel and composites as a smear. */',
+      '@media (min-resolution: 1.25dppx) { :root { --hair: ' + round(base / 1.25, 4) + 'px; } }',
+      '@media (min-resolution: 1.5dppx)  { :root { --hair: ' + round(base / 1.5, 4) + 'px; } }',
+      '@media (min-resolution: 2dppx)    { :root { --hair: ' + round(base / 2, 4) + 'px; } }'
+    ];
+  }
+
+  function tokens(themeKey) {
+    // V() reads the theme off UI, so the export borrows it for the length of
+    // one block rather than growing a second code path for "the other theme".
+    var was = UI.theme;
+    UI.theme = themeKey;
+    var out = [
+      '  --pill-bg:    ' + rgba(V('cFill'), V('fillA')) + ';',
+      '  --pill-line:  ' + rgba(V('cLine'), V('lineA')) + ';',
+      '  --edge-top:   ' + rgba(V('cEdgeTop'), V('edgeTopA')) + ';',
+      '  --edge-bot:   ' + rgba(V('cEdgeBot'), V('edgeBotA')) + ';',
+      '  --pill-shadow:',
+      '    ' + shadowLayers().join(',\n    ') + ';',
+      '',
+      '  --text:   ' + V('cText') + ';',
+      '  --dim:    ' + V('cDim') + ';',
+      '  --meter:  ' + V('cMeter') + ';',
+      '',
+      '  --chip:       ' + rgba(V('cChip'), V('chipA')) + ';',
+      '  --chip-hover: ' + rgba(V('cChip'), V('chipHA')) + ';',
+      '  --commit:     ' + V('cCommit') + ';',
+      '  --commit-ink: ' + V('cCommitInk') + ';',
+      '  --danger:     ' + V('cDanger') + ';'
+    ];
+    UI.theme = was;
+    return out;
+  }
+
+  function exportCss() {
+    var L = [];
+    var stamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
+    L.push('/* Overlay chrome. One pill, six states, nothing else.');
+    L.push(' *');
+    L.push(' * Tuned in design/pill-lab.html, ' + stamp + '. The values below are that');
+    L.push(' * session\'s settings; the reasoning behind the shapes they describe is in');
+    L.push(' * design/pill-refined.html, which this stylesheet is a tuning of.');
+    L.push(' *');
+    L.push(' * MARKUP: the meter and the result text live in one slot and cross-fade in');
+    L.push(' * place, so overlay.html needs <span class="mid"> wrapping two .layer spans');
+    L.push(' * rather than a .meter-slot and a .result-text as siblings. Controls fold');
+    L.push(' * away via [data-off="true"] instead of display:none. */');
+    L.push('');
+    L.push(':root {');
+    L.push.apply(L, tokens('light'));
+    L.push('');
+    L.push('  --font-ui: ' + faceStack() + ';');
+    L.push('');
+    L.push('  --ease-spring: ' + bezStr(raw('spring')) + ';');
+    L.push('  --ease-exit:   ' + bezStr(raw('exit')) + ';');
+    L.push('  --dur-enter: ' + V('dEnter') + 'ms;');
+    L.push('  --dur-morph: ' + V('dMorph') + 'ms;');
+    L.push('  --dur-exit:  ' + V('dExit') + 'ms;');
+    L.push('');
+    L.push('  --hair: ' + V('hair') + 'px;');
+    L.push('}');
+    L.push('');
+    L.push('@media (prefers-color-scheme: dark) {');
+    L.push('  :root {');
+    // Indent every physical line, not every array entry — the shadow stack is
+    // one entry spanning three lines.
+    L.push(tokens('dark').join('\n').split('\n').map(function (s) { return s ? '  ' + s : ''; }).join('\n'));
+    L.push('  }');
+    L.push('}');
+    L.push('');
+    L.push.apply(L, hairQueries());
+    L.push('');
+    L.push('* { box-sizing: border-box; }');
+    L.push('');
+    L.push('html, body {');
+    L.push('  margin: 0; height: 100%; background: transparent; overflow: hidden;');
+    L.push('  font-family: var(--font-ui); user-select: none; cursor: default;');
+    L.push('}');
+    L.push('body {');
+    L.push('  display: flex; flex-direction: column; justify-content: flex-end; align-items: center;');
+    L.push('  padding-bottom: 12px;');
+    L.push('  /* The window is click-through; only the two controls opt back in. */');
+    L.push('  pointer-events: none;');
+    L.push('}');
+    L.push('');
+    L.push('.overlay { display: flex; flex-direction: column; align-items: center; }');
+    L.push('');
+    L.push('.pill {');
+    L.push('  position: relative;');
+    L.push('  display: flex; align-items: center;');
+    L.push('  width: ' + V('wListen') + 'px; height: ' + V('h') + 'px; padding: 0 ' + V('pad') + 'px;');
+    L.push('  border-radius: ' + V('r') + 'px;');
+    L.push('  background: var(--pill-bg);');
+    L.push('  border: var(--hair) solid var(--pill-line);');
+    L.push('  box-shadow: var(--pill-shadow);');
+    if (V('sat') > 1.001) {
+      L.push('  /* saturate() imports the host application\'s hue into a monochrome design.');
+      L.push('     It was removed in the refinement pass; it is back because the lab was');
+      L.push('     set above 1.0 when this was exported. */');
+      L.push('  backdrop-filter: blur(' + V('blur') + 'px) saturate(' + V('sat') + ');');
+    } else {
+      L.push('  backdrop-filter: blur(' + V('blur') + 'px);');
+    }
+    L.push('');
+    L.push('  opacity: 0; transform: translateY(' + V('rise') + 'px) scale(' + V('escale') + ');');
+    L.push('  transition:');
+    L.push('    opacity   var(--dur-exit) var(--ease-exit),');
+    L.push('    transform var(--dur-exit) var(--ease-exit),');
+    L.push('    width     var(--dur-morph) var(--ease-spring);');
+    L.push('}');
+    L.push('');
+    L.push('/* A full-perimeter ring one device pixel thick: lit at the top, shaded at');
+    L.push('   the bottom, one gradient doing both jobs. */');
+    L.push('.pill::before {');
+    L.push('  content: ""; position: absolute; inset: 0; border-radius: inherit;');
+    L.push('  padding: var(--hair);');
+    L.push('  background: linear-gradient(var(--edge-top), transparent ' + V('edgeA') + '%, transparent ' + V('edgeB') + '%, var(--edge-bot));');
+    L.push('  -webkit-mask: linear-gradient(#000,#000) content-box, linear-gradient(#000,#000);');
+    L.push('  -webkit-mask-composite: xor; mask-composite: exclude;');
+    L.push('  pointer-events: none;');
+    L.push('}');
+    L.push('');
+    L.push('.overlay[data-visible="true"] .pill {');
+    L.push('  opacity: 1; transform: translateY(0) scale(1);');
+    L.push('  transition:');
+    L.push('    opacity   var(--dur-enter) var(--ease-spring),');
+    L.push('    transform var(--dur-enter) var(--ease-spring),');
+    L.push('    width     var(--dur-morph) var(--ease-spring);');
+    L.push('}');
+    var delta = V('wListen') - V('wThink'), want = V('cd') + V('gap');
+    L.push('/* ' + V('wListen') + ' − ' + V('wThink') + ' = ' + round(delta, 2) + '; one control plus its gap is ' + round(want, 2) +
+           (Math.abs(delta - want) < 0.01 ? '. Equal, so the meter never resizes. */' : '. NOT equal — the meter resizes by ' + round(delta - want, 2) + 'px on the thinking morph. */'));
+    L.push('.overlay[data-state="thinking"]  .pill { width: ' + V('wThink') + 'px; }');
+    L.push('.overlay[data-state="streaming"] .pill { width: ' + V('wStream') + 'px; }');
+    L.push('.overlay[data-state="result"]    .pill { width: ' + V('wResult') + 'px; }');
+    L.push('.overlay[data-state="error"]     .pill { width: ' + V('wError') + 'px; }');
+    L.push('');
+    L.push('/* --------------------------------------------------------------- controls */');
+    L.push('');
+    L.push('/* Explicit margins rather than `gap`: a collapsed zero-width flex item still');
+    L.push('   gets its gap, and the text would jump the ' + V('gap') + 'px. */');
+    L.push('.control {');
+    L.push('  position: relative;   /* the anchor the glyph centres against */');
+    L.push('  flex: 0 0 ' + V('cd') + 'px; width: ' + V('cd') + 'px; height: ' + V('cd') + 'px;');
+    L.push('  padding: 0; border: 0; border-radius: 50%; background: transparent;');
+    L.push('  display: grid; place-items: center; cursor: pointer; overflow: hidden;');
+    L.push('  pointer-events: auto;');
+    L.push('  transition:');
+    L.push('    background 150ms ease,');
+    L.push('    flex-basis var(--dur-morph) var(--ease-spring),');
+    L.push('    width      var(--dur-morph) var(--ease-spring),');
+    L.push('    margin     var(--dur-morph) var(--ease-spring),');
+    L.push('    opacity    160ms var(--ease-exit),');
+    L.push('    transform  180ms var(--ease-spring);');
+    L.push('}');
+    L.push('.control.cancel  { margin-right: ' + V('gap') + 'px; }');
+    L.push('.control.confirm { margin-left: ' + V('gap') + 'px; }');
+    L.push('');
+    L.push('/* Leaving, rather than vanishing. */');
+    L.push('.control[data-off="true"] {');
+    L.push('  flex-basis: 0; width: 0; margin-left: 0; margin-right: 0;');
+    L.push('  opacity: 0; transform: scale(.55); pointer-events: none;');
+    L.push('}');
+    L.push('');
+    L.push('/* ' + iconBox() + ' CSS px of SVG on a 24-unit viewBox: one unit is ' + round(iconBox() / 24, 3) + ' px, so the');
+    L.push('   stroke widths in the markup are the widths on screen. */');
+    // Absolutely centred, not grid-centred. `overflow: hidden` above is what
+    // makes the fold-away morph collapse cleanly, but it also means a grid item
+    // wider than its button has its leading overflow clipped instead of shared
+    // -- so the glyph drifts off-centre the moment the box exceeds the disc.
+    // Absolute centring does not consult the container's size.
+    L.push('.control svg {');
+    L.push('  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);');
+    L.push('  width: ' + iconBox() + 'px; height: ' + iconBox() + 'px;');
+    L.push('  fill: none; stroke-linecap: round; stroke-linejoin: round; display: block;');
+    L.push('}');
+    L.push('.control .x    { stroke-width: ' + V('swX') + '; }');
+    L.push('.control .tick { stroke-width: ' + V('swTick') + '; }');
+    L.push('');
+    L.push('.control.cancel { background: var(--chip); }');
+    L.push('.control.cancel svg { stroke: var(--dim); transition: stroke 130ms ease; }');
+    L.push('.control.cancel:hover { background: var(--chip-hover); }');
+    L.push('.control.cancel:hover svg { stroke: var(--danger); }');
+    L.push('.control.cancel:active { transform: scale(.92); }');
+    L.push('.control.confirm { background: var(--commit); box-shadow: 0 1px 2px rgba(0,0,0,.18); }');
+    L.push('.control.confirm svg { stroke: var(--commit-ink); }');
+    L.push('.control.confirm:hover { transform: scale(1.07); }');
+    L.push('.control.confirm:active { transform: scale(.94); }');
+    L.push('');
+    L.push('/* ----------------------------------------------------------------- middle */');
+    L.push('');
+    L.push('/* Meter and text are stacked, not swapped: both hold the slot at all times');
+    L.push('   and cross-fade in place, so the width morph is the only thing moving. */');
+    if (raw('mwAuto')) {
+      L.push('.mid { position: relative; flex: 1 1 auto; min-width: 0; height: ' + V('mh') + 'px; }');
+    } else {
+      L.push('.mid { position: relative; flex: 0 0 ' + V('mw') + 'px; width: ' + V('mw') + 'px; height: ' + V('mh') + 'px; }');
+    }
+    L.push('.layer {');
+    L.push('  position: absolute; inset: 0;');
+    L.push('  opacity: 0; transform: translateY(2px); pointer-events: none;');
+    L.push('  transition: opacity ' + V('fadeOut') + 'ms var(--ease-exit), transform ' + V('fadeOut') + 'ms var(--ease-exit);');
+    L.push('}');
+    L.push('.layer[data-on="true"] {');
+    L.push('  opacity: 1; transform: translateY(0);');
+    L.push('  transition: opacity ' + V('fadeIn') + 'ms var(--ease-spring) ' + V('fadeDelay') + 'ms, transform ' + V('fadeIn') + 'ms var(--ease-spring) ' + V('fadeDelay') + 'ms;');
+    L.push('}');
+    L.push('.meter-slot canvas { width: 100%; height: 100%; display: block; }');
+    L.push('');
+    L.push('/* The tail is pinned by scrolling, not by `direction: rtl` — RTL relocates');
+    L.push('   trailing punctuation to the far left of the pill. */');
+    L.push('.result-text {');
+    L.push('  display: flex; align-items: center; overflow: hidden;');
+    L.push('  padding: 0 ' + V('pad') + 'px;');
+    L.push('  font-size: ' + V('fs') + 'px; color: var(--dim); font-weight: ' + V('fw') + ';');
+    L.push('  letter-spacing: ' + V('ls') + 'em; white-space: nowrap;');
+    L.push('}');
+    L.push('.overlay[data-state="streaming"] .result-text {');
+    L.push('  justify-content: flex-end;');
+    L.push('  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 26px);');
+    L.push('  mask-image: linear-gradient(90deg, transparent 0, #000 26px);');
+    L.push('}');
+    L.push('.overlay[data-state="result"] .result-text,');
+    L.push('.overlay[data-state="error"]  .result-text {');
+    L.push('  justify-content: flex-start; padding-left: ' + (V('pad') + 3) + 'px;');
+    L.push('  -webkit-mask-image: linear-gradient(270deg, transparent 0, #000 22px);');
+    L.push('  mask-image: linear-gradient(270deg, transparent 0, #000 22px);');
+    L.push('}');
+    L.push('.overlay[data-state="result"] .result-text { color: var(--text); font-weight: ' + V('fwResult') + '; }');
+    L.push('.overlay[data-state="error"]  .result-text { color: var(--danger); font-weight: ' + V('fwError') + '; }');
+    L.push('');
+    L.push('@media (prefers-reduced-motion: reduce) {');
+    L.push('  * { animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition-duration: 1ms !important; }');
+    L.push('}');
+    L.push('');
+    L.push('');
+    L.push('/* ===================================================================== */');
+    L.push('/* src/renderer/overlay.js — the meter is drawn, not styled, so these  */');
+    L.push('/* constants have to travel with the stylesheet.                        */');
+    L.push('/* ===================================================================== */');
+    L.push('/*');
+    L.push('var BARS       = ' + Math.round(V('bars')) + ';      // visible slots of peak history');
+    L.push('var KEEP       = ' + keep() + ';      // stored slots; the extra ones fade out on the left');
+    L.push('var INTERVAL   = ' + V('win') + ';     // ms per sample — ' + Math.round(V('bars')) + ' of them is ~' + round(V('bars') * V('win') / 1000, 2) + 's of history');
+    L.push('var FLOOR      = ' + V('floor') + ';   // silence is a dotted rule, not a flat line');
+    L.push('var MIN_HALF   = ' + V('rest') + ';   // px, resting half-height');
+    L.push('var BAR_W      = ' + V('barW') + ';      // px, capped by the slot');
+    L.push('var BAR_GAP    = ' + (raw('barFit') ? 'null;   // fit: slot = width / BARS' : V('barGap') + ';   // fixed gap; slot = BAR_W + BAR_GAP') );
+    L.push('var BAR_R      = ' + round(V('barR'), 3) + ';    // px corner radius' + (raw('barRFull') ? ' (half the bar: round caps)' : ''));
+    L.push('var GLIDE      = ' + V('glide') + ';      // 1 scrolls continuously, 0 steps once per sample');
+    L.push('var DISSOLVE   = ' + V('dissolve') + ';    // slots over which the leaving bar fades');
+    L.push('var HEADROOM   = ' + round(V('head'), 3) + ';    // px kept clear so a full-level cap stays round');
+    if (V('head') < 0.01) {
+      L.push('                    // ^ zero reproduces the shipped bug: caps clip square at full level');
+    }
+    L.push('var PULSE_H    = ' + V('pulseH') + ';   // thinking pulse height; must stay under speaking');
+    L.push('var PULSE_RATE = ' + V('pulseR') + ';   // thinking pulse rate');
+    L.push('var PULSE_SM   = ' + V('pulseS') + ';    // thinking pulse smoothing');
+    L.push('');
+    L.push('var EXIT_MS    = ' + V('dExit') + ';     // MUST equal --dur-exit above, or the dismiss');
+    L.push('                     // timer fires before the pill has finished leaving');
+    L.push('*/');
+    return L.join('\n');
+  }
+
+  function exportJson() {
+    return JSON.stringify({ v: 1, B: B, A: A, UI: { theme: UI.theme, bd: UI.bd, k: UI.k, z: UI.z, notes: UI.notes } }, null, 2);
+  }
+
+  /* ================================================================ plumbing */
+
+  var saveTimer = null;
+  function save() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(function () {
+      try {
+        localStorage.setItem(KEY, JSON.stringify({ v: 1, B: B, A: A, UI: UI }));
+      } catch (e) { /* private mode, or a full quota: not worth interrupting for */ }
+    }, 220);
+  }
+
+  function load() {
+    var txt;
+    try { txt = localStorage.getItem(KEY); } catch (e) { return; }
+    if (!txt) return;
+    try { adopt(JSON.parse(txt)); } catch (e) { /* a corrupt blob is not worth a dialog */ }
+  }
+
+  // Merge onto a fresh baseline rather than trusting the blob, so a stored
+  // session from an older spec cannot leave a parameter undefined.
+  function adopt(data) {
+    if (!data) return;
+    if (data.B) B = merge(baseline(), data.B);
+    if (data.A) A = merge(baseline(), data.A);
+    if (data.UI) {
+      if (data.UI.theme) UI.theme = data.UI.theme;
+      if (data.UI.bd) UI.bd = data.UI.bd;
+      if (data.UI.k) UI.k = Number(data.UI.k);
+      if (data.UI.z) UI.z = Number(data.UI.z);
+      if (data.UI.notes != null) UI.notes = data.UI.notes;
+      if (data.UI.open) UI.open = data.UI.open;
+    }
+  }
+  function merge(base, src) {
+    for (var id in base) if (src[id] !== undefined && src[id] !== null) base[id] = src[id];
+    return base;
+  }
+
+  function changed() {
+    applyCss();
+    refreshPanel();
+    readouts();
+    save();
+  }
+
+  function segPress(label, attr, value) {
+    var grp = document.querySelector('[aria-label="' + label + '"]');
+    if (!grp) return;
+    Array.prototype.forEach.call(grp.querySelectorAll('button'), function (b) {
+      b.setAttribute('aria-pressed', String(b.getAttribute(attr) === String(value)));
+    });
+  }
+  function wireSeg(label, attr, fn) {
+    var grp = document.querySelector('[aria-label="' + label + '"]');
+    Array.prototype.forEach.call(grp.querySelectorAll('button'), function (b) {
+      b.addEventListener('click', function () {
+        Array.prototype.forEach.call(grp.querySelectorAll('button'), function (o) {
+          o.setAttribute('aria-pressed', String(o === b));
+        });
+        fn(b.getAttribute(attr));
+      });
+    });
+  }
+
+  function setTheme(t) {
+    UI.theme = t;
+    root.setAttribute('data-theme', t);
+    segPress('Theme', 'data-theme', t);
+    changed();
+  }
+  function setBackdrop(kind) {
+    UI.bd = kind;
+    Array.prototype.forEach.call(document.querySelectorAll('.bd'), function (bd) {
+      bd.hidden = bd.getAttribute('data-bd') !== kind;
+    });
+    save();
+  }
+  function setScale(k) {
+    UI.k = Number(k);
+    var zone = document.querySelector('.zone');
+    zone.style.setProperty('--k', UI.k);
+    segPress('Scaling', 'data-k', UI.k);
+    changed();   // --hair depends on the simulated scale
+  }
+  function setZoom(z) {
+    UI.z = Number(z);
+    document.getElementById('zoom').style.setProperty('--z', UI.z);
+    segPress('Zoom', 'data-z', UI.z);
+    save();
+  }
+
+  function setBank(a) {
+    showA = a;
+    document.getElementById('rail').setAttribute('data-locked', a ? 'true' : 'false');
+    // pointer-events alone still lets Tab reach a slider, and an arrow key there
+    // would edit B while you are looking at A. inert closes that door.
+    groupsEl.inert = a;
+    document.getElementById('abA').setAttribute('aria-pressed', String(a));
+    document.getElementById('abB').setAttribute('aria-pressed', String(!a));
+    applyCss(); refreshPanel(); readouts();
+  }
+
+  /* ==================================================================== boot */
+
+  load();
+  buildPanel();
+  root.setAttribute('data-theme', UI.theme);
+  segPress('Theme', 'data-theme', UI.theme);
+  setBackdrop(UI.bd);
+  segPress('Behind', 'data-bd', UI.bd);
+  setScale(UI.k);
+  setZoom(UI.z);
+  document.getElementById('notes').value = UI.notes;
+
+  wireSeg('State', 'data-state', stepTo);
+  wireSeg('Behind', 'data-bd', setBackdrop);
+  wireSeg('Scaling', 'data-k', setScale);
+  wireSeg('Zoom', 'data-z', setZoom);
+  wireSeg('Theme', 'data-theme', setTheme);
+
+  document.getElementById('play').addEventListener('click', function () { play(false); });
+  document.getElementById('playErr').addEventListener('click', function () { play(true); });
+
+  document.getElementById('abA').addEventListener('click', function () { setBank(true); });
+  document.getElementById('abB').addEventListener('click', function () { setBank(false); });
+  document.getElementById('hold').addEventListener('click', function () { A = copy(B); setBank(false); save(); readouts(); });
+  document.getElementById('pull').addEventListener('click', function () { B = copy(A); setBank(false); changed(); });
+
+  document.getElementById('resetBtn').addEventListener('click', function () {
+    // Reset is only safe because it is reversible: the settings you had land in
+    // A, so one press of A->B brings them back.
+    A = copy(B);
+    B = baseline();
+    setBank(false);
+    changed();
+  });
+
+  document.getElementById('notes').addEventListener('input', function () {
+    UI.notes = this.value; save();
+  });
+
+  /* ---------------------------------------------------------- export sheet */
+
+  var sheet = document.getElementById('sheet');
+  var sheetText = document.getElementById('sheetText');
+  var applyJsonBtn = document.getElementById('applyJson');
+  var sheetKind = 'css';
+
+  function fillSheet() {
+    sheetText.value = sheetKind === 'css' ? exportCss() : exportJson();
+    sheetText.readOnly = sheetKind === 'css';
+    applyJsonBtn.hidden = sheetKind === 'css';
+    document.getElementById('sheetTitle').textContent =
+      sheetKind === 'css' ? 'Paste into src/renderer/overlay.css' : 'Settings — editable, then Apply';
+  }
+  function openSheet() {
+    // Export always emits what is on the stage, A or B, because exporting the
+    // thing you are looking at is the only rule nobody can get wrong.
+    fillSheet();
+    sheet.setAttribute('data-open', 'true');
+    sheetText.focus();
+    sheetText.setSelectionRange(0, 0);
+  }
+  document.getElementById('exportBtn').addEventListener('click', openSheet);
+  document.getElementById('closeSheet').addEventListener('click', function () { sheet.setAttribute('data-open', 'false'); });
+  sheet.addEventListener('click', function (e) { if (e.target === sheet) sheet.setAttribute('data-open', 'false'); });
+  wireSeg('Export kind', 'data-x', function (k) { sheetKind = k; fillSheet(); });
+
+  document.getElementById('copyBtn').addEventListener('click', function () {
+    var btn = this;
+    sheetText.select();
+    var done = function () { btn.textContent = 'Copied'; setTimeout(function () { btn.textContent = 'Copy'; }, 1200); };
+    // file:// pages do not always get the async clipboard, so keep the old path.
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(sheetText.value).then(done, function () {
+        try { document.execCommand('copy'); done(); } catch (e) { btn.textContent = 'Press Ctrl+C'; }
+      });
+    } else {
+      try { document.execCommand('copy'); done(); } catch (e) { btn.textContent = 'Press Ctrl+C'; }
+    }
+  });
+
+  applyJsonBtn.addEventListener('click', function () {
+    try {
+      adopt(JSON.parse(sheetText.value));
+      sheet.setAttribute('data-open', 'false');
+      root.setAttribute('data-theme', UI.theme);
+      segPress('Theme', 'data-theme', UI.theme);
+      setBackdrop(UI.bd); segPress('Behind', 'data-bd', UI.bd);
+      setScale(UI.k); setZoom(UI.z);
+      document.getElementById('notes').value = UI.notes;
+      setBank(false);
+      changed();
+    } catch (e) {
+      this.textContent = 'Not valid JSON';
+      var b = this;
+      setTimeout(function () { b.textContent = 'Apply JSON'; }, 1400);
+    }
+  });
+
+  /* -------------------------------------------------------------- keyboard */
+
+  window.addEventListener('keydown', function (e) {
+    var tag = e.target && e.target.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+    if (e.key === '`') { e.preventDefault(); setBank(!showA); return; }
+    if (e.key === 'Escape' && sheet.getAttribute('data-open') === 'true') { sheet.setAttribute('data-open', 'false'); return; }
+    if (tag === 'BUTTON') return;
+    if (e.code === 'Space') { e.preventDefault(); play(false); return; }
+    if (e.code === 'ArrowRight' || e.code === 'ArrowLeft') {
+      e.preventDefault();
+      var i = STATES.indexOf(state);
+      i = (i + (e.code === 'ArrowRight' ? 1 : STATES.length - 1)) % STATES.length;
+      stepTo(STATES[i]);
+    }
+  });
+
+  /* -------------------------------------------------------------- the loop */
+
+  var lastRead = 0;
+  function frame(now) {
+    requestAnimationFrame(frame);
+    var t = (now - t0) / 1000;
+    step(now, t, state);
+
+    var live = (state === 'listening' || state === 'thinking');
+    for (var i = 0; i < meters.length; i++) {
+      if (!live) {
+        var c = meters[i].el;
+        if (c.width) meters[i].ctx.clearRect(0, 0, c.width, c.height);
+        continue;
+      }
+      paint(meters[i], now, state);
+    }
+    // The derived readouts only mean anything once the canvas has been measured,
+    // and nobody needs them at 60fps.
+    if (now - lastRead > 120) { lastRead = now; readouts(); }
+  }
+
+  changed();
+  setState(UI.state && STATES.indexOf(UI.state) >= 0 ? UI.state : 'listening', '');
+  stepTo(state);
+  requestAnimationFrame(function (n) { t0 = n; lastPush = n; frame(n); });
+})();
+</script>

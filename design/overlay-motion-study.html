@@ -1,0 +1,839 @@
+<title>Dictation Overlay — Motion Study</title>
+
+<style>
+  :root {
+    --stage:      #0B0D12;
+    --stage-glow: #171C27;
+    --deck:       #14171F;
+    --deck-2:     #1B1F2A;
+    --line:       #262C39;
+    --ink:        #E8EAF0;
+    --muted:      #7C8496;
+    --faint:      #4A5162;
+    --accent:     #E8A33D;
+    --rec:        #FF5F56;
+    --ok:         #4ED88A;
+
+    --ui: system-ui, -apple-system, "Segoe UI Variable Text", "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+
+    --r: 10px;
+  }
+
+  @media (prefers-color-scheme: light) {
+    :root {
+      --stage:      #DEE1E8;
+      --stage-glow: #EDEFF3;
+      --deck:       #F6F7F9;
+      --deck-2:     #FFFFFF;
+      --line:       #D6DAE2;
+      --ink:        #1B1F28;
+      --muted:      #626A7A;
+      --faint:      #969DAC;
+      --accent:     #B4741C;
+    }
+  }
+  :root[data-theme="dark"] {
+    --stage:      #0B0D12;
+    --stage-glow: #171C27;
+    --deck:       #14171F;
+    --deck-2:     #1B1F2A;
+    --line:       #262C39;
+    --ink:        #E8EAF0;
+    --muted:      #7C8496;
+    --faint:      #4A5162;
+    --accent:     #E8A33D;
+  }
+  :root[data-theme="light"] {
+    --stage:      #DEE1E8;
+    --stage-glow: #EDEFF3;
+    --deck:       #F6F7F9;
+    --deck-2:     #FFFFFF;
+    --line:       #D6DAE2;
+    --ink:        #1B1F28;
+    --muted:      #626A7A;
+    --faint:      #969DAC;
+    --accent:     #B4741C;
+  }
+
+  body {
+    background: var(--deck);
+    color: var(--ink);
+    font-family: var(--ui);
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 1120px;
+    margin: 0 auto;
+    padding: 28px 20px 64px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+
+  /* ---------- masthead ---------- */
+  .masthead {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 24px;
+    flex-wrap: wrap;
+    border-bottom: 1px solid var(--line);
+    padding-bottom: 16px;
+  }
+  .masthead h1 {
+    font-size: 20px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    margin: 0;
+  }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--faint);
+    margin: 0 0 6px;
+  }
+  .masthead p.sub {
+    margin: 4px 0 0;
+    color: var(--muted);
+    font-size: 13px;
+    max-width: 56ch;
+  }
+
+  /* ---------- stage ---------- */
+  .stage {
+    position: relative;
+    border: 1px solid var(--line);
+    border-radius: var(--r);
+    background:
+      radial-gradient(120% 90% at 50% 108%, var(--stage-glow) 0%, var(--stage) 62%);
+    height: 440px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* mock document behind the overlay */
+  .doc {
+    flex: 1;
+    padding: 34px 40px;
+    display: flex;
+    flex-direction: column;
+    gap: 11px;
+    user-select: none;
+    mask-image: linear-gradient(to bottom, #000 0%, #000 58%, transparent 92%);
+  }
+  .doc .dtitle {
+    font-size: 15px;
+    font-weight: 600;
+    color: color-mix(in oklab, var(--ink) 62%, transparent);
+    margin-bottom: 3px;
+  }
+  .skel {
+    height: 8px;
+    border-radius: 4px;
+    background: color-mix(in oklab, var(--ink) 10%, transparent);
+  }
+  .typed {
+    font-size: 13.5px;
+    color: color-mix(in oklab, var(--ink) 78%, transparent);
+    min-height: 42px;
+    max-width: 62ch;
+  }
+  .caret {
+    display: inline-block;
+    width: 1.5px;
+    height: 1.05em;
+    background: var(--accent);
+    vertical-align: text-bottom;
+    margin-left: 1px;
+  }
+  .caret.blink { animation: blink 1.06s steps(1, end) infinite; }
+  @keyframes blink { 0%,50% { opacity: 1 } 50.01%,100% { opacity: 0 } }
+
+  /* ---------- the overlay pill ---------- */
+  .pill-dock {
+    position: absolute;
+    left: 50%;
+    bottom: 34px;
+    transform: translateX(-50%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 9px;
+    pointer-events: none;
+  }
+
+  .pill {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    height: 44px;
+    padding: 0 16px;
+    border-radius: 999px;
+    background: rgba(17, 19, 25, 0.72);
+    backdrop-filter: blur(22px) saturate(160%);
+    -webkit-backdrop-filter: blur(22px) saturate(160%);
+    border: 0.5px solid rgba(255, 255, 255, 0.13);
+    box-shadow:
+      0 1px 0 0 rgba(255,255,255,0.05) inset,
+      0 10px 34px -8px rgba(0,0,0,0.7),
+      0 2px 8px -2px rgba(0,0,0,0.5);
+    transition: width 340ms cubic-bezier(.22,.9,.28,1),
+                opacity 240ms ease,
+                transform 340ms cubic-bezier(.22,.9,.28,1);
+    will-change: width, transform;
+  }
+  .pill.hidden {
+    opacity: 0;
+    transform: translateY(9px) scale(0.94);
+  }
+
+  /* status dot */
+  .dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--faint);
+    flex: none;
+    transition: background 220ms ease, box-shadow 220ms ease;
+  }
+  .dot.rec  { background: var(--rec); box-shadow: 0 0 0 0 rgba(255,95,86,.55); animation: pulse 1.7s ease-out infinite; }
+  .dot.work { background: var(--accent); }
+  .dot.ok   { background: var(--ok); }
+  @keyframes pulse {
+    0%   { box-shadow: 0 0 0 0   rgba(255,95,86,.5) }
+    70%  { box-shadow: 0 0 0 7px rgba(255,95,86,0) }
+    100% { box-shadow: 0 0 0 0   rgba(255,95,86,0) }
+  }
+
+  /* the bar field — the actual animation */
+  .bars {
+    display: flex;
+    align-items: center;
+    height: 26px;
+    flex: none;
+    overflow: hidden;
+  }
+  .bar {
+    flex: none;
+    background: #fff;
+    border-radius: 999px;
+    will-change: height;
+  }
+
+  .hint {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.07em;
+    color: color-mix(in oklab, #fff 34%, transparent);
+    transition: opacity 200ms ease;
+  }
+
+  /* ---------- transport ---------- */
+  .transport {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  button {
+    font: inherit;
+    font-size: 12.5px;
+    color: var(--ink);
+    background: var(--deck-2);
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    padding: 8px 14px;
+    cursor: pointer;
+    transition: border-color 140ms ease, background 140ms ease;
+  }
+  button:hover { border-color: color-mix(in oklab, var(--accent) 55%, var(--line)); }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button.primary {
+    background: color-mix(in oklab, var(--accent) 16%, var(--deck-2));
+    border-color: color-mix(in oklab, var(--accent) 45%, var(--line));
+    font-weight: 550;
+  }
+  button[aria-pressed="true"] {
+    background: color-mix(in oklab, var(--accent) 20%, var(--deck-2));
+    border-color: var(--accent);
+  }
+
+  .src {
+    margin-left: auto;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+  .led {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--faint);
+  }
+  .led.on { background: var(--ok); box-shadow: 0 0 6px color-mix(in oklab, var(--ok) 70%, transparent); }
+
+  /* ---------- instrument deck ---------- */
+  .deck {
+    border: 1px solid var(--line);
+    border-radius: var(--r);
+    background: var(--deck-2);
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(196px, 1fr));
+  }
+  .group {
+    padding: 15px 17px 17px;
+    border-right: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    flex-direction: column;
+    gap: 13px;
+  }
+  .group > h3 {
+    font-family: var(--mono);
+    font-size: 9.5px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--faint);
+    margin: 0;
+    font-weight: 500;
+  }
+
+  .ctl { display: flex; flex-direction: column; gap: 5px; }
+  .ctl .row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 8px;
+  }
+  .ctl label { font-size: 12px; color: var(--muted); }
+  .ctl output {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--ink);
+    font-variant-numeric: tabular-nums;
+  }
+
+  input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 3px;
+    border-radius: 2px;
+    background: var(--line);
+    cursor: pointer;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 13px; height: 13px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: 2px solid var(--deck-2);
+    box-shadow: 0 0 0 1px color-mix(in oklab, var(--accent) 50%, transparent);
+  }
+  input[type="range"]::-moz-range-thumb {
+    width: 11px; height: 11px;
+    border: 2px solid var(--deck-2);
+    border-radius: 50%;
+    background: var(--accent);
+  }
+  input[type="range"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+  .toggles { display: flex; flex-wrap: wrap; gap: 7px; }
+  .toggles button { padding: 5px 10px; font-size: 11.5px; border-radius: 6px; }
+
+  /* ---------- notes ---------- */
+  .notes {
+    border: 1px solid var(--line);
+    border-radius: var(--r);
+    padding: 18px 20px;
+    background: var(--deck-2);
+  }
+  .notes h2 {
+    font-family: var(--mono);
+    font-size: 9.5px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--faint);
+    margin: 0 0 12px;
+    font-weight: 500;
+  }
+  .fingerprint {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+    gap: 2px;
+    background: var(--line);
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    overflow: hidden;
+  }
+  .fp {
+    background: var(--deck-2);
+    padding: 11px 13px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .fp b {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 500;
+  }
+  .fp span { font-size: 12.5px; }
+  .fp span.yes { color: var(--ok); }
+  .fp span.no  { color: var(--muted); }
+  .notes p {
+    font-size: 13px;
+    color: var(--muted);
+    margin: 13px 0 0;
+    max-width: 76ch;
+  }
+  .notes p strong { color: var(--ink); font-weight: 550; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .dot.rec { animation: none; }
+    .caret.blink { animation: none; }
+    .pill { transition-duration: 1ms; }
+  }
+
+  @media (max-width: 620px) {
+    .stage { height: 380px; }
+    .doc { padding: 24px 22px; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <div>
+      <p class="eyebrow">Motion study · built from observed behavior</p>
+      <h1>Dictation overlay recreation</h1>
+      <p class="sub">An audio-reactive floating status bar, rebuilt from scratch against the runtime fingerprint: DOM bars, no canvas, driven by a Web Audio analyser on a rAF loop.</p>
+    </div>
+    <div class="src">
+      <span class="led" id="led"></span>
+      <span id="srcLabel">source: synthesized</span>
+    </div>
+  </header>
+
+  <div class="stage" id="stage">
+    <div class="doc">
+      <div class="dtitle">Meeting notes — Thursday</div>
+      <div class="skel" style="width: 71%"></div>
+      <div class="skel" style="width: 88%"></div>
+      <div class="skel" style="width: 46%"></div>
+      <div class="typed" id="typed"><span class="caret blink" id="caret"></span></div>
+      <div class="skel" style="width: 63%"></div>
+      <div class="skel" style="width: 34%"></div>
+    </div>
+
+    <div class="pill-dock">
+      <div class="pill" id="pill">
+        <span class="dot" id="dot"></span>
+        <div class="bars" id="bars"></div>
+        <span class="hint" id="hint">FN</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="transport">
+    <button class="primary" id="run">Run full sequence</button>
+    <button data-mode="idle">Idle</button>
+    <button data-mode="listening">Listening</button>
+    <button data-mode="transcribing">Transcribing</button>
+    <button data-mode="done">Committed</button>
+    <button id="mic">Use real microphone</button>
+  </div>
+
+  <div class="deck">
+    <div class="group">
+      <h3>Field</h3>
+      <div class="ctl">
+        <div class="row"><label for="count">Bar count</label><output id="countOut">36</output></div>
+        <input type="range" id="count" min="12" max="64" step="1" value="36">
+      </div>
+      <div class="ctl">
+        <div class="row"><label for="bw">Bar width</label><output id="bwOut">3.0 px</output></div>
+        <input type="range" id="bw" min="1.5" max="7" step="0.5" value="3">
+      </div>
+      <div class="ctl">
+        <div class="row"><label for="gap">Gap</label><output id="gapOut">2.0 px</output></div>
+        <input type="range" id="gap" min="0.5" max="6" step="0.5" value="2">
+      </div>
+    </div>
+
+    <div class="group">
+      <h3>Response</h3>
+      <div class="ctl">
+        <div class="row"><label for="gain">Gain</label><output id="gainOut">1.00</output></div>
+        <input type="range" id="gain" min="0.2" max="3" step="0.05" value="1">
+      </div>
+      <div class="ctl">
+        <div class="row"><label for="atk">Attack</label><output id="atkOut">0.55</output></div>
+        <input type="range" id="atk" min="0.05" max="1" step="0.01" value="0.55">
+      </div>
+      <div class="ctl">
+        <div class="row"><label for="rel">Release</label><output id="relOut">0.14</output></div>
+        <input type="range" id="rel" min="0.02" max="1" step="0.01" value="0.14">
+      </div>
+    </div>
+
+    <div class="group">
+      <h3>Shape</h3>
+      <div class="ctl">
+        <div class="row"><label for="env">Center envelope</label><output id="envOut">0.55</output></div>
+        <input type="range" id="env" min="0" max="1" step="0.01" value="0.55">
+      </div>
+      <div class="ctl">
+        <div class="row"><label for="floor">Idle floor</label><output id="floorOut">3.0 px</output></div>
+        <input type="range" id="floor" min="2" max="10" step="0.5" value="3">
+      </div>
+      <div class="ctl">
+        <div class="row"><label for="maxh">Max height</label><output id="maxhOut">24 px</output></div>
+        <input type="range" id="maxh" min="10" max="26" step="1" value="24">
+      </div>
+    </div>
+
+    <div class="group">
+      <h3>Mapping</h3>
+      <div class="toggles">
+        <button id="mirror" aria-pressed="true">Mirror low→center</button>
+        <button id="logmap" aria-pressed="true">Log frequency</button>
+      </div>
+      <div class="ctl">
+        <div class="row"><label for="pillw">Pill width</label><output id="pillwOut">auto</output></div>
+        <input type="range" id="pillw" min="150" max="420" step="2" value="248">
+      </div>
+    </div>
+  </div>
+
+  <section class="notes">
+    <h2>What this was built against</h2>
+    <div class="fingerprint">
+      <div class="fp"><b>Window</b><span>Transparent frameless, <code>pointer-events: none</code></span></div>
+      <div class="fp"><b>requestAnimationFrame</b><span class="yes">4 call sites</span></div>
+      <div class="fp"><b>AudioContext</b><span class="yes">19 references</span></div>
+      <div class="fp"><b>getByteFrequencyData</b><span class="yes">present</span></div>
+      <div class="fp"><b>Canvas / WebGL</b><span class="no">none</span></div>
+      <div class="fp"><b>SVG</b><span class="no">none</span></div>
+      <div class="fp"><b>Lottie / Rive</b><span class="no">none</span></div>
+      <div class="fp"><b>CSS @keyframes</b><span class="no">zero in either stylesheet</span></div>
+    </div>
+    <p>Those eight facts fully determine the technique: <strong>plain DOM elements whose height is written every frame from an analyser's frequency bins</strong>. No stored asset, no declarative timeline. Everything above is a from-scratch implementation of that technique — the geometry and response curves are my own calls, which is what the sliders are for.</p>
+    <p><strong>What I could not verify without looking at the running app:</strong> exact bar count, bar width and gap, pill dimensions, corner radius, and whether the frequency mapping mirrors around center. Defaults here are my best read. Put this side by side with the real overlay and the deck will close the gap in about a minute.</p>
+  </section>
+
+</div>
+
+<script>
+(() => {
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  const el = {
+    bars: document.getElementById('bars'),
+    pill: document.getElementById('pill'),
+    dot:  document.getElementById('dot'),
+    hint: document.getElementById('hint'),
+    typed: document.getElementById('typed'),
+    caret: document.getElementById('caret'),
+    led:  document.getElementById('led'),
+    srcLabel: document.getElementById('srcLabel'),
+  };
+
+  const P = {
+    count: 36, bw: 3, gap: 2,
+    gain: 1, atk: 0.55, rel: 0.14,
+    env: 0.55, floor: 3, maxh: 24,
+    mirror: true, logmap: true, pillw: 248,
+  };
+
+  let mode = 'idle';
+  let levels = new Float32Array(P.count);   // smoothed 0..1 per bar
+  let barEls = [];
+  let t0 = performance.now();
+
+  /* ---------------- bar field construction ---------------- */
+  function buildBars() {
+    el.bars.replaceChildren();
+    barEls = [];
+    el.bars.style.gap = P.gap + 'px';
+    for (let i = 0; i < P.count; i++) {
+      const b = document.createElement('div');
+      b.className = 'bar';
+      b.style.width = P.bw + 'px';
+      b.style.height = P.floor + 'px';
+      el.bars.appendChild(b);
+      barEls.push(b);
+    }
+    if (levels.length !== P.count) levels = new Float32Array(P.count);
+  }
+
+  /* ---------------- audio source ---------------- */
+  let analyser = null, freq = null, audioCtx = null, micOn = false;
+
+  async function enableMic() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: false }
+      });
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const src = audioCtx.createMediaStreamSource(stream);
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 1024;
+      analyser.smoothingTimeConstant = 0.62;
+      src.connect(analyser);
+      freq = new Uint8Array(analyser.frequencyBinCount);
+      micOn = true;
+      el.led.classList.add('on');
+      el.srcLabel.textContent = 'source: microphone · ' + audioCtx.sampleRate + ' Hz';
+      document.getElementById('mic').textContent = 'Microphone live';
+      setMode('listening');
+    } catch (e) {
+      el.srcLabel.textContent = 'source: synthesized (mic unavailable)';
+    }
+  }
+
+  // Map bar index -> [binStart, binEnd) across a perceptual range.
+  function binRange(i, n, bins, nyquist) {
+    const fMin = 60, fMax = 6000;
+    let a, b;
+    if (P.logmap) {
+      a = fMin * Math.pow(fMax / fMin, i / n);
+      b = fMin * Math.pow(fMax / fMin, (i + 1) / n);
+    } else {
+      a = fMin + (fMax - fMin) * (i / n);
+      b = fMin + (fMax - fMin) * ((i + 1) / n);
+    }
+    const s = Math.floor(a / nyquist * bins);
+    return [s, Math.max(s + 1, Math.floor(b / nyquist * bins))];
+  }
+
+  function micTargets(out) {
+    analyser.getByteFrequencyData(freq);
+    const n = P.count;
+    const bins = analyser.frequencyBinCount;
+    const nyq = audioCtx.sampleRate / 2;
+    // number of distinct spectral slots (halved when mirroring)
+    const slots = P.mirror ? Math.ceil(n / 2) : n;
+    const raw = new Float32Array(slots);
+    for (let i = 0; i < slots; i++) {
+      const [s, e] = binRange(i, slots, bins, nyq);
+      let peak = 0;
+      for (let k = s; k < e && k < bins; k++) peak = Math.max(peak, freq[k]);
+      raw[i] = peak / 255;
+    }
+    spread(raw, out, slots);
+  }
+
+  /* Synthetic speech envelope — layered oscillators with a word gate,
+     so the idle demo reads like someone actually talking. */
+  function synthTargets(out, t) {
+    const slots = P.mirror ? Math.ceil(P.count / 2) : P.count;
+    const raw = new Float32Array(slots);
+
+    const word = Math.sin(t * 1.61 + 0.4) * 0.5 + 0.5;      // phrase envelope
+    const gate = word > 0.22 ? 1 : 0.12;                     // pauses between phrases
+    const syll = Math.pow(Math.sin(t * 7.9) * 0.5 + 0.5, 1.4); // syllable rate
+    const drive = (0.34 + 0.66 * syll) * gate * (0.55 + 0.45 * word);
+
+    for (let i = 0; i < slots; i++) {
+      const p = i / Math.max(1, slots - 1);
+      // formant-ish tilt: energy concentrated low, decaying up the spectrum
+      const tilt = Math.pow(1 - p, 0.85) * 0.75 + 0.25;
+      const wob =
+        Math.sin(t * 5.3 + i * 0.77) * 0.22 +
+        Math.sin(t * 11.7 + i * 1.93) * 0.13 +
+        Math.sin(t * 2.1 + i * 0.31) * 0.16;
+      raw[i] = Math.max(0, drive * tilt * (1 + wob));
+    }
+    spread(raw, out, slots);
+  }
+
+  // Distribute `slots` spectral values across `P.count` bars, mirrored or not.
+  function spread(raw, out, slots) {
+    const n = P.count;
+    if (!P.mirror) {
+      for (let i = 0; i < n; i++) out[i] = raw[i];
+      return;
+    }
+    const mid = (n - 1) / 2;
+    for (let i = 0; i < n; i++) {
+      const d = Math.abs(i - mid);              // 0 at center
+      const idx = Math.min(slots - 1, Math.round(d / mid * (slots - 1)));
+      out[i] = raw[idx];
+    }
+  }
+
+  function idleTargets(out, t) {
+    for (let i = 0; i < P.count; i++) {
+      out[i] = reduce ? 0.04 : 0.035 + 0.03 * (Math.sin(t * 1.5 + i * 0.4) * 0.5 + 0.5);
+    }
+  }
+
+  // Traveling wave while the transcript is being resolved.
+  function workingTargets(out, t) {
+    for (let i = 0; i < P.count; i++) {
+      const p = i / Math.max(1, P.count - 1);
+      const w = Math.sin(p * Math.PI * 2.2 - t * 5.4);
+      out[i] = 0.06 + 0.30 * Math.pow(Math.max(0, w), 2.2);
+    }
+  }
+
+  function doneTargets(out) {
+    for (let i = 0; i < P.count; i++) out[i] = 0.05;
+  }
+
+  /* ---------------- frame loop ---------------- */
+  const targets = () => new Float32Array(P.count);
+  let buf = targets();
+
+  function frame(now) {
+    const t = (now - t0) / 1000;
+    if (buf.length !== P.count) buf = targets();
+
+    if (mode === 'listening') {
+      if (micOn) micTargets(buf); else synthTargets(buf, t);
+    } else if (mode === 'transcribing') {
+      workingTargets(buf, t);
+    } else if (mode === 'done') {
+      doneTargets(buf);
+    } else {
+      idleTargets(buf, t);
+    }
+
+    const mid = (P.count - 1) / 2;
+    for (let i = 0; i < P.count; i++) {
+      // center-weighted envelope — the classic lens silhouette
+      const d = mid === 0 ? 0 : Math.abs(i - mid) / mid;
+      const shape = 1 - P.env * Math.pow(d, 1.7);
+
+      let target = Math.min(1, buf[i] * P.gain) * shape;
+
+      // asymmetric smoothing: snap up, ease down
+      const k = target > levels[i] ? P.atk : P.rel;
+      levels[i] += (target - levels[i]) * (reduce ? 1 : k);
+
+      const h = P.floor + levels[i] * (P.maxh - P.floor);
+      barEls[i].style.height = h.toFixed(2) + 'px';
+    }
+    requestAnimationFrame(frame);
+  }
+
+  /* ---------------- state machine ---------------- */
+  const TRANSCRIPT = "Let's push the overlay work to Thursday and get the latency benchmark landed first.";
+  let typeTimer = null, seqTimers = [];
+
+  function setMode(m) {
+    mode = m;
+    el.dot.className = 'dot' + (m === 'listening' ? ' rec' : m === 'transcribing' ? ' work' : m === 'done' ? ' ok' : '');
+    el.pill.classList.toggle('hidden', false);
+
+    if (m === 'idle')          { el.hint.textContent = 'FN'; el.pill.style.width = '150px'; }
+    else if (m === 'listening'){ el.hint.textContent = 'Listening'; el.pill.style.width = P.pillw + 'px'; }
+    else if (m === 'transcribing'){ el.hint.textContent = 'Transcribing'; el.pill.style.width = (P.pillw - 24) + 'px'; }
+    else if (m === 'done')     { el.hint.textContent = 'Inserted'; el.pill.style.width = '176px'; }
+
+    document.querySelectorAll('[data-mode]').forEach(b =>
+      b.setAttribute('aria-pressed', String(b.dataset.mode === m)));
+  }
+
+  function typeOut(text, done) {
+    clearInterval(typeTimer);
+    let i = 0;
+    el.typed.textContent = '';
+    el.typed.appendChild(el.caret);
+    el.caret.classList.remove('blink');
+    typeTimer = setInterval(() => {
+      i += Math.random() < 0.25 ? 2 : 1;
+      el.typed.textContent = text.slice(0, i);
+      el.typed.appendChild(el.caret);
+      if (i >= text.length) {
+        clearInterval(typeTimer);
+        el.caret.classList.add('blink');
+        done && done();
+      }
+    }, reduce ? 4 : 17);
+  }
+
+  function runSequence() {
+    seqTimers.forEach(clearTimeout);
+    seqTimers = [];
+    clearInterval(typeTimer);
+    el.typed.textContent = '';
+    el.typed.appendChild(el.caret);
+    el.caret.classList.add('blink');
+
+    setMode('listening');
+    const hold = micOn ? 4200 : 3400;
+    seqTimers.push(setTimeout(() => {
+      setMode('transcribing');
+      seqTimers.push(setTimeout(() => {
+        setMode('done');
+        typeOut(TRANSCRIPT, () => {
+          seqTimers.push(setTimeout(() => setMode('idle'), 900));
+        });
+      }, 1150));
+    }, hold));
+  }
+
+  /* ---------------- controls ---------------- */
+  const bind = (id, key, fmt, rebuild) => {
+    const input = document.getElementById(id);
+    const out = document.getElementById(id + 'Out');
+    const sync = () => {
+      P[key] = parseFloat(input.value);
+      out.textContent = fmt(P[key]);
+      if (rebuild) buildBars();
+      if (key === 'pillw' && (mode === 'listening' || mode === 'transcribing')) setMode(mode);
+    };
+    input.addEventListener('input', sync);
+    sync();
+  };
+
+  const px = v => v.toFixed(1) + ' px';
+  bind('count', 'count', v => String(v | 0), true);
+  bind('bw',    'bw',    px, true);
+  bind('gap',   'gap',   px, true);
+  bind('gain',  'gain',  v => v.toFixed(2));
+  bind('atk',   'atk',   v => v.toFixed(2));
+  bind('rel',   'rel',   v => v.toFixed(2));
+  bind('env',   'env',   v => v.toFixed(2));
+  bind('floor', 'floor', px, true);
+  bind('maxh',  'maxh',  v => (v | 0) + ' px');
+  bind('pillw', 'pillw', v => (v | 0) + ' px');
+
+  const toggle = (id, key) => {
+    const b = document.getElementById(id);
+    b.addEventListener('click', () => {
+      P[key] = !P[key];
+      b.setAttribute('aria-pressed', String(P[key]));
+    });
+  };
+  toggle('mirror', 'mirror');
+  toggle('logmap', 'logmap');
+
+  document.querySelectorAll('[data-mode]').forEach(b =>
+    b.addEventListener('click', () => {
+      seqTimers.forEach(clearTimeout);
+      clearInterval(typeTimer);
+      setMode(b.dataset.mode);
+    }));
+
+  document.getElementById('run').addEventListener('click', runSequence);
+  document.getElementById('mic').addEventListener('click', enableMic);
+
+  /* ---------------- boot ---------------- */
+  buildBars();
+  setMode('idle');
+  requestAnimationFrame(frame);
+  setTimeout(runSequence, 620);
+})();
+</script>

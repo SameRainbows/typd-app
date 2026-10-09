@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; script-src 'self'; style-src 'self'; media-src 'self'" />
+  <title>Typd</title>
+  <link rel="stylesheet" href="overlay.css" />
+</head>
+<body>
+  <div class="overlay" id="overlay" data-visible="false" data-state="idle" data-mode="dictate">
+    <div class="pill">
+      <!-- The fill sits behind everything and under the pill's own radius, so
+           progress reads as the pill filling rather than as a bar sitting in
+           it. Only the working state gives it a width. -->
+      <span class="progress" id="progress" aria-hidden="true"></span>
+
+      <button class="control cancel" id="cancel" type="button" title="Cancel" tabindex="-1">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path class="x" d="M8 8 L16 16 M16 8 L8 16" />
+        </svg>
+      </button>
+
+      <!-- Meter and message share one slot and cross-fade in place. As
+           siblings they would take turns holding the layout, and the width
+           morph would then be two things moving instead of one. -->
+      <span class="mid">
+        <span class="layer meter-slot" id="meterLayer" data-on="true">
+          <canvas class="meter" id="meter"></canvas>
+        </span>
+        <span class="layer result-text" id="resultText"></span>
+      </span>
+
+      <button class="control confirm" id="confirm" type="button" title="Done" tabindex="-1">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path class="tick" d="M7.5 12.4 L10.6 15.6 L16.8 9" />
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  <script src="sound.js"></script>
+  <script src="overlay.js"></script>
+</body>
+</html>

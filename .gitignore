@@ -20,3 +20,14 @@ npm-debug.log*
 # OS
 .DS_Store
 Thumbs.db
+
+# Local models and runtime (large binaries, not source)
+vendor/
+models/
+
+# Large or personal bench data (kept locally)
+bench/models/
+bench/recordings/*.wav
+
+# Tester build config: holds an upload key, never committed
+tester.json

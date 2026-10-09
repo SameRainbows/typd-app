@@ -1,0 +1,55 @@
+{
+  "name": "typd",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Voice dictation you can talk back to.",
+  "license": "GPL-3.0-only",
+  "main": "src/main/index.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "stub": "electron . --stub",
+    "bench": "node bench/wiring.js && node bench/revise.js && node bench/formatting.js && node bench/learn.js",
+    "bench:revise": "node bench/revise.js",
+    "bench:format": "node bench/formatting.js",
+    "bench:selection": "node bench/selection.js 90 --copy",
+    "bench:wiring": "node bench/wiring.js",
+    "bench:learn": "node bench/learn.js",
+    "fetch:model": "node scripts/fetch-model.js"
+  },
+  "devDependencies": {
+    "electron": "^44.5.1",
+    "electron-builder": "^26.15.3"
+  },
+  "dependencies": {
+    "sherpa-onnx-node": "^1.13.4",
+    "uiohook-napi": "^1.5.5"
+  },
+  "build": {
+    "appId": "ai.typd.app",
+    "productName": "Typd",
+    "files": [
+      "src/**/*",
+      "!**/*.md"
+    ],
+    "//asarUnpack": [
+      "inject.ps1 is spawned as a child process by path. Inside an asar archive",
+      "there is no real path to spawn, so PowerShell cannot find it and every",
+      "paste fails silently on the packaged build while working in development.",
+      "The ONNX models are loaded by the native sherpa binding, which likewise",
+      "cannot read through the archive."
+    ],
+    "asarUnpack": [
+      "src/main/inject.ps1",
+      "**/*.onnx",
+      "**/node_modules/sherpa-onnx-node/**"
+    ],
+    "win": {
+      "target": "nsis"
+    }
+  },
+  "allowScripts": {
+    "uiohook-napi@1.5.5": true,
+    "electron@44.5.1": true
+  }
+}

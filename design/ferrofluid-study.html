@@ -1,0 +1,1150 @@
+<!doctype html>
+<!-- The doctype matters here in a way it does not in the other studies: this page
+     lives or dies on the pill being exactly 130 x 36 CSS px, and quirks mode
+     changes how the padded flex box measures. Everything below is standalone --
+     no server, no fonts, no network, nothing the app's CSP would refuse. -->
+<meta charset="utf-8">
+<title>Typd — Ferrofluid Study</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<style>
+  /* The page chrome is a fixed neutral graphite. A study that changes its own
+     surround every time you toggle the stage is judging two things at once --
+     the wall stays the same colour so only the picture moves. */
+  :root {
+    --deck:    #0F1116;
+    --panel:   #161920;
+    --panel-2: #1C202A;
+    --edge:    #272C37;
+    --edge-2:  #3A414F;
+    --ink:     #E9EBF0;
+    --dim:     #969DAB;
+    --faint:   #666D7B;
+    --red:     #E8695C;
+
+    --ui:   "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    --mono: "Cascadia Mono", ui-monospace, "SF Mono", Consolas, monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--deck);
+    color: var(--ink);
+    font-family: var(--ui);
+    font-size: 14px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 1060px; margin: 0 auto; padding: 42px 24px 96px; display: flex; flex-direction: column; gap: 30px; }
+
+  .eyebrow { font-family: var(--mono); font-size: 10px; letter-spacing: .17em; text-transform: uppercase; color: var(--faint); }
+  .masthead { display: flex; flex-direction: column; gap: 9px; border-bottom: 1px solid var(--edge); padding-bottom: 22px; }
+  .masthead h1 { margin: 0; font-size: clamp(26px, 4vw, 38px); font-weight: 640; letter-spacing: -.026em; line-height: 1.14; text-wrap: balance; }
+  .masthead p { margin: 0; max-width: 68ch; color: var(--dim); }
+  .masthead p em { color: var(--ink); font-style: normal; font-weight: 600; }
+
+  h2 { margin: 0; font-family: var(--mono); font-size: 10px; letter-spacing: .17em; text-transform: uppercase; color: var(--faint); font-weight: 500; }
+  section { display: flex; flex-direction: column; gap: 14px; }
+
+  /* -------------------------------------------------------- control deck */
+
+  .deck {
+    position: sticky; top: 0; z-index: 20;
+    display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px;
+    padding: 12px 14px;
+    background: color-mix(in oklab, var(--panel) 88%, transparent);
+    backdrop-filter: blur(14px);
+    border: 1px solid var(--edge); border-radius: 11px;
+  }
+  .grp { display: flex; align-items: center; gap: 8px; }
+  .grp > label.cap { font-family: var(--mono); font-size: 9.5px; letter-spacing: .13em; text-transform: uppercase; color: var(--faint); }
+
+  .seg { display: flex; background: var(--panel-2); border: 1px solid var(--edge); border-radius: 8px; padding: 2px; gap: 2px; }
+  .seg button {
+    appearance: none; border: 0; background: transparent; color: var(--dim);
+    font: inherit; font-size: 12px; font-weight: 550;
+    padding: 5px 11px; border-radius: 6px; cursor: pointer;
+    transition: background 130ms ease, color 130ms ease;
+  }
+  .seg button:hover { color: var(--ink); }
+  .seg button[aria-pressed="true"] { background: var(--edge-2); color: var(--ink); }
+
+  button.push {
+    appearance: none; background: var(--panel-2); border: 1px solid var(--edge-2);
+    color: var(--ink); font: inherit; font-size: 12px; font-weight: 600;
+    padding: 6px 14px; border-radius: 8px; cursor: pointer; min-width: 74px;
+    transition: background 130ms ease;
+  }
+  button.push:hover { background: var(--edge); }
+
+  .check { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dim); cursor: pointer; user-select: none; }
+  .check input { accent-color: var(--edge-2); width: 13px; height: 13px; cursor: pointer; }
+  .check:hover { color: var(--ink); }
+
+  input[type="range"] { accent-color: var(--dim); width: 132px; cursor: pointer; }
+  .num { font-family: var(--mono); font-size: 11px; color: var(--dim); font-variant-numeric: tabular-nums; min-width: 34px; }
+
+  :where(button, input, select):focus-visible { outline: 2px solid var(--edge-2); outline-offset: 2px; }
+
+  /* ---------------------------------------------------------------- stage */
+
+  /* The overlay floats over whatever the user happens to be looking at, so the
+     stage is the variable, not the pill. Light and dark are the easy cases;
+     "busy" is the one that actually decides things -- a hard edge running
+     straight under the pill so half of it sits on paper and half on ink. */
+  .stage {
+    position: relative; border-radius: 13px; border: 1px solid var(--edge);
+    overflow: hidden; padding: 40px 18px 34px;
+    display: flex; flex-wrap: wrap; justify-content: center; align-items: flex-start;
+    gap: 34px 26px;
+    background: var(--bg-plate);
+  }
+  .stage[data-theme="light"] {
+    --bg-plate: #E7E9ED;
+    --pill-bg:    rgba(252, 252, 253, 0.95);
+    --pill-line:  rgba(16, 18, 23, 0.10);
+    --pill-sheen: rgba(255, 255, 255, 0.85);
+    --pill-shadow: 0 1px 2px rgba(16,18,23,.09), 0 6px 18px rgba(16,18,23,.11), 0 16px 40px rgba(16,18,23,.09);
+    --muted: #575D66;
+    --meter: #1C1F25;
+    --chip:  rgba(16, 18, 23, 0.06);
+    --commit: #16181D;
+    --commit-ink: #FFFFFF;
+    --danger: #B22D22;
+    --cap: #4A505B;
+  }
+  .stage[data-theme="dark"] {
+    --bg-plate: #101216;
+    --pill-bg:    rgba(13, 14, 17, 0.93);
+    --pill-line:  rgba(255, 255, 255, 0.11);
+    --pill-sheen: rgba(255, 255, 255, 0.09);
+    --pill-shadow: 0 1px 2px rgba(0,0,0,.5), 0 8px 22px rgba(0,0,0,.55), 0 20px 48px rgba(0,0,0,.45);
+    --muted: #9DA3AC;
+    --meter: #F4F5F7;
+    --chip:  rgba(255, 255, 255, 0.10);
+    --commit: #F4F5F7;
+    --commit-ink: #14161B;
+    --danger: #E8695C;
+    --cap: #8B919B;
+  }
+  /* Two flat plates and a hard seam. Nothing photographic -- a photograph would
+     let us blame the photograph. */
+  .stage[data-busy="true"]::before {
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    background:
+      linear-gradient(96deg, #F7F8FA 0 22%, #0B0D11 22% 41%, #C6CAD2 41% 58%, #1A1D24 58% 73%, #EDEFF3 73% 100%);
+  }
+  .stage[data-busy="true"] > * { position: relative; z-index: 1; }
+
+  .cell { display: flex; flex-direction: column; align-items: center; gap: 11px; }
+  .cell .tag {
+    font-family: var(--mono); font-size: 9px; letter-spacing: .15em; text-transform: uppercase;
+    color: var(--cap); background: color-mix(in oklab, var(--bg-plate) 70%, transparent);
+    padding: 2px 6px; border-radius: 4px;
+  }
+
+  /* ----------------------------------------------------------------- pill */
+  /* Lifted from src/renderer/overlay.css unchanged. If the meter needs the pill
+     to change to work, the meter is wrong. */
+
+  .pill {
+    position: relative; display: flex; align-items: center; gap: 6px;
+    width: 130px; height: 36px; padding: 0 6px;
+    border-radius: 18px;
+    background: var(--pill-bg);
+    border: 1px solid var(--pill-line);
+    box-shadow: var(--pill-shadow);
+    backdrop-filter: blur(18px) saturate(1.6);
+  }
+  .pill::before {
+    content: ""; position: absolute; inset: 0; border-radius: inherit; padding-top: 1px;
+    background: linear-gradient(var(--pill-sheen), transparent 55%);
+    -webkit-mask: linear-gradient(#000,#000) content-box, linear-gradient(#000,#000);
+    -webkit-mask-composite: xor; mask-composite: exclude; pointer-events: none;
+  }
+  .control {
+    flex: 0 0 auto; width: 24px; height: 24px; padding: 0; border: 0;
+    border-radius: 50%; background: transparent; display: grid; place-items: center;
+  }
+  .control svg { width: 12px; height: 12px; fill: none; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+  .control.cancel { background: var(--chip); }
+  .control.cancel svg { stroke: var(--muted); }
+  .control.confirm { background: var(--commit); box-shadow: 0 1px 2px rgba(0,0,0,.2); }
+  .control.confirm svg { stroke: var(--commit-ink); }
+
+  .meter-slot { flex: 1 1 auto; height: 18px; min-width: 0; }
+  canvas.meter { width: 100%; height: 100%; display: block; }
+
+  /* ------------------------------------------------------------ 4x panels */
+
+  .blowups { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
+  .blow {
+    display: flex; flex-direction: column; gap: 10px;
+    border: 1px solid var(--edge); border-radius: 11px; background: var(--panel); padding: 14px;
+  }
+  .blow header { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+  .blow h3 { margin: 0; font-size: 14.5px; font-weight: 630; letter-spacing: -.01em; }
+  .blow .cost { font-family: var(--mono); font-size: 10.5px; color: var(--faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  /* The 4x plate carries the stage's own theme so the fluid is judged against
+     the surface it will actually sit on, not against the page. */
+  .plate {
+    border-radius: 8px; padding: 10px 8px; display: grid; place-items: center;
+    background: var(--pill-bg); border: 1px solid var(--pill-line);
+  }
+  canvas.big { width: 232px; height: 72px; display: block; }
+  .blow p { margin: 0; font-size: 12.5px; color: var(--dim); line-height: 1.5; }
+  .blow p b { color: var(--ink); font-weight: 600; }
+
+  /* ----------------------------------------------------------- prose bits */
+
+  .verdict { border: 1px solid var(--edge); border-left: 2px solid var(--edge-2); border-radius: 0 11px 11px 0; background: var(--panel); padding: 20px 22px; display: flex; flex-direction: column; gap: 13px; }
+  .verdict h3 { margin: 0; font-size: 15px; font-weight: 640; letter-spacing: -.012em; }
+  .verdict p { margin: 0; color: var(--dim); max-width: 76ch; }
+  .verdict p strong { color: var(--ink); font-weight: 620; }
+  .verdict .kill { color: var(--red); font-weight: 600; }
+
+  table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  th { text-align: left; font-family: var(--mono); font-weight: 500; font-size: 9.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--faint); padding: 0 14px 7px 0; border-bottom: 1px solid var(--edge-2); white-space: nowrap; }
+  td { padding: 9px 14px 9px 0; border-bottom: 1px solid var(--edge); color: var(--dim); vertical-align: top; }
+  td:first-child { color: var(--ink); font-weight: 550; white-space: nowrap; }
+  td.n { font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--ink); white-space: nowrap; }
+  .scroll { overflow-x: auto; }
+
+  .foot { font-size: 12px; color: var(--faint); max-width: 76ch; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation-duration: 1ms !important; transition-duration: 1ms !important; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="eyebrow">Typd — visualisation study 01</div>
+    <h1>Ferrofluid in a 56 by 18 pixel hole.</h1>
+    <p>The idea: your voice is the magnetic field. Silence is a calm bead of liquid; speech pulls it apart, spikes it, clusters it. Three ways of doing that, plus the eleven-bar meter we ship today, all painted from one animation loop at the size that actually decides it. <em>Note the size.</em> The brief said the meter slot was 90 px wide. Measured live in the browser it is <em>56</em> — 130, less the 2 px border, less 12 of padding, less 48 of controls, less 12 of gap. Nearly forty per cent narrower than assumed, and the assumption was doing real work: at 90 px two of these three look like different designs than they do here.</p>
+  </header>
+
+  <div class="deck">
+    <div class="grp">
+      <label class="cap">Stage</label>
+      <div class="seg" role="group" aria-label="Stage theme">
+        <button type="button" data-theme="light" aria-pressed="false">Light</button>
+        <button type="button" data-theme="dark" aria-pressed="true">Dark</button>
+      </div>
+      <label class="check"><input type="checkbox" id="busy"> Busy backdrop</label>
+    </div>
+
+    <div class="grp">
+      <label class="cap">Voice</label>
+      <button type="button" class="push" id="play">Pause</button>
+      <input type="range" id="level" min="0" max="100" value="0" aria-label="Voice level">
+      <span class="num" id="levelOut">0.00</span>
+    </div>
+
+    <div class="grp">
+      <label class="cap">DPR</label>
+      <div class="seg" role="group" aria-label="Device pixel ratio">
+        <button type="button" data-dpr="1" aria-pressed="false">1</button>
+        <button type="button" data-dpr="1.25" aria-pressed="false">1.25</button>
+        <button type="button" data-dpr="1.5" aria-pressed="false">1.5</button>
+        <button type="button" data-dpr="2" aria-pressed="true">2</button>
+      </div>
+    </div>
+
+    <div class="grp">
+      <label class="check"><input type="checkbox" id="gloss" checked> Gloss</label>
+      <label class="check"><input type="checkbox" id="pixels"> 4× shows real pixels</label>
+      <label class="check"><input type="checkbox" id="reduced"> Reduced motion</label>
+    </div>
+  </div>
+
+  <section>
+    <h2>Actual size — 130 × 36 pill, 56 × 18 slot</h2>
+    <div class="stage" id="stage" data-theme="dark" data-busy="false">
+      <div class="cell">
+        <div class="pill">
+          <button class="control cancel" type="button" tabindex="-1" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 7 L17 17 M17 7 L7 17"/></svg></button>
+          <span class="meter-slot"><canvas class="meter" id="a1"></canvas></span>
+          <button class="control confirm" type="button" tabindex="-1" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6.6 12.4 L10.5 16.3 L17.4 8.9"/></svg></button>
+        </div>
+        <div class="tag">A — Bead</div>
+      </div>
+
+      <div class="cell">
+        <div class="pill">
+          <button class="control cancel" type="button" tabindex="-1" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 7 L17 17 M17 7 L7 17"/></svg></button>
+          <span class="meter-slot"><canvas class="meter" id="b1"></canvas></span>
+          <button class="control confirm" type="button" tabindex="-1" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6.6 12.4 L10.5 16.3 L17.4 8.9"/></svg></button>
+        </div>
+        <div class="tag">B — Spikes</div>
+      </div>
+
+      <div class="cell">
+        <div class="pill">
+          <button class="control cancel" type="button" tabindex="-1" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 7 L17 17 M17 7 L7 17"/></svg></button>
+          <span class="meter-slot"><canvas class="meter" id="c1"></canvas></span>
+          <button class="control confirm" type="button" tabindex="-1" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6.6 12.4 L10.5 16.3 L17.4 8.9"/></svg></button>
+        </div>
+        <div class="tag">C — Skin</div>
+      </div>
+
+      <div class="cell">
+        <div class="pill">
+          <button class="control cancel" type="button" tabindex="-1" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 7 L17 17 M17 7 L7 17"/></svg></button>
+          <span class="meter-slot"><canvas class="meter" id="r1"></canvas></span>
+          <button class="control confirm" type="button" tabindex="-1" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6.6 12.4 L10.5 16.3 L17.4 8.9"/></svg></button>
+        </div>
+        <div class="tag">Incumbent — 11 bars</div>
+      </div>
+    </div>
+    <p class="foot">The four pills share one level signal and one <span class="num" style="min-width:0">requestAnimationFrame</span>, so any difference you see is the design and not the driver. Drag the slider to hold a level; press Pause and the synthetic speech envelope stops so a single frame can be stared at.</p>
+  </section>
+
+  <section>
+    <h2>4× — the same 56 × 18 design, magnified</h2>
+    <div class="blowups">
+
+      <div class="blow">
+        <header><h3>A — Bead</h3><span class="cost" id="costA">—</span></header>
+        <div class="plate" id="plateA"><canvas class="big" id="a4"></canvas></div>
+        <p><b>Metaballs on the centreline.</b> One parent bead and two pairs of satellites. The inner pair is placed so the iso-surface can never quite break — it necks and holds — while the outer pair is thrown far enough to pinch clean off, so a loud phrase is one stretched body with two droplets flung off it.<br>
+        <b>Good at</b> the resting state, which is the best frame on this page: one wet black bead with a hard specular, sitting still. Nothing else here makes silence look deliberate rather than idle. It is also the only design that never borrows the grammar of a chart. <b>Bad at</b> filling the slot when loud — the composition is a mass and two 6 px dots with real gaps between them, and at DPR 1 those dots lose their edges. It reads quieter than B at every level above about 0.5.</p>
+      </div>
+
+      <div class="blow">
+        <header><h3>B — Spikes</h3><span class="cost" id="costB">—</span></header>
+        <div class="plate" id="plateB"><canvas class="big" id="b4"></canvas></div>
+        <p><b>Rosensweig instability.</b> A pool with a fixed spike wavelength — in the real fluid the field changes spike height, never spacing — and a critical threshold below which the surface stays flat. Neighbouring spikes are diffusively coupled so the row rises as one surface.<br>
+        <b>Good at</b> almost everything, which was not the prediction. Six spikes in 56 px was supposed to be the eleven-bar meter wearing pointed hats; it is not, because it is one filled body with a continuous outline rather than eleven separate marks, and the eye reads the silhouette. It is the most legible thing on this page at actual size and the only one that looks like the photograph everybody pictures. <b>Bad at</b> the company it keeps: a filled mass anchored to a baseline with a jagged top is the exact grammar of a spectrum analyser, so it is simultaneously the most convincing ferrofluid and the most convincing audio visualiser. It is also the only asymmetric element in a symmetrical pill.</p>
+      </div>
+
+      <div class="blow">
+        <header><h3>C — Skin</h3><span class="cost" id="costC">—</span></header>
+        <div class="plate" id="plateC"><canvas class="big" id="c4"></canvas></div>
+        <p><b>Pre-instability corrugation.</b> One closed body that never changes topology. Voice drives how far it spreads and how agitated its surface is: three travelling capillary waves at different wavelengths and speeds, interfering so the ripple never repeats.<br>
+        <b>Good at</b> surviving: nothing has to resolve, so it holds up at DPR 1 and at 1.25, which is where most Windows laptops actually live — this machine reports 1.25. The gloss has more continuous surface to sit on than in either of the others. <b>Bad at</b> being ferrofluid. Without spiking or splitting it is a very good blob, and at actual size the corrugation flattens into a slightly lumpy worm. A viewer who was not told would not name the material, and probably would not notice the ripple at all.</p>
+      </div>
+
+      <div class="blow">
+        <header><h3>Incumbent — 11 bars</h3><span class="cost" id="costR">—</span></header>
+        <div class="plate" id="plateR"><canvas class="big" id="r4"></canvas></div>
+        <p><b>What ships today</b>, copied out of <span class="num" style="min-width:0">overlay.js</span> unchanged so the comparison is fair: eleven rounded bars, centre-weighted, each with a phase offset, snapped to whole device pixels.<br>
+        <b>Good at</b> being unambiguous at any DPR and reading as "listening" in the first 100 ms. Every edge is axis-aligned so it is the only one here that is genuinely crisp. <b>Bad at</b> having any character at all — it is the same meter as everyone else's, and it says nothing about the product beyond "audio is arriving".</p>
+      </div>
+
+    </div>
+  </section>
+
+  <section>
+    <h2>Frame cost</h2>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Measure</th><th>Value</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td>Frame rate</td><td class="n" id="mFps">—</td><td>Rolling mean over 60 frames.</td></tr>
+          <tr><td>All four, 1× + 4×</td><td class="n" id="mTotal">—</td><td>Everything this page paints. The shipping cost is one column of this, at 1× only.</td></tr>
+          <tr><td>A — Bead, 1× only</td><td class="n" id="mA1">—</td><td>Shipping cost. Iso-surface solved by bisection per sample column.</td></tr>
+          <tr><td>B — Spikes, 1× only</td><td class="n" id="mB1">—</td><td>Shipping cost. Two spike kernels evaluated per sample.</td></tr>
+          <tr><td>C — Skin, 1× only</td><td class="n" id="mC1">—</td><td>Shipping cost. Three sinusoids per sample.</td></tr>
+          <tr><td>Incumbent, 1× only</td><td class="n" id="mR1">—</td><td>Eleven <span class="num" style="min-width:0">roundRect</span> calls in one path.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="foot">Timed with <span class="num" style="min-width:0">performance.now()</span> around the step-and-paint of each renderer, smoothed with a 0.05 EMA, so the numbers settle after a second or two. Compositing is excluded, which for a 56 × 18 canvas is not the part to worry about. Measured in Electron 41 on this machine — a Windows laptop reporting DPR 1.25 — with a live speech envelope running, all four visualisers and all eight canvases painting at once: <strong style="color:var(--ink)">A 0.04–0.10 ms, B 0.036–0.046 ms, C 0.016–0.042 ms, the incumbent bars 0.005–0.018 ms</strong>, and 0.27–0.40 ms for everything on the page. The frame rate never left 120.<br><br>So the performance question is not interesting: against a 16.7 ms budget the most expensive of these costs about six tenths of one per cent, and the shipping case is a quarter of what this page does. The only honest observation in the table is relative — <strong style="color:var(--ink)">the metaball solver is roughly eight times the cost of the bars it would replace</strong>, and eight times almost nothing is still almost nothing. This should not be a factor in the decision, and the numbers are here mainly so that nobody has to guess.</p>
+  </section>
+
+  <section>
+    <h2>Verdict</h2>
+    <div class="verdict">
+      <h3>Yes, it works — but not for the reason the concept promises, and the version I expected to fail is the one that reads best.</h3>
+
+      <p>The prediction going in was that ferrofluid is a large-format idea: that everything making the material recognisable is high-frequency detail — the hexagonal spike lattice, the specular on each cone, a spike splitting in two as the field rises — and that all of it would be sub-pixel at this size. Half of that is right. <strong>The half that is wrong is B, and it is worth being specific about why the prediction failed</strong>, because the reasoning was plausible and the reasoning was bad. Six spikes across 56 px really is the same spatial frequency as eleven bars across 56 px. But eleven bars are eleven separate marks and six spikes are one filled body with one outline, and the eye reads silhouettes, not frequencies. B is the most legible element on this page at actual size. I would not have believed that from the arithmetic.</p>
+
+      <p><strong>I would still ship A.</strong> Not because it is more legible — it is not, above about half volume B beats it clearly — but because of what the two are made of. B's loud state is a filled mass anchored to a baseline with a jagged top edge, which is the grammar of a spectrum analyser down to the last detail; it is at once the most convincing ferrofluid and the most convincing audio visualiser, and the product does not want the second thing. A never touches that grammar. And A owns the state the overlay is actually in most of the time: <strong>a still, wet, black bead is a thing at rest, whereas eleven short bars are a graph reading nearly zero.</strong> The README's line is that an overlay asking to be looked at has already failed, and between a quiet bead and a serrated mountain range there is only one answer consistent with that.</p>
+
+      <p><strong>C is the safe answer and I do not recommend it.</strong> It is the most robust — it holds at DPR 1, it never flickers, the gloss has the most surface to sit on — but it bought that by trading away the concept. Ship C and in three months nobody will remember it was meant to be ferrofluid; it will be the blob. Prefer A, which is recognisably an idea, and accept that its outer droplets are soft.</p>
+
+      <p><strong>Two things fight A and both are real.</strong> First, <span class="kill">ferrofluid is black</span>, and on the dark theme it cannot be. A near-white fluid on a near-black pill reads as milk or mercury. Gloss mitigates it — the dark-theme body drops to a grey so a bright crown has somewhere to sit, which states "lit from above" from the other side — but the material identity is a light-theme privilege and this study should not pretend otherwise. Second, at DPR 1 and 1.25 the droplets lose their edges. Turn on <em style="font-style:normal;color:var(--ink)">4× shows real pixels</em> and drop to DPR 1: next to the incumbent bars, which are axis-aligned and snapped to whole device pixels and consequently razor sharp, all three fluids are visibly soft. That is not a bug to fix. Curved outlines at 18 px are soft, and anyone choosing a fluid is choosing to give up the crispest thing in the pill.</p>
+
+      <p><strong>Three tuning failures are recorded in the comments</strong> rather than quietly fixed, because each one is a fact about the size rather than about the code. Metaballs merge at roughly 2.8 radii, not at contact, so six satellites across 28 px of half-slot never separated and the loud state was a potato. Letting all four satellites detach then gave five circles in a row, which is not a liquid but an ellipsis, and read as a loading indicator. And the gloss gradient, anchored to the top of the slot rather than to the top of the liquid, put its brightest stop in empty air and made every body read as flat grey. All three looked fine in the code and wrong on the glass.</p>
+
+      <p>One measurement worth carrying back: the slot is <strong>56 px, not 90</strong>. If ferrofluid is wanted badly, the cheapest intervention is not a better solver but a wider slot — shrink the two 24 px controls to 20, or widen the pill by 16, and B stops being a spectrum analyser because there is room for the pool to sit well inside its own margins instead of spanning wall to wall.</p>
+    </div>
+  </section>
+
+  <p class="foot">Everything here is synthetic. The envelope is a phrase/pause state machine with a 4–6.4 Hz syllable train, per-phrase loudness, occasional stressed syllables and a floor of room tone, which is a better test surface than the two multiplied sines in <span class="num" style="min-width:0">overlay.js</span> because it produces the awkward cases — a long hold, a hard stop mid-phrase — that break a visualiser. No microphone is requested and nothing leaves the page.</p>
+
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  var root = document.documentElement;
+  var stage = document.getElementById('stage');
+
+  /* ------------------------------------------------------------- controls */
+
+  var DPR = 2;              // forced, not read from the display -- see fit()
+  var manual = false;       // slider is driving instead of the envelope
+  var playing = true;
+  var manualLevel = 0;
+  var glossOn = true;
+  var pixelTruth = false;
+  var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  var elLevel   = document.getElementById('level');
+  var elLevelN  = document.getElementById('levelOut');
+  var elPlay    = document.getElementById('play');
+  var elGloss   = document.getElementById('gloss');
+  var elPixels  = document.getElementById('pixels');
+  var elReduced = document.getElementById('reduced');
+  var elBusy    = document.getElementById('busy');
+
+  elReduced.checked = reduced;
+
+  function segment(sel, attr, apply) {
+    var wrap = document.querySelector(sel);
+    wrap.addEventListener('click', function (e) {
+      var b = e.target.closest('button');
+      if (!b) return;
+      Array.prototype.forEach.call(wrap.children, function (c) { c.setAttribute('aria-pressed', String(c === b)); });
+      apply(b.getAttribute(attr));
+    });
+  }
+
+  segment('.seg[aria-label="Stage theme"]', 'data-theme', function (v) {
+    stage.setAttribute('data-theme', v);
+    // The 4x plates borrow the stage's pill tokens so the fluid is judged
+    // against the surface it will actually sit on rather than against the page.
+    ['plateA','plateB','plateC','plateR'].forEach(function (id) {
+      document.getElementById(id).setAttribute('data-theme', v);
+    });
+    palette.stale = true;
+  });
+  segment('.seg[aria-label="Device pixel ratio"]', 'data-dpr', function (v) {
+    DPR = parseFloat(v);
+    resizeAll();
+  });
+
+  elBusy.addEventListener('change', function () { stage.setAttribute('data-busy', String(elBusy.checked)); });
+  elGloss.addEventListener('change', function () { glossOn = elGloss.checked; });
+  elPixels.addEventListener('change', function () { pixelTruth = elPixels.checked; });
+  elReduced.addEventListener('change', function () { reduced = elReduced.checked; });
+
+  elLevel.addEventListener('input', function () {
+    manual = true; playing = false;
+    elPlay.textContent = 'Play';
+    manualLevel = elLevel.value / 100;
+  });
+  elPlay.addEventListener('click', function () {
+    playing = !playing;
+    if (playing) manual = false;
+    elPlay.textContent = playing ? 'Pause' : 'Play';
+  });
+
+  /* The 4x plates need the stage's variables, but they live outside the stage
+     in the DOM. Cloning the two token blocks onto them by attribute is cheaper
+     than restructuring the page around a shared ancestor. */
+  var plateCss = document.createElement('style');
+  plateCss.textContent =
+    '.plate[data-theme="light"]{--pill-bg:rgba(252,252,253,.95);--pill-line:rgba(16,18,23,.10);--meter:#1C1F25}' +
+    '.plate[data-theme="dark"]{--pill-bg:rgba(13,14,17,.93);--pill-line:rgba(255,255,255,.11);--meter:#F4F5F7}';
+  document.head.appendChild(plateCss);
+  ['plateA','plateB','plateC','plateR'].forEach(function (id) {
+    document.getElementById(id).setAttribute('data-theme', 'dark');
+  });
+
+  /* -------------------------------------------------------------- palette */
+
+  /* getComputedStyle is a layout read. Called once per canvas per frame it was
+     the single largest line item on this page -- more than all three fluid
+     solvers combined -- for four strings that only change when someone clicks
+     a theme button. Read on demand, cache, invalidate by hand. */
+  var palette = { stale: true, meter: '#F4F5F7', body: '#F4F5F7', gloss: 'rgba(255,255,255,0)', dark: true };
+
+  function refreshPalette() {
+    var cs = getComputedStyle(stage);
+    palette.meter = cs.getPropertyValue('--meter').trim() || '#F4F5F7';
+    palette.dark = stage.getAttribute('data-theme') === 'dark';
+
+    /* Lighting a monochrome fluid is not symmetric between themes, and pretending
+       it is produces the single worst frame in the whole study.
+       On light the fluid is near-black, so white added at the top reads instantly
+       as a specular. On dark the fluid is near-white and there is no room above
+       it -- adding white does nothing. So on dark the body is dropped to a grey
+       and the white goes on top of that, which is the same physical statement
+       (lit from above) reached from the other side. A flat near-white blob with
+       no internal range is what makes these things look like a loading spinner. */
+    if (palette.dark) {
+      palette.body = glossOn ? mix(palette.meter, '#0D0E11', 0.20) : palette.meter;
+      palette.gloss1 = 'rgba(255,255,255,0.85)';
+      palette.gloss2 = 'rgba(255,255,255,0.18)';
+    } else {
+      palette.body = palette.meter;
+      palette.gloss1 = 'rgba(255,255,255,0.52)';
+      palette.gloss2 = 'rgba(255,255,255,0.11)';
+    }
+    palette.stale = false;
+  }
+
+  function mix(hexA, hexB, t) {
+    var a = parseInt(hexA.slice(1), 16), b = parseInt(hexB.slice(1), 16);
+    var r = Math.round(((a >> 16) & 255) * (1 - t) + ((b >> 16) & 255) * t);
+    var g = Math.round(((a >> 8) & 255) * (1 - t) + ((b >> 8) & 255) * t);
+    var l = Math.round((a & 255) * (1 - t) + (b & 255) * t);
+    return 'rgb(' + r + ',' + g + ',' + l + ')';
+  }
+
+  /* -------------------------------------------------------------- envelope */
+
+  /* Speech is not a sine wave and a visualiser tuned against one will look
+     wrong the first time somebody actually talks. This is a phrase/pause state
+     machine: phrases of 1-3.4 s at a syllable rate in the human 4-6.4 Hz band,
+     each phrase given its own loudness so consecutive phrases differ, one
+     syllable in six stressed, and a floor of room tone so silence is never a
+     hard zero. The awkward cases -- a long held vowel, a hard stop mid-phrase,
+     a thinking pause -- are the ones that expose a design, and a product of
+     multiplied sines never produces them. */
+  var env = (function () {
+    var speaking = false, clock = 0, until = 0.30;
+    var energy = 0.8, rate = 5, sylT = 0, sylDur = 0.2, sylAmp = 0.8;
+
+    function newSyllable() {
+      sylDur = (1 / rate) * (0.72 + Math.random() * 0.56);
+      sylAmp = Math.random() < 0.17 ? 1.0 : 0.5 + Math.random() * 0.42;
+    }
+
+    return function step(dt) {
+      clock += dt;
+      if (clock >= until) {
+        speaking = !speaking;
+        clock = 0;
+        if (speaking) {
+          until  = 1.0 + Math.random() * 2.4;
+          energy = 0.55 + Math.random() * 0.45;
+          rate   = 4.0 + Math.random() * 2.4;
+          sylT = 0; newSyllable();
+        } else {
+          // Most gaps are a breath. About one in six is you actually stopping
+          // to think, and that long silence is what the idle state is for.
+          until = Math.random() < 0.17 ? 0.85 + Math.random() * 0.95
+                                       : 0.16 + Math.random() * 0.42;
+        }
+      }
+      if (!speaking) return 0.010 + Math.random() * 0.018;
+
+      sylT += dt;
+      if (sylT >= sylDur) { sylT -= sylDur; newSyllable(); }
+      var u = sylT / sylDur, atk = 0.15;
+      var shape = u < atk ? u / atk : Math.pow(1 - (u - atk) / (1 - atk), 1.5);
+      // Coarticulation: energy does not return to zero between syllables inside
+      // a phrase, which is why real speech looks like a ripple and not a comb.
+      return Math.min(1, energy * sylAmp * (0.24 + 0.76 * shape));
+    };
+  })();
+
+  /* ---------------------------------------------------------------- easing */
+
+  /* Ferrofluid has inertia going out and viscosity coming back: it leaps at a
+     transient and oozes home. Symmetric smoothing is exactly what makes every
+     audio visualiser look like a graph -- rise and fall are the same curve, so
+     nothing on screen reads as having mass. Framerate-independent so a dropped
+     frame does not change the shape of the motion. */
+  function follow(cur, target, dt, riseTau, fallTau) {
+    var tau = target > cur ? riseTau : fallTau;
+    if (reduced) tau *= 2.6;   // no snap; the amplitude still carries the state
+    return cur + (target - cur) * (1 - Math.exp(-dt / tau));
+  }
+
+  function ease(x) { return x <= 0 ? 0 : x >= 1 ? 1 : x * x * (3 - 2 * x); }
+  function clamp01(x) { return x < 0 ? 0 : x > 1 ? 1 : x; }
+
+  /* ---------------------------------------------------------------- canvas */
+
+  /* DPR is forced rather than read from window.devicePixelRatio, because the
+     whole question is what happens at 1 and 1.25 -- the two values most Windows
+     laptops actually report -- and there is no honest way to answer that from a
+     2x display except by rasterising at 1 and looking. */
+  function fit(c, scale) {
+    var r = c.getBoundingClientRect();
+    if (!r.width) return null;
+    c.width  = Math.round(r.width * DPR);
+    c.height = Math.round(r.height * DPR);
+    var ctx = c.getContext('2d');
+    ctx.setTransform(DPR * scale, 0, 0, DPR * scale, 0, 0);
+    c._gradKey = null;   // gradients are cached and the transform just changed
+    return ctx;
+  }
+
+  var canvases = [];
+  function register(id, scale) {
+    var c = document.getElementById(id);
+    var o = { el: c, scale: scale, ctx: null };
+    canvases.push(o);
+    return o;
+  }
+  function resizeAll() {
+    canvases.forEach(function (o) { o.ctx = fit(o.el, o.scale); });
+  }
+
+  /* The 4x view has two honest modes and they disagree. Smooth rasterises the
+     same geometry at 4x, which is what you want for judging form -- and which
+     flatters, because it never shows the aliasing that decides the thing.
+     Real pixels magnifies the 1x backing store with nearest-neighbour, which is
+     the truth and is ugly. Both are needed; neither alone is enough. */
+  function blowUp(small, big) {
+    var ctx = big.ctx;
+    if (!ctx) return;
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, big.el.width, big.el.height);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(small.el, 0, 0, big.el.width, big.el.height);
+    ctx.restore();
+  }
+
+  /* A tight band near the top, not a soft wash down the whole body. This is the
+     difference between a wet object and an airbrushed one: a smooth gradient
+     across the full height reads as a rendered sphere -- the generic glowing
+     orb this study is specifically trying not to be -- whereas real black
+     liquid is matte almost everywhere and violently bright in a narrow strip.
+     The gradient object is cheap but not free and its coordinates are baked at
+     creation, so it is rebuilt only when the geometry or the palette moves. */
+  function glossGradient(o, ctx, H, key) {
+    if (o._gradKey === key) return o._grad;
+    /* The band starts at 0.20H, not at the top of the slot. The first version
+       ran from 0.10H and put its brightest stop in empty air above every body,
+       so the fluid got the tail of the gradient and read as flat grey -- the
+       dark theme in particular looked washed out next to the pure-white bars
+       sitting beside it. The light has to be aimed at where the liquid is. */
+    var g = ctx.createLinearGradient(0, H * 0.20, 0, H * 0.60);
+    g.addColorStop(0, palette.gloss1);
+    g.addColorStop(0.30, palette.gloss2);
+    g.addColorStop(1, 'rgba(255,255,255,0)');
+    o._grad = g; o._gradKey = key;
+    return g;
+  }
+
+  /* Reused across every frame and every renderer. Allocating a 400-element
+     array sixty times a second for four visualisers is how a page that draws
+     almost nothing ends up with a sawtooth memory graph. */
+  var SAMP = new Float32Array(1200);
+  var SAMP2 = new Float32Array(1200);
+
+  function sampleCount(W, scale) {
+    var n = Math.round(W * scale * 1.6);
+    return n < 48 ? 48 : n > 1180 ? 1180 : n;
+  }
+
+  /* =====================================================================
+     A — BEAD.  Metaballs on the centreline.
+     ===================================================================== */
+
+  /* The scalar field is the standard inverse-square sum, F = sum(r^2/d^2), and
+     the surface is F = 1. Because every body sits on y = mid, a column at x has
+     F(y) = sum(r^2 / (dx^2 + y^2)) which is monotone decreasing in y^2 -- so
+     the surface height is one bisection in u = y^2 rather than a marching
+     square. Thirteen halvings over ~90 columns is about 5,000 divides a frame,
+     which is nothing, and unlike a threshold on a blurred bitmap it gives an
+     exact analytic outline that stays crisp at any scale. */
+  var A = (function () {
+    /* Two pairs, not three. Three was the first version and it failed in a way
+       worth recording: metaballs merge at roughly 2.8 radii, not at contact, so
+       six satellites spaced across 28 px of half-slot never stopped touching --
+       the whole thing was one lumpy potato at full drive and the separation,
+       which is the entire point, never happened. Fewer and further apart is the
+       only way to buy a real gap in this little width. */
+    /* The two pairs have deliberately different fates, and this is the whole
+       design. The inner pair is placed so the iso-surface can never quite break
+       -- it necks, thins, and holds -- while the outer pair is thrown far
+       enough to pinch clean off. Letting all four detach was the second failed
+       version: five separated circles in a row is not a liquid, it is an
+       ellipsis, and it read as a loading indicator. One stretched body with two
+       droplets flung off it is the picture. */
+    var PAIRS = 2;
+    var REACH = [0.46, 0.94];   // fraction of the half-slot, at full drive
+    var MASS  = [0.227, 0.127]; // share that migrates into each satellite
+    var STIFF = [165, 105];     // the outer pair is looser, so nothing moves in lockstep
+
+    /* These four numbers are load-bearing and were arrived at with a calculator,
+       not by eye. Two metaballs of radius a and b bridge while the field at the
+       midpoint exceeds 1, i.e. while 4(a^2 + b^2) > d^2. At full drive the
+       parent is 4.5 px and the inner satellites 4.0 px, so they hold together
+       out to d = 12.0 and sit at 11.5 -- a permanent thin neck. The outer
+       satellites are 3.0 px at 23.5, which puts the midpoint field at 0.69 and
+       guarantees a clean break. Tuning this by dragging sliders produced a
+       version that looked right at 4x and merged into a slug at 1x. */
+
+    var SCALE = 0.322;          // resting bead radius as a fraction of slot height
+    var n = 1 + PAIRS * 2;
+    var x = new Float32Array(n), vx = new Float32Array(n), r = new Float32Array(n);
+    var seed = new Float32Array(n);
+    for (var i = 0; i < n; i++) seed[i] = i * 2.399 + Math.sin(i * 5.7) * 1.6;
+
+    var drive = 0, punch = 0, prev = 0;
+
+    function step(dt, L, t, W, H) {
+      // Attack is a quarter of the release. This asymmetry is doing more work
+      // for the "substance" read than any amount of shape tuning.
+      drive = follow(drive, L, dt, 0.035, 0.145);
+
+      // A plosive should jolt the parent rather than just widen the chain, so
+      // the positive derivative is tracked separately and decays fast.
+      var d = (L - prev) / Math.max(dt, 0.001); prev = L;
+      punch = follow(punch, clamp01(d * 0.10), dt, 0.012, 0.11);
+
+      var half = W / 2 - 3;
+      // Volume is not conserved, deliberately. A strictly conserved bead has to
+      // give up almost all of its height to spread across 56 px, and what is
+      // left is a 2 px thread. Energised fluid reading as more fluid is a lie,
+      // but it is the lie that keeps the loud state from being a hairline.
+      var mass = 1 + 1.10 * drive;
+      var used = 0;
+
+      for (var k = 0; k < PAIRS; k++) {
+        // The outer pair only engages above a threshold, so quiet speech is one
+        // bead with a shiver and only loud speech becomes a chain. If both pairs
+        // moved together the whole thing would read as one scaling object.
+        var gate = ease(clamp01((drive - 0.09 - k * 0.20) / (0.52 - k * 0.05)));
+        var m = MASS[k] * gate;
+        used += m * 2;
+
+        var target = half * REACH[k] * gate;
+        var wob = reduced ? 0 : Math.sin(t * (2.6 + k * 0.83) + seed[k]) * 0.9 * drive;
+
+        for (var s = -1; s <= 1; s += 2) {
+          var idx = 1 + k * 2 + (s > 0 ? 1 : 0);
+          var want = s * (target + wob * s * 0.5);
+          // A spring, not a lerp. The overshoot is the droplet being flung out
+          // and settling back, and it is the only motion here that is not
+          // directly a function of the level.
+          vx[idx] += (want - x[idx]) * STIFF[k] * dt;
+          vx[idx] *= Math.exp(-dt * (reduced ? 22 : 11));
+          x[idx] += vx[idx] * dt;
+          r[idx] = SCALE * H * Math.sqrt(Math.max(0.0006, m * mass));
+        }
+      }
+
+      x[0] += (0 - x[0]) * Math.min(1, dt * 14);
+      // The resting bead is deliberately short of filling the slot. A bead that
+      // touches the ceiling is a bar; leaving three pixels of air above and
+      // below is what makes it read as an object sitting in a space.
+      r[0] = SCALE * H * Math.sqrt(Math.max(0.02, (1 - used) * mass)) * (1 + punch * 0.16);
+    }
+
+    function paint(o, ctx, W, H, scale) {
+      var mid = H / 2;
+      var N = sampleCount(W, scale);
+      var uMax = 1e-4, i, j;
+      for (i = 0; i < n; i++) uMax += r[i] * r[i];   // guarantees F(uMax) <= 1
+
+      var dx = W / (N - 1);
+      for (i = 0; i < N; i++) {
+        var px = i * dx, F0 = 0;
+        for (j = 0; j < n; j++) {
+          var d = px - (W / 2 + x[j]);
+          F0 += r[j] * r[j] / (d * d + 1e-6);
+        }
+        if (F0 <= 1) { SAMP[i] = 0; continue; }
+
+        var lo = 0, hi = uMax;
+        for (var it = 0; it < 13; it++) {
+          var m = (lo + hi) * 0.5, F = 0;
+          for (j = 0; j < n; j++) {
+            var dd = px - (W / 2 + x[j]);
+            F += r[j] * r[j] / (dd * dd + m);
+          }
+          if (F > 1) lo = m; else hi = m;
+        }
+        SAMP[i] = Math.sqrt(lo);
+      }
+
+      // Contiguous runs become separate closed sub-paths, which is what lets a
+      // droplet genuinely detach instead of staying tethered by a hairline.
+      ctx.beginPath();
+      var start = -1;
+      for (i = 0; i <= N; i++) {
+        var on = i < N && SAMP[i] > 0.12;
+        if (on && start < 0) start = i;
+        if (!on && start >= 0) {
+          if (i - start >= 2) {
+            ctx.moveTo(start * dx, mid);
+            for (j = start; j < i; j++) ctx.lineTo(j * dx, mid - SAMP[j]);
+            ctx.lineTo((i - 1) * dx, mid);
+            for (j = i - 1; j >= start; j--) ctx.lineTo(j * dx, mid + SAMP[j]);
+            ctx.closePath();
+          }
+          start = -1;
+        }
+      }
+
+      ctx.fillStyle = palette.body;
+      ctx.fill();
+      if (glossOn) {
+        ctx.save(); ctx.clip();
+        ctx.fillStyle = glossGradient(o, ctx, H, 'a' + H + palette.gloss1 + palette.body);
+        ctx.fillRect(0, 0, W, H);
+        ctx.restore();
+      }
+    }
+
+    return { step: step, paint: paint };
+  })();
+
+  /* =====================================================================
+     B — SPIKES.  Rosensweig instability.
+     ===================================================================== */
+
+  /* The physics worth keeping: the spike wavelength is a property of the fluid,
+     not of the field, so the lattice spacing is fixed and only the heights
+     move; and there is a critical field below which the surface is perfectly
+     flat, which gives speech a genuine onset rather than a proportional wiggle.
+     Neighbouring spikes are diffusively coupled each frame so the array rises
+     as one surface -- without that coupling this is eleven independent bars
+     with pointed hats, which is the failure mode the whole design is trying to
+     avoid and mostly does not escape. */
+  var B = (function () {
+    var PITCH = 9.0;          // logical px between spikes; the fluid's wavelength
+    var KW = 3.4;             // spike half-width
+    var MAXN = 16;
+    var h = new Float32Array(MAXN), tgt = new Float32Array(MAXN), seed = new Float32Array(MAXN);
+    for (var i = 0; i < MAXN; i++) seed[i] = i * 1.93 + Math.sin(i * 3.31) * 2.2;
+
+    var drive = 0, spread = 0, N = 0;
+    var CRIT = 0.17;          // sub-critical: flat pool, no spikes at all
+
+    // Sharp tip, broad skirt. A pure gaussian gives domes; a pure exponential
+    // gives cusps whose bases never touch. The mixture is what lets adjacent
+    // spikes merge at the foot while staying distinct at the tip.
+    function kernel(t) {
+      var a = Math.abs(t);
+      if (a > 3.2) return 0;
+      return 0.74 * Math.exp(-Math.pow(a, 1.5)) + 0.26 / (1 + a * a * 0.8);
+    }
+
+    function step(dt, L, t, W, H) {
+      drive = follow(drive, L, dt, 0.030, 0.150);
+      spread = follow(spread, ease(clamp01(L * 1.15)), dt, 0.070, 0.190);
+
+      N = Math.max(3, Math.min(MAXN, Math.round(W / PITCH)));
+      if (N % 2 === 0) N--;                       // an odd count keeps one spike centred
+      var extent = (W * 0.06) + (W * 0.42 - W * 0.06) * spread;
+      var field = clamp01((drive - CRIT) / (1 - CRIT));
+
+      for (var i = 0; i < N; i++) {
+        var xi = (i - (N - 1) / 2) * PITCH;
+        // Spikes outside the wetted area do not exist. This is what makes the
+        // fluid appear to spread outward and then erupt, rather than the whole
+        // row switching on together.
+        var gate = clamp01((extent - Math.abs(xi) - 1.5) / 5);
+        // Real spike fields have domains -- patches that lead and patches that
+        // lag. Two slow incommensurate wobbles are enough to suggest that.
+        var local = reduced ? 0.82
+          : 0.62 + 0.38 * (0.5 + 0.5 * Math.sin(t * 1.7 + seed[i])) * (0.6 + 0.4 * Math.sin(t * 0.61 + seed[i] * 0.4));
+        tgt[i] = field * local * gate * (H * 0.62);
+      }
+      // One diffusion pass. Cheap, and it is the whole difference between a
+      // surface and a bar chart.
+      for (var k = 0; k < N; k++) {
+        var lft = tgt[k > 0 ? k - 1 : 0], rgt = tgt[k < N - 1 ? k + 1 : N - 1];
+        tgt[k] += ((lft + rgt) * 0.5 - tgt[k]) * 0.22;
+      }
+      for (var m = 0; m < N; m++) h[m] = follow(h[m], tgt[m], dt, 0.040, 0.155);
+
+      B.extent = extent; B.spread = spread;
+    }
+
+    function paint(o, ctx, W, H, scale) {
+      var Ns = sampleCount(W, scale);
+      var dx = W / (Ns - 1);
+      var ext = B.extent, sp = B.spread;
+
+      // At rest the fluid is a bead sitting in the middle of the slot. As it
+      // spreads it also settles, so the pool ends up low and the spikes have
+      // somewhere to go. The transition from drop to puddle is doing as much
+      // work as the spikes themselves.
+      var poolTop = (H * 0.27) + (H * 0.70 - H * 0.27) * sp;
+      // Not down to the floor. A pool whose underside is a straight line flush
+      // with the bottom of the slot is a filled area chart, and no amount of
+      // spike detail on top recovers from that -- keeping a pixel of air under
+      // it and rounding the ends hard is what makes it read as sitting rather
+      // than as being plotted.
+      var poolBot = (H * 0.73) + (H * 0.88 - H * 0.73) * sp;
+      var poolMid = (poolTop + poolBot) * 0.5;
+
+      for (var i = 0; i < Ns; i++) {
+        var px = i * dx - W / 2;
+        var top = poolTop;
+        for (var j = 0; j < N; j++) {
+          var xj = (j - (N - 1) / 2) * PITCH;
+          var d = px - xj;
+          if (d < -11 || d > 11) continue;
+          top -= h[j] * kernel(d / KW);
+        }
+        // Round the ends of the pool rather than letting it hit a wall. The
+        // taper collapses thickness toward the pool's own midline so a spike
+        // near the edge does not get sliced off at the knee.
+        var u = clamp01((Math.abs(px) - (ext - 4.5)) / 4.5);
+        var cap = Math.sqrt(Math.max(0, 1 - u * u));
+        SAMP[i] = poolMid - (poolMid - top) * cap;
+        SAMP2[i] = poolMid + (poolBot - poolMid) * cap;
+      }
+
+      ctx.beginPath();
+      ctx.moveTo(0, SAMP2[0]);
+      for (var a = 0; a < Ns; a++) ctx.lineTo(a * dx, SAMP[a]);
+      for (var b = Ns - 1; b >= 0; b--) ctx.lineTo(b * dx, SAMP2[b]);
+      ctx.closePath();
+
+      ctx.fillStyle = palette.body;
+      ctx.fill();
+      if (glossOn) {
+        ctx.save(); ctx.clip();
+        ctx.fillStyle = glossGradient(o, ctx, H, 'b' + H + palette.gloss1 + palette.body);
+        ctx.fillRect(0, 0, W, H);
+        ctx.restore();
+      }
+    }
+
+    return { step: step, paint: paint, extent: 4, spread: 0 };
+  })();
+
+  /* =====================================================================
+     C — SKIN.  Pre-instability corrugation.
+     ===================================================================== */
+
+  /* One closed body that never changes topology. Below the Rosensweig
+     threshold a magnetised surface corrugates rather than spiking, so this is
+     still the same material -- just the regime that happens to survive being
+     eighteen pixels tall, because nothing in it has to resolve. Three
+     travelling waves at incommensurate wavelengths and speeds, one of them
+     running backwards, so the interference never visibly repeats. */
+  var C = (function () {
+    var WAVE = [
+      { len: 26, spd:  1.9, amp: 1.00 },
+      { len: 13, spd: -3.1, amp: 0.55 },
+      { len: 7.5, spd: 4.6, amp: 0.30 }
+    ];
+    var drive = 0, spread = 0;
+
+    function step(dt, L, t, W, H) {
+      drive  = follow(drive, L, dt, 0.032, 0.150);
+      spread = follow(spread, ease(clamp01(L * 1.1)), dt, 0.065, 0.200);
+      C.drive = drive; C.spread = spread;
+    }
+
+    function paint(o, ctx, W, H, scale, t) {
+      var Ns = sampleCount(W, scale);
+      var dx = W / (Ns - 1);
+      var mid = H / 2;
+      var half = (W * 0.115) + (W * 0.44 - W * 0.115) * spread;
+      // Volume is roughly conserved: as it spreads it thins, which is why the
+      // resting state can be a fat bead without the loud state being a sausage.
+      // It is not conserved exactly -- a true 1/x thinning left the loud state
+      // as a two-pixel squiggle with no room for the ripple to live in.
+      var thick = (H * 0.275) + (H * 0.195 - H * 0.275) * spread;
+      var rip = Math.pow(drive, 1.2) * H * 0.165;
+      var tt = reduced ? 0 : t;
+      var lo = -1, hi = -1;
+
+      for (var i = 0; i < Ns; i++) {
+        var px = i * dx - W / 2;
+        var u = Math.abs(px) / half;
+        if (u >= 1) { SAMP[i] = SAMP2[i] = mid; continue; }
+        u = clamp01(u);
+        // A superellipse end rather than a circular one: it holds full
+        // thickness most of the way out and then turns hard, which is what
+        // surface tension actually does and what a circle does not. The
+        // exponent has to travel with the spread, though -- a fixed hard
+        // superellipse on a body only 13 px wide is not a bead, it is a
+        // rounded rectangle, and the resting state looked like a button.
+        var cap = Math.pow(Math.max(0, 1 - Math.pow(u, 2.4 + 3.6 * spread)), 0.5);
+
+        var sym = 0, asym = 0;
+        for (var k = 0; k < 3; k++) {
+          var w = WAVE[k];
+          var ph = (px / w.len) * 6.2832 + tt * w.spd;
+          sym  += w.amp * Math.sin(ph);
+          asym += w.amp * Math.sin(ph * 0.61 + 1.9);
+        }
+        // Mostly a thickness modulation, which is corrugation, with a small
+        // anti-symmetric term so the two edges are not mirror images. Perfect
+        // mirror symmetry is the tell that reads "audio waveform".
+        var s = mid + asym * rip * 0.16;
+        // Thickness is allowed to go to zero at the ends. The first version put
+        // a floor under it so the path never degenerated, and the floor drew
+        // itself as a hairline running out to both edges of the canvas -- a
+        // 0.3 px rule that looked exactly like a typographic underscore and
+        // undid the whole "one body of liquid" reading in a single pixel.
+        var t2 = (thick + sym * rip * 0.42) * cap;
+        if (t2 < 0) t2 = 0;
+        SAMP[i] = s - t2;
+        SAMP2[i] = s + t2;
+        if (t2 > 0.08) { if (lo < 0) lo = i; hi = i; }
+      }
+
+      if (hi - lo < 2) return;
+
+      ctx.beginPath();
+      ctx.moveTo(lo * dx, SAMP2[lo]);
+      for (var a = lo; a <= hi; a++) ctx.lineTo(a * dx, SAMP[a]);
+      for (var b = hi; b >= lo; b--) ctx.lineTo(b * dx, SAMP2[b]);
+      ctx.closePath();
+
+      ctx.fillStyle = palette.body;
+      ctx.fill();
+      if (glossOn) {
+        ctx.save(); ctx.clip();
+        ctx.fillStyle = glossGradient(o, ctx, H, 'c' + H + palette.gloss1 + palette.body);
+        ctx.fillRect(0, 0, W, H);
+        ctx.restore();
+      }
+    }
+
+    return { step: step, paint: paint, drive: 0, spread: 0 };
+  })();
+
+  /* =====================================================================
+     REFERENCE — the eleven-bar meter, copied out of overlay.js unchanged.
+     ===================================================================== */
+
+  var R = (function () {
+    var BARS = 11, IDLE_FLOOR = 0.10, MIN_HALF = 1.5;
+    var bars = new Float32Array(BARS), phase = new Float32Array(BARS);
+    for (var b = 0; b < BARS; b++) phase[b] = b * 1.73 + Math.sin(b * 2.31) * 1.4;
+    var level = 0;
+
+    function step(dt, L, t) {
+      // overlay.js uses fixed per-frame alphas; kept as-is so the comparison is
+      // against what ships, not against a tidied version of it.
+      level += (L - level) * 0.4;
+      for (var i = 0; i < BARS; i++) {
+        var weight = 0.5 + 0.5 * Math.sin(((i + 0.5) / BARS) * Math.PI);
+        var jitter = reduced ? 1 : 0.68 + 0.32 * Math.sin(t * 8.6 + phase[i]);
+        var idle = IDLE_FLOOR * (reduced ? 1 : 0.72 + 0.28 * Math.sin(t * 2.1 + phase[i] * 0.6));
+        bars[i] += (Math.max(idle, level * weight * jitter) - bars[i]) * 0.34;
+      }
+    }
+
+    function paint(o, ctx, W, H, scale) {
+      var dpr = DPR * scale;
+      var snap = function (v) { return Math.round(v * dpr) / dpr; };
+      var slot = W / BARS;
+      var barW = snap(Math.max(2, Math.min(2.6, slot * 0.44)));
+      var mid = H / 2, maxHalf = H / 2;
+      ctx.fillStyle = palette.meter;
+      ctx.beginPath();
+      for (var m = 0; m < BARS; m++) {
+        var halfH = MIN_HALF + bars[m] * (maxHalf - MIN_HALF);
+        var x = snap(slot * (m + 0.5) - barW / 2);
+        var top = snap(mid - halfH);
+        var barH = Math.max(barW, snap(halfH * 2));
+        ctx.roundRect(x, top, barW, barH, barW / 2);
+      }
+      ctx.fill();
+    }
+
+    return { step: step, paint: paint };
+  })();
+
+  /* ------------------------------------------------------------------ loop */
+
+  var A1 = register('a1', 1), A4 = register('a4', 4);
+  var B1 = register('b1', 1), B4 = register('b4', 4);
+  var C1 = register('c1', 1), C4 = register('c4', 4);
+  var R1 = register('r1', 1), R4 = register('r4', 4);
+
+  var costs = { A: 0, B: 0, C: 0, R: 0, total: 0, fps: 60 };
+  var out = {
+    A: document.getElementById('costA'), B: document.getElementById('costB'),
+    C: document.getElementById('costC'), R: document.getElementById('costR'),
+    fps: document.getElementById('mFps'), total: document.getElementById('mTotal'),
+    a1: document.getElementById('mA1'), b1: document.getElementById('mB1'),
+    c1: document.getElementById('mC1'), r1: document.getElementById('mR1')
+  };
+  var one = { A: 0, B: 0, C: 0, R: 0 };
+
+  var last = 0, t = 0, readoutAt = 0;
+
+  function run(mod, small, big, key, dt, L) {
+    var t0 = performance.now();
+    var W = small.el.clientWidth, H = small.el.clientHeight;
+    if (small.ctx && W && H) {
+      mod.step(dt, L, t, W, H);
+      small.ctx.clearRect(0, 0, W, H);
+      mod.paint(small, small.ctx, W, H, 1, t);
+    }
+    var t1 = performance.now();
+
+    if (big.ctx) {
+      if (pixelTruth) {
+        blowUp(small, big);
+      } else {
+        var BW = big.el.clientWidth / 4, BH = big.el.clientHeight / 4;
+        big.ctx.setTransform(DPR * 4, 0, 0, DPR * 4, 0, 0);
+        big.ctx.clearRect(0, 0, BW, BH);
+        mod.paint(big, big.ctx, BW, BH, 4, t);
+      }
+    }
+    var t2 = performance.now();
+
+    one[key] += ((t1 - t0) - one[key]) * 0.05;
+    costs[key] += ((t2 - t0) - costs[key]) * 0.05;
+    return t2 - t0;
+  }
+
+  function frame(now) {
+    requestAnimationFrame(frame);
+    if (!last) { last = now; return; }
+    var dt = Math.min(0.05, (now - last) / 1000);
+    last = now;
+    t += dt;
+
+    if (palette.stale) refreshPalette();
+
+    var L = manual || !playing ? manualLevel : env(dt);
+    if (!manual && playing) { elLevel.value = Math.round(L * 100); }
+
+    var total = 0;
+    total += run(A, A1, A4, 'A', dt, L);
+    total += run(B, B1, B4, 'B', dt, L);
+    total += run(C, C1, C4, 'C', dt, L);
+    total += run(R, R1, R4, 'R', dt, L);
+
+    costs.total += (total - costs.total) * 0.05;
+    costs.fps += ((1 / Math.max(dt, 0.001)) - costs.fps) * 0.05;
+
+    // Writing eight DOM nodes every frame would make the study measure itself.
+    if (now - readoutAt > 400) {
+      readoutAt = now;
+      elLevelN.textContent = L.toFixed(2);
+      out.A.textContent = one.A.toFixed(3) + ' ms @1×';
+      out.B.textContent = one.B.toFixed(3) + ' ms @1×';
+      out.C.textContent = one.C.toFixed(3) + ' ms @1×';
+      out.R.textContent = one.R.toFixed(3) + ' ms @1×';
+      out.fps.textContent = costs.fps.toFixed(0) + ' fps';
+      out.total.textContent = costs.total.toFixed(2) + ' ms';
+      out.a1.textContent = one.A.toFixed(3) + ' ms';
+      out.b1.textContent = one.B.toFixed(3) + ' ms';
+      out.c1.textContent = one.C.toFixed(3) + ' ms';
+      out.r1.textContent = one.R.toFixed(3) + ' ms';
+    }
+  }
+
+  /* Gloss changes the body colour on the dark theme, so it has to invalidate
+     the cache rather than only flipping a flag read at paint time. */
+  elGloss.addEventListener('change', function () { palette.stale = true; });
+
+  new ResizeObserver(resizeAll).observe(document.body);
+  resizeAll();
+  requestAnimationFrame(frame);
+})();
+</script>
+
+</body>
+</html>
