@@ -98,6 +98,8 @@ select option { background: var(--card); color: var(--text); }
   font: 500 12px/1.3 var(--font-ui); text-decoration: underline; text-underline-offset: 2px; cursor: pointer;
 }
 .error { color: var(--danger); font-size: 12px; margin: 4px 2px 0; }
+.line { margin: 0; font-size: 12.5px; }
+[hidden] { display: none !important; }   /* .row's display:flex would otherwise win */
 
 footer { padding: 6px 28px 14px; font-size: 12px; }
 footer p { margin: 0 0 2px; }

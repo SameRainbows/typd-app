@@ -15,9 +15,17 @@ const DEFAULTS = {
   sounds: true,
   startAtLogin: true,
   keepRecordings: true, // the user's own recordings feed training (consent 2026-10-05)
-  hotkey: 'RightAlt'    // or 'CommandOrControl+Shift+Space' where Right Alt is busy as AltGr
+  hotkey: 'RightAlt',   // or 'CommandOrControl+Shift+Space' where Right Alt is busy as AltGr
+  sharePaused: false    // tester builds only (collect.js): true queues and sends nothing
 };
 const HOTKEYS = ['RightAlt', 'CommandOrControl+Shift+Space'];
+
+// macOS: Right ⌘ rather than Right Option, which types characters on most Mac layouts
+// (hotkeys.js, TAP_KEYS). The chord is the same on both: ⇧⌘Space there.
+if (process.platform === 'darwin') {
+  DEFAULTS.hotkey = 'RightMeta';
+  HOTKEYS[0] = 'RightMeta';
+}
 
 const file = () => path.join(app.getPath('appData'), 'typd', 'settings.json');
 let cache = null;

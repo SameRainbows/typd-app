@@ -29,5 +29,6 @@ models/
 bench/models/
 bench/recordings/*.wav
 
-# Tester build config: holds an upload key, never committed
+# Tester build config: holds an upload key, never committed (src/main/collect.js)
 tester.json
+tester.*.json

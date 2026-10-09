@@ -59,18 +59,45 @@
     stream = null; ctx = null;
   }
 
+  // ---- tester builds: one line saying recordings are shared, and a pause (paused = nothing queued or sent)
+  function showSharing(s) {
+    if (!s.sharing) return;
+    var word = s.sharing.state === 'stopped' ? 'stopped' : s.sharePaused ? 'paused' : 'on';
+    $('shareRow').hidden = false;
+    $('shareLine').textContent = 'Sharing recordings with ' + s.sharing.with + ' for model testing — ' + word;
+    $('share').checked = !s.sharePaused;
+    $('privacyRest').textContent = 'While sharing is on, your recordings are also sent to ' + s.sharing.with + '.';
+  }
+
+  // ---- macOS: the same controls in Mac words (Right ⌘, System default, log in), from main.
+  // Windows sends none; the page is already written in its words.
+  function platformWords(p) {
+    var buttons = document.querySelectorAll('.seg button');
+    (p.hotkeys || []).forEach(function (h, i) {
+      if (!buttons[i]) return;
+      buttons[i].setAttribute('data-hotkey', h[0]);
+      buttons[i].textContent = h[1];
+    });
+    Object.keys(p.text || {}).forEach(function (sel) {
+      try { var el = document.querySelector(sel); if (el) el.textContent = p.text[sel]; } catch (e) {}
+    });
+  }
+
   // ---- load
   async function load() {
     var s = await api.get();
     if (!s) return;
+    if (s.platform) platformWords(s.platform);
+    var machine = s.platform ? s.platform.machine : 'PC';
     ['sounds', 'startAtLogin', 'keepRecordings'].forEach(function (k) { $(k).checked = !!s[k]; });
     document.querySelectorAll('.seg button').forEach(function (b) {
       b.setAttribute('aria-checked', String(b.getAttribute('data-hotkey') === s.hotkey));
     });
     $('recInfo').textContent = s.recordings.count
-      ? s.recordings.count + ' recordings, ' + s.recordings.mb + ' MB on this PC. They make the model better at your voice.'
-      : 'Saved on this PC to make the model better at your voice.';
+      ? s.recordings.count + ' recordings, ' + s.recordings.mb + ' MB on this ' + machine + '. They make the model better at your voice.'
+      : 'Saved on this ' + machine + ' to make the model better at your voice.';
     $('about').textContent = 'Model ' + s.model + ' · Typd ' + s.version;
+    showSharing(s);
     await listen(s.mic);           // permission first, so the device list has names
     await listMics(s.mic);
   }
@@ -99,6 +126,11 @@
         fail('That key is taken by another app.');
       }
     });
+  });
+
+  $('share').addEventListener('change', async function (e) {
+    var el = e.target;
+    if (await save('sharePaused', !el.checked, function () { el.checked = !el.checked; })) showSharing(await api.get());
   });
 
   $('openRec').addEventListener('click', function () { api.openRecordings(); });

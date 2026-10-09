@@ -1,5 +1,12 @@
 'use strict';
 
+// macOS has its own injector with the same exports (inject-mac.js): osascript in
+// place of PowerShell, ⌘V in place of Ctrl+V. Everything below is Windows.
+if (process.platform === 'darwin') {
+  module.exports = require('./inject-mac');
+  return;
+}
+
 const path = require('path');
 const { spawn } = require('child_process');
 const { clipboard } = require('electron');

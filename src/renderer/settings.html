@@ -47,6 +47,12 @@
       <label class="switch"><input type="checkbox" id="keepRecordings" /><span></span></label>
     </section>
 
+    <!-- Tester builds only (a tester.json is present): one line and a pause. -->
+    <section class="row" id="shareRow" hidden>
+      <p class="line" id="shareLine"></p>
+      <label class="switch"><input type="checkbox" id="share" aria-label="Share recordings for model testing" /><span></span></label>
+    </section>
+
     <section class="row col">
       <div class="label">
         <h2>Hotkey</h2>
@@ -62,7 +68,7 @@
   </main>
 
   <footer>
-    <p><strong>Dictation runs on this PC.</strong> Your voice is never sent anywhere.</p>
+    <p id="privacy"><strong>Dictation runs on this PC.</strong> <span id="privacyRest">Your voice is never sent anywhere.</span></p>
     <p class="dim" id="about"></p>
   </footer>
 

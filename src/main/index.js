@@ -13,6 +13,7 @@ const pipeline = require('./pipeline');
 const inject = require('./inject');
 const learn = require('./learn');
 const dictionary = require('./dictionary');
+const collect = require('./collect');   // tester builds only; inert without tester.json
 
 /**
  * Opt-in: keep each dictation's audio with everything needed to replay it -- the text Typd
@@ -298,13 +299,19 @@ async function endSession() {
 
         if (!result.ok) {
           send('session:error', {
-            message: result.copied ? 'Copied — press Ctrl+V to paste' : 'Could not paste — ' + result.reason
+            message: result.copied
+              ? 'Copied — press ' + (process.platform === 'darwin' ? '⌘V' : 'Ctrl+V') + ' to paste'   // macOS: ⌘V
+              : 'Could not paste — ' + result.reason
           });
           break;
         }
 
         send('session:done', { text: event.text, target: appLabel(current.target) });
         learn.watch(event.text, current.target && current.target.process, inject.focusContext, learned);
+        // Tester builds only (a tester.json is present, see collect.js): queue this audio and
+        // text for upload to the developer, with the tester's consent. Only after the paste
+        // has landed, never awaited, and it never reads the screen context or the span.
+        collect.add(current, event.text);
         continue;
       }
 
@@ -407,7 +414,8 @@ function forget(term) {
 }
 
 function buildTray() {
-  tray = new Tray(trayIcon(16));
+  // macOS: a template image, black and alpha, that the menu bar tints itself (mac/tray-icon.js).
+  tray = new Tray(process.platform === 'darwin' ? require('./mac/tray-icon').image() : trayIcon(16));
   tray.setToolTip('Typd — ' + (hotkeys ? hotkeys.binding : 'Right Alt'));
   tray.setContextMenu(trayMenu());
 }
@@ -415,6 +423,10 @@ function buildTray() {
 /* -------------------------------------------------------------------- start */
 
 app.whenReady().then(() => {
+  // macOS: a menu-bar utility -- no Dock icon, no app menu, not in the app switcher. Before
+  // the overlay exists, so it is created as the accessory window it will stay.
+  if (process.platform === 'darwin' && app.dock) app.dock.hide();
+
   // Dark unless the OS says otherwise. The overlay sits over other people's
   // windows and a bright pill is the more intrusive default of the two.
   nativeTheme.themeSource = 'dark';
@@ -497,6 +509,18 @@ app.whenReady().then(() => {
   }
 
   buildTray();
+
+  // macOS: microphone, Accessibility and Input Monitoring are asked for together, in one
+  // dialog, and again whenever one goes missing (permissions-mac.js). Open at login is the
+  // system's own login item, added on the first run of the installed app. Opening Typd
+  // again from Finder, Spotlight or Launchpad -- the way to reach it when the menu bar hides
+  // its icon behind the notch -- opens Settings, as a second launch does on Windows.
+  if (process.platform === 'darwin') {
+    require('./permissions-mac').ensure('startup');
+    require('./mac/login-item').sync(settings.get('startAtLogin'));
+    const launched = Date.now();
+    app.on('activate', () => { if (Date.now() - launched > 3000) settingsWindow.open(); });
+  }
 
   if (preview) {
     if (process.env.TYPD_PREVIEW_THEME) {

@@ -18,6 +18,18 @@ const HEIGHT = SIZES.compact.height;
 // just clear of the taskbar, close enough to read as part of the system chrome.
 const LIFT = 6;
 
+/*
+ * macOS: a non-activating panel. `focusable: false` keeps the window from taking
+ * focus, but on a Mac clicking any ordinary window still activates its app --
+ * so a click on the pill's tick would pull focus out of the app being dictated
+ * into, and the ⌘V would land nowhere. A panel with the non-activating style
+ * takes the click and leaves the app in front alone; it is also what lets a
+ * window float over another app's full-screen space. TYPD_MAC_PANEL=0 turns it
+ * off, should a macOS release disagree.
+ */
+const MAC = process.platform === 'darwin';
+const MAC_PANEL = MAC && process.env.TYPD_MAC_PANEL !== '0';
+
 /**
  * The overlay is a transparent, frameless, click-through window that floats
  * above everything and never takes focus.
@@ -44,6 +56,9 @@ function createOverlayWindow({ dev }) {
     alwaysOnTop: true,
     acceptFirstMouse: false,
     backgroundColor: '#00000000',
+    // macOS: see MAC_PANEL above. Out of Mission Control as well -- it is not a window anyone switches to.
+    ...(MAC_PANEL ? { type: 'panel' } : {}),
+    ...(MAC ? { hiddenInMissionControl: true } : {}),
     webPreferences: {
       preload: path.join(__dirname, '..', 'preload', 'overlay.js'),
       contextIsolation: true,
@@ -55,8 +70,15 @@ function createOverlayWindow({ dev }) {
 
   // 'screen-saver' floats above almost everything on Windows, including most
   // fullscreen apps. Anything lower and the overlay disappears behind games.
+  // On macOS it is the screen-saver window level: above full-screen apps and the
+  // menu bar.
   win.setAlwaysOnTop(true, 'screen-saver');
-  win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  // macOS: on every Space and over full-screen apps. Electron would hide the Dock
+  // icon to allow the latter; index.js has already done that, before this window
+  // existed, so it is told not to do it again.
+  win.setVisibleOnAllWorkspaces(true, MAC
+    ? { visibleOnFullScreen: true, skipTransformProcessType: true }
+    : { visibleOnFullScreen: true });
 
   // Click-through. `forward: true` still delivers move events so hover states
   // could work later without giving up pass-through clicks.
