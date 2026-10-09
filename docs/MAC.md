@@ -100,7 +100,8 @@ npm run dist:mac        # fetches llama.cpp b11351 for arm64 + x64, then builds
 ```
 
 This makes `dist/Typd-<version>-mac-<arch>.dmg` and `.zip` for both chips. To build one chip only,
-run `node scripts/fetch-llama-mac.js arm64 && npx electron-builder --mac --arm64`.
+run `node scripts/fetch-llama-mac.js arm64 && npx electron-builder --mac dmg zip --arm64` (name
+the targets: with `--arm64` alone, electron-builder still builds every arch listed in package.json).
 
 - **The model.** `scripts/before-pack.js` reads `models/typd-dictate/model.json` and ships only the
   model and mmproj it names. A new model needs a new release (model files plus `SHA256SUMS`) and a
