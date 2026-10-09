@@ -144,7 +144,7 @@ function send(channel, payload) {
 
 function markRendererReady() {
   rendererReady = true;
-  overlay.webContents.send('settings:changed', { sounds: settings.get('sounds'), mic: settings.get('mic') });
+  overlay.webContents.send('settings:changed', { sounds: settings.get('sounds'), mic: settings.get('mic'), micLabel: settings.get('micLabel') });
   while (queued.length) {
     const [channel, payload] = queued.shift();
     overlay.webContents.send(channel, payload);
@@ -588,7 +588,7 @@ app.whenReady().then(() => {
   });
 
   settings.onChange((key) => {
-    if (key === 'sounds' || key === 'mic') send('settings:changed', { sounds: settings.get('sounds'), mic: settings.get('mic') });
+    if (key === 'sounds' || key === 'mic' || key === 'micLabel') send('settings:changed', { sounds: settings.get('sounds'), mic: settings.get('mic'), micLabel: settings.get('micLabel') });
     if (key === 'mic') refreshTray();
   });
 

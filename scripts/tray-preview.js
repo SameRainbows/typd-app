@@ -86,9 +86,9 @@ async function wordmarkIcon() {
 }
 
 /** Ligature on a rounded tile: the mark at ~70 % of the square, centred. */
-function tileBitmap(N, bg, fg) {
+function tileBitmap(N, bg, fg, ratio = 0.7, corner = 0.22) {
   const ss = 4, big = N * ss, buf = Buffer.alloc(big * big * 4);
-  const M = Math.max(8, Math.round(N * 0.7) - (Math.round(N * 0.7) - N) % 2);
+  const M = Math.max(8, Math.round(N * ratio) - (Math.round(N * ratio) - N) % 2);
   const off = (N - M) / 2;
   const { w, top, bot, x0, x1 } = ligature(M);
   const c = { x0: x0 + w, x1: x1 - w, y0: top + w, y1: bot - w };
@@ -100,7 +100,7 @@ function tileBitmap(N, bg, fg) {
   };
   const inMark = (x, y) => (x >= x1 - w && x < x1 && y < bot) || (x >= x0 && x < x0 + w && y >= top) ||
     (x >= x0 && x < x1 && y >= top && y < bot && !inCounter(x, y));
-  const R = N * 0.22;
+  const R = N * corner;
   const inTile = (x, y) => {
     const qx = Math.min(Math.max(x, R), N - R), qy = Math.min(Math.max(y, R), N - R);
     return (x - qx) ** 2 + (y - qy) ** 2 <= R * R;
@@ -177,6 +177,8 @@ app.whenReady().then(async () => {
   add(multi(dotBitmap), 'Preview 4 — previous Typd icon (dot)');
   try {
     add(await appIcon(), 'Preview 5 — app icon from the study');
+    // the same tile and colours with the mark at ~80 % of the square instead of ~60 %
+    add(multi((N) => tileBitmap(N, [0x1B, 0x1D, 0x22], WHITE, 0.82, 3 / 16)), 'Preview 6 — app icon, bigger mark');
   } catch (err) {
     console.error('app icon preview failed:', err.message);
   }

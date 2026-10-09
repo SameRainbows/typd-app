@@ -83,6 +83,7 @@
   // not after the user has talked for a minute into nothing.
   var heard = false, zeroBlocks = 0;
   var micId = '';   // from Settings ('' = Windows default)
+  var micLabel = '';   // its name, to find it again if the id changes
   var SILENT_BLOCKS = 24;   // 24 x 64 ms ≈ 1.5 s
 
   async function startMic() {
@@ -94,13 +95,24 @@
     try {
       var raw = { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
       try {
-        // The microphone chosen in Settings; if it has gone (unplugged), the Windows default.
+        // The microphone chosen in Settings.
         micStream = await navigator.mediaDevices.getUserMedia({
           audio: micId ? Object.assign({ deviceId: { exact: micId } }, raw) : raw
         });
       } catch (err) {
         if (!micId) throw err;
-        micStream = await navigator.mediaDevices.getUserMedia({ audio: raw });
+        // Its id can change while the device stays put (an Electron update re-keys every
+        // id), so look for the same device by name before giving up on it. Falling straight
+        // to the Windows default once left Typd deaf: the default was a virtual cable
+        // (2026-10-09). Only if no device has that name is it really gone (unplugged).
+        var same = null;
+        if (micLabel) {
+          var list = await navigator.mediaDevices.enumerateDevices();
+          same = list.find(function (d) { return d.kind === 'audioinput' && d.label === micLabel; }) || null;
+        }
+        micStream = await navigator.mediaDevices.getUserMedia({
+          audio: same ? Object.assign({ deviceId: { exact: same.deviceId } }, raw) : raw
+        });
       }
 
       // Asking the context for 16 kHz makes the browser resample on our behalf,
@@ -523,6 +535,7 @@
   window.typd.on('settings:changed', function (p) {
     if (typeof p.sounds === 'boolean' && window.typdSound) window.typdSound.setEnabled(p.sounds);
     if (typeof p.mic === 'string') micId = p.mic;
+    if (typeof p.micLabel === 'string') micLabel = p.micLabel;
   });
 
   window.typd.on('session:cancel', function () {
