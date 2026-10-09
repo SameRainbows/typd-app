@@ -118,7 +118,18 @@ the targets: with `--arm64` alone, electron-builder still builds every arch list
 - **CI.** `.github/workflows/mac.yml` runs on pushes to `dev` and by hand (Actions → macOS → Run
   workflow, where you can also choose x64 or both). It builds, checks the signature and
   Info.plist, transcribes `test/fixtures/dictation-3s.wav` with the bundled server and model, and
-  uploads the dmg as the `Typd-mac-dmg` artifact. The dmg contains the private model, so it must
+  uploads the dmg as the `Typd-mac-arm64.dmg` artifact. The dmg contains the private model, so it must
   stay in a private repository.
+- **Tester build.** Set `TYPD_TESTER_CONFIG` to a tester's `tester.json` and build. The file is
+  copied to `Contents/Resources/tester.json` before signing, which turns on
+  `src/main/collect.js`. Without the variable, the build contains no `tester.json`.
+  ```bash
+  TYPD_TESTER_CONFIG=~/tester.<name>.json npx electron-builder --mac dmg --arm64 \
+    -c.directories.output=dist/tester '-c.mac.artifactName=${productName}-${version}-mac-${arch}-tester.${ext}'
+  ```
+  On Windows: `$env:TYPD_TESTER_CONFIG='...\tester.<name>.json'; npm run dist:win`. In CI, the
+  repository secret `TYPD_TESTER_JSON` does the same and the tester dmg is uploaded as
+  `Typd-mac-arm64-tester.dmg` (kept one day). The file holds an upload key, so never commit it,
+  attach it to a release, or send the tester dmg to anyone else.
 - **Check the server by hand:**
   `node scripts/smoke-llama.js --server dist/mac-arm64/Typd.app/Contents/Resources/llama/llama-server --models dist/mac-arm64/Typd.app/Contents/Resources/models/typd-dictate`

@@ -6,6 +6,8 @@
  *
  * Every platform: refuse to ship an app that cannot dictate -- the model named by the
  * packaged model.json, its mmproj and llama-server must all be in the resources folder.
+ * With TYPD_TESTER_CONFIG=<path to a tester.json>, ship it as <resources>/tester.json,
+ * which turns on src/main/collect.js; without it, make sure there is none.
  *
  * macOS:
  *  1. llama-server must be built for the architecture being packaged.
@@ -82,6 +84,22 @@ module.exports = async function afterPack(context) {
     if (!fs.existsSync(f) || fs.statSync(f).size === 0) throw new Error(`Packaged app is missing ${f}`);
   }
   console.log(`  • typd: ${platform}/${arch} resources ok (model ${spec.model}, ${path.basename(server)})`);
+
+  // --- tester builds: TYPD_TESTER_CONFIG names a tester.json to ship ---------------------
+  // src/main/collect.js stays inert unless <resources>/tester.json exists, so an ordinary
+  // build (variable unset) never collects anything; one left over from an earlier tester
+  // build in the same output folder is removed. Copied before signing so the signature
+  // covers it. The file holds an upload key: its contents are never logged.
+  const tester = path.join(resources, 'tester.json');
+  const testerSrc = process.env.TYPD_TESTER_CONFIG;
+  if (testerSrc) {
+    if (!fs.existsSync(testerSrc)) throw new Error(`TYPD_TESTER_CONFIG is set, but ${testerSrc} does not exist`);
+    try { JSON.parse(fs.readFileSync(testerSrc, 'utf8')); } catch { throw new Error('TYPD_TESTER_CONFIG is not valid JSON'); }
+    fs.copyFileSync(testerSrc, tester);
+    console.log('  • typd: TESTER BUILD -- tester.json included; this app shares dictations with the developer');
+  } else {
+    fs.rmSync(tester, { force: true });
+  }
 
   if (!mac) return;
 
