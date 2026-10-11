@@ -198,6 +198,9 @@ const debug = process.env.TYPD_DEBUG
   ? (...args) => console.log('[typd:selection]', ...args)
   : () => {};
 
+// Apps whose "caret, nothing selected" answer is not trusted (see selection()). Process names.
+const CHAT_APPS = /^(claude|discord|slack|whatsapp|telegram|signal|teams|ms-teams|chrome|msedge|brave|opera|vivaldi|firefox|arc|notion|obsidian)$/i;
+
 /**
  * @param {(settled: boolean) => void} [onEarly] Called as soon as the cheap
  *   probe can answer, with true if something is definitely selected and false
@@ -220,7 +223,12 @@ async function selection(onEarly) {
     // control does expose a selection model and is telling us the selection is
     // collapsed. Nothing is highlighted, and there is no reason to spend a
     // Ctrl+C finding that out again.
-    if (r && r.method === 'caret-only') {
+    // Except in browser-style chat apps: highlighting text in the conversation leaves the focus
+    // (and its empty caret) in the message box, so "caret-only" there says nothing about the
+    // highlight the user means (2026-10-11: "make it clearer" over a highlighted reply in Claude
+    // came out as dictation). Ask those apps with Ctrl+C, which copies nothing when nothing is
+    // selected. Never in editors or terminals: Ctrl+C there copies a line or interrupts.
+    if (r && r.method === 'caret-only' && !CHAT_APPS.test(r.process || '')) {
       if (onEarly) onEarly(false);
       return null;
     }
