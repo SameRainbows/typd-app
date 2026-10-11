@@ -92,8 +92,27 @@ function peel(span) {
  */
 function unwrap(text) {
   const m = text.match(/^\s*<span>\n?([\s\S]*?)\n?<\/span>\s*$/);
-  return m ? m[1] : text;
+  return stripPromptEcho(m ? m[1] : text);
 }
+
+/*
+ * Given an instruction unlike any it was trained on (a 92 s dictation spoken over a
+ * highlighted draft), the model once wrote the first line of its own revise prompt before the
+ * text. Never paste the prompt: drop its sentences and any <highlighted_text> wrapper it echoes.
+ */
+function stripPromptEcho(text) {
+  return text
+    .replace(/^\s*(?:Revise the highlighted text by following the spoken instruction\.?\s*)?(?:Output only the replacement text\.?\s*)?/i, '')
+    .replace(/<\/?highlighted_text>\s*/g, '');
+}
+
+/*
+ * Spoken revise instructions are short: at most 7.5 s in training, 5.4 s in the test set. Talking
+ * for longer over a selection is a dictation meant to replace it, which the revise prompt turns
+ * into nonsense. Past this length the speech is transcribed as dictation and pasted over the
+ * selection (the paste replaces it either way).
+ */
+const REVISE_MAX_SECONDS = 20;
 
 /**
  * @param {{mode?: 'dictate'|'revise',
@@ -111,7 +130,11 @@ function unwrap(text) {
 const MAX_CLOUD_SPAN = 8000;
 
 async function* run(opts = {}) {
-  const { mode = 'dictate', audio, contextBlock, span, signal, stream, spanTruncated } = opts;
+  const { audio, contextBlock, span, signal, stream, spanTruncated } = opts;
+  let mode = opts.mode || 'dictate';
+  if (mode === 'revise' && audio && audio.samples && audio.samples.length / audio.sampleRate > REVISE_MAX_SECONDS) {
+    mode = 'dictate';
+  }
 
   yield { type: 'thinking' };
 
