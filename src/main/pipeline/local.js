@@ -261,44 +261,144 @@ async function* dictate(samples, sampleRate, signal, system = '', maxTokens = 10
   }
   // Past what the model was trained on (90 s) it drops text silently: on a real 162 s
   // dictation 3 of 4 runs lost ~40 %. So long recordings are written piece by piece.
+  // The model closes a sentence wherever its audio ends, and people pause mid-phrase
+  // ("their AI ... quota"), so a pause says nothing about punctuation. Each cut is also written
+  // once from the speech either side of it, and that text decides how the pieces join.
+  const { pieces, pauses } = splitLong(samples, sr);
   let done = '';
-  for (const piece of splitLong(samples, sr)) {
-    let part = '';
-    for await (const t of dictateParts([toWav(piece, sr).toString('base64')], signal, system, dictationBudget(piece, sr))) {
-      part = t;
-      yield joinPieces(done, part);
+  for (let p = 0; p < pieces.length; p++) {
+    let seam = null;
+    if (p > 0) {
+      const w = seamAudio(samples, sr, pauses[p - 1]);
+      let t = '';
+      for await (const x of dictateParts([toWav(w, sr).toString('base64')], signal, system, dictationBudget(w, sr))) t = x;
+      const { from, seamFrom, seamTo, to } = pauses[p - 1];
+      seam = readSeam(done, t, (from - seamFrom) / Math.max(1, from - seamFrom + seamTo - to));
+      debug('seam', p, seam ? JSON.stringify(seam) : 'unread', JSON.stringify(t.slice(0, 160)));
     }
-    done = joinPieces(done, part);
+    let part = '';
+    for await (const t of dictateParts([toWav(pieces[p], sr).toString('base64')], signal, system, dictationBudget(pieces[p], sr))) {
+      part = t;
+      yield joinPieces(done, part, seam);
+    }
+    done = joinPieces(done, part, seam);
   }
 }
 
-const LONG_S = 75, PIECE_MIN_S = 45, PIECE_MAX_S = 70;
+const LONG_S = 75, PIECE_MIN_S = 45, PIECE_MAX_S = 70, FRAME_S = 0.02, SEAM_S = 6, KEEP_S = 0.3;
 
-/** Cut at the quietest 100 ms between 45 and 70 s into each piece, until the rest is short. */
+/**
+ * Cut at the longest pause between 45 and 70 s into each piece, until the rest is short.
+ * The quietest 100 ms (the old rule) could fall in the gap between two words. A pause is a run
+ * of 20 ms frames under 1/30 of the recording's median frame energy (about 15 dB below speech),
+ * or under 3x its 10th percentile in a noisy room; with no pause of 60 ms or more, the quietest
+ * frame. The pause itself is left out but for KEEP_S at each edge: a piece that starts or ends in
+ * seconds of silence loses words (seen on a real 8 s pause). Returns the pieces and, per cut, the
+ * pause ([from, to] in samples) and the seam: about SEAM_S of speech either side, from and to
+ * the nearest pause of 100 ms+, so it starts and ends between phrases ([seamFrom, seamTo]).
+ */
 function splitLong(samples, sr) {
-  const pieces = [];
-  const win = Math.round(0.1 * sr), hop = Math.floor(win / 2);
+  const f = Math.round(FRAME_S * sr), n = Math.floor(samples.length / f);
+  const e = new Float64Array(n);
+  for (let j = 0; j < n; j++) {
+    let s = 0;
+    for (let k = j * f, end = k + f; k < end; k++) s += samples[k] * samples[k];
+    e[j] = s;
+  }
+  const sorted = Float64Array.from(e).sort();
+  const quiet = Math.max(sorted[Math.floor(n / 2)] / 30, 3 * sorted[Math.floor(n / 10)]);
+  const isGap = (j) => {   // frame j ends a run of 5+ quiet frames (100 ms)
+    for (let k = j - 4; k <= j; k++) if (k < 0 || k >= n || e[k] >= quiet) return false;
+    return true;
+  };
+  const near = (fromS, toS, fallback, pickLast) => {
+    let hit = -1;
+    for (let j = Math.max(0, Math.floor(fromS / f)); j < Math.min(n, Math.floor(toS / f)); j++) {
+      if (isGap(j)) { hit = j * f; if (!pickLast) break; }
+    }
+    return hit < 0 ? fallback : hit;
+  };
+  const keep = Math.round(KEEP_S * sr);
+  const pieces = [], pauses = [];
   let start = 0;
   while (samples.length - start > LONG_S * sr) {
-    const lo = start + PIECE_MIN_S * sr, hi = start + PIECE_MAX_S * sr;
-    let best = lo + hop, low = Infinity;
-    for (let i = lo; i + win <= hi; i += hop) {
-      let e = 0;
-      for (let k = i; k < i + win; k++) e += samples[k] * samples[k];
-      if (e < low) { low = e; best = i + hop; }
+    const lo = Math.ceil((start + PIECE_MIN_S * sr) / f), hi = Math.floor((start + PIECE_MAX_S * sr) / f);
+    let run = 0, longest = 0, first = lo, quietest = lo;
+    for (let j = lo; j < hi; j++) {
+      run = e[j] < quiet ? run + 1 : 0;
+      if (run > longest) { longest = run; first = j - run + 1; }
+      if (e[j] < e[quietest]) quietest = j;
     }
-    pieces.push(samples.subarray(start, best));
-    start = best;
+    const [from, to] = longest >= 3 ? [first * f, (first + longest) * f] : [quietest * f, quietest * f];
+    const cutA = Math.min(from + keep, Math.round((from + to) / 2)), cutB = Math.max(to - keep, cutA);
+    pieces.push(samples.subarray(start, cutA));
+    pauses.push({
+      from, to,
+      seamFrom: near(from - (SEAM_S + 3) * sr, from - (SEAM_S - 3) * sr, Math.max(0, from - SEAM_S * sr), true),
+      seamTo: near(to + (SEAM_S - 3) * sr, to + (SEAM_S + 3) * sr, Math.min(samples.length, to + SEAM_S * sr), false)
+    });
+    start = cutB;
   }
   pieces.push(samples.subarray(start));
-  return pieces;
+  return { pieces, pauses };
 }
 
-/** A sentence that ended at the cut starts a new paragraph; a cut mid-sentence just continues. */
-function joinPieces(a, b) {
+/** The seam's audio: its speech either side of the cut, the pause between shortened to <= 2 x KEEP_S. */
+function seamAudio(samples, sr, { from, to, seamFrom, seamTo }) {
+  const keep = Math.min(Math.round(KEEP_S * sr), Math.floor((to - from) / 2));
+  const a = samples.subarray(seamFrom, from + keep);
+  const b = samples.subarray(to - keep, seamTo);
+  const w = new Float32Array(a.length + b.length);
+  w.set(a);
+  w.set(b, a.length);
+  return w;
+}
+
+/**
+ * How the text runs across a cut, read from `seam`: the model's text for the audio either side
+ * of it. Finds the last words before the cut (the end of `a`) in the seam and returns what
+ * follows them there -- a sentence end or not, and the next word as the model wrote it in
+ * context (its case: "quota" vs "Kaggle") -- or null when the seam cannot be lined up.
+ * `at` is where the cut falls in the seam's audio (0-1); a match near that share of the text
+ * wins. The seam's first word may be a word cut in half ("WTH" for "RWTH").
+ */
+function readSeam(a, seam, at = 0.5) {
+  const words = (s) => [...s.matchAll(/[\p{L}\p{N}][\p{L}\p{N}'’-]*/gu)]
+    .map((m) => ({ w: m[0].toLowerCase(), raw: m[0], i: m.index, end: m.index + m[0].length }));
+  const S = words(seam), A = words(a);
+  const same = (x, y, j) => x === y || (j === 0 && y.length >= 2 && x.endsWith(y));
+  for (const k of [3, 2, 1]) {
+    if (A.length < k || (k === 1 && A[A.length - 1].w.length < 4)) continue;
+    const tail = A.slice(-k);
+    let best = null;
+    for (let j = 0; j + k < S.length; j++) {
+      if (!tail.every((x, q) => same(x.w, S[j + q].w, j + q))) continue;
+      const d = Math.abs(S[j + k - 1].end - seam.length * at);
+      if (!best || d < best.d) best = { d, end: S[j + k - 1].end, next: S[j + k] };
+    }
+    if (best) return { sentenceEnd: /[.!?]/.test(seam.slice(best.end, best.next.i)), next: best.next.raw };
+  }
+  return null;
+}
+
+/**
+ * Join the text of two pieces. With a read seam: a sentence that ended at the cut starts a new
+ * paragraph; otherwise the sentence continues -- the full stop the model put at the cut goes, and
+ * the next word takes its case from the seam. Without one, a space: a paragraph break in the
+ * middle of a sentence is the worse mistake.
+ */
+function joinPieces(a, b, seam) {
   if (!a) return b;
   if (!b) return a;
-  return a.trimEnd() + (/[.!?:]$/.test(a.trimEnd()) ? '\n\n' : ' ') + b.trimStart();
+  a = a.trimEnd();
+  b = b.trimStart();
+  const ended = /[.!?:]$/.test(a);
+  if (!seam) return a + ' ' + b;
+  if (seam.sentenceEnd) return ended ? a + '\n\n' + b : a.replace(/[,;]$/, '') + '. ' + b;
+  if (/[^.]\.$/.test(a)) a = a.slice(0, -1);
+  const first = /^[\p{L}][\p{L}'’-]*/u.exec(b);
+  if (first && first[0].toLowerCase() === seam.next.toLowerCase()) b = seam.next + b.slice(first[0].length);
+  return a + ' ' + b;
 }
 
 /**
@@ -592,7 +692,7 @@ async function transcribe(samples, sampleRate, signal, system = '') {
 }
 
 module.exports = {
-  warm, stop, ping, dictate, transcribe, openStream, dictationBudget, loopCut, splitLong, joinPieces, contextPrompt, revisePrompt,
+  warm, stop, ping, dictate, transcribe, openStream, dictationBudget, loopCut, splitLong, readSeam, joinPieces, contextPrompt, revisePrompt,
   canRevise: () => Boolean(SPEC.revise),
   usesContext: () => Boolean(SPEC.context),
   streams: () => Boolean(SPEC.stream),
