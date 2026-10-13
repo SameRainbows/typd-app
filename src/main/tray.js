@@ -28,6 +28,7 @@ function preview40(text) {
  * @param {(text: string) => void} deps.copy                  out of clipboard history
  * @param {(id: string) => void} deps.statusAction             a click on the status line
  * @param {(term: string) => void} deps.forget                 undo a learned word
+ * @param {() => string|null} [deps.modelLine]                 model-update line (modelUpdate.js)
  */
 function createTray(deps) {
   let tray = null;
@@ -77,8 +78,11 @@ function createTray(deps) {
   function menu() {
     const s = status.describe();
     const last = lastDictation();
+    // Tester builds and the developer's machines: which model, and whether it is updating.
+    const model = deps.modelLine ? deps.modelLine() : null;
     return Menu.buildFromTemplate([
       s.action ? { label: s.line, click: () => deps.statusAction(s.action.id) } : { label: s.line, enabled: false },
+      ...(model ? [{ label: model, enabled: false }] : []),
       { type: 'separator' },
       { label: 'Open Typd', click: () => deps.open('home') },
       last

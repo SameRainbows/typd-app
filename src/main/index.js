@@ -19,6 +19,7 @@ const inject = require('./inject');
 const learn = require('./learn');
 const dictionary = require('./dictionary');
 const collect = require('./collect');   // tester builds only; inert without tester.json
+const modelUpdate = require('./modelUpdate');   // tester builds and the developer's machines; inert without a key
 
 const MAC = process.platform === 'darwin';
 
@@ -413,7 +414,8 @@ const trayUi = createTray({
   open: (section, opts) => home.open(section, opts),
   copy: (text) => inject.copy(text),
   statusAction,
-  forget: (term) => forget(term)
+  forget: (term) => forget(term),
+  modelLine: () => modelUpdate.line()
 });
 
 const refreshTray = () => trayUi.refresh();
@@ -451,6 +453,21 @@ function warmModel() {
     }
   }, (err) => {
     status.set({ model: 'failed', modelWhy: String((err && err.message) || '') });
+  });
+}
+
+/**
+ * A downloaded model is ready (modelUpdate.js, which only calls this with no session open):
+ * restart the model server on it. The tray says "Getting ready…" for the few seconds it takes;
+ * a dictation begun meanwhile waits for the new server.
+ */
+function switchModel() {
+  status.set({ model: 'loading', modelWhy: '' });
+  return Promise.resolve(pipeline.switchModel()).then(() => {
+    status.set({ model: 'ready' });
+  }, (err) => {
+    status.set({ model: 'failed', modelWhy: String((err && err.message) || '') });
+    throw err;
   });
 }
 
@@ -509,6 +526,18 @@ app.whenReady().then(() => {
   // shell start, and the speech model so the first dictation does not pay for
   // loading it.
   inject.start();
+  if (!stub) {
+    // Before the first warm start, so a switch that never got its first good start is
+    // judged by this one (and reverted if it fails).
+    const local = require('./pipeline/local');
+    modelUpdate.start({
+      bundledDir: local.BUNDLED_DIR,
+      busy: () => Boolean(session),
+      switchModel,
+      onWarm: local.onWarm,
+      changed: () => refreshTray()
+    });
+  }
   warmModel();
   if (!stub && pipeline.ENGINE === 'cascade' && !process.env.POOLSIDE_API_KEY) {
     // With the single local model, dictation needs no key at all; only the old cascade
