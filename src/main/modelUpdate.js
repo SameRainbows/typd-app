@@ -205,6 +205,12 @@ function createUpdater({
     for (const fn of listeners) { try { fn(l); } catch { /* a listener's problem */ } }
   }
   function set(s, extra = {}) { state = s; changed(); return { state: s, ...extra }; }
+  // Bytes arrive in small chunks; the tray line only changes with the whole percent.
+  let lastPct = -1;
+  function progressed() {
+    const pct = progress.total ? Math.floor((100 * progress.done) / progress.total) : 0;
+    if (pct !== lastPct) { lastPct = pct; changed(); }
+  }
 
   /* ------------------------------------------------- what this machine runs */
 
@@ -327,7 +333,7 @@ function createUpdater({
           if (have > f.size) throw new Error(f.name + ': more bytes than the manifest says');
           if (!out.write(chunk)) await once(out, 'drain');
           progress.done += chunk.length;
-          changed();
+          progressed();
           await throttle(chunk.length);
         }
       } finally {
@@ -382,7 +388,7 @@ function createUpdater({
           await fsp.copyFile(copy, file + '.copy', fs.constants.COPYFILE_FICLONE);
           await renameRetry(file + '.copy', file);
           progress.done += f.size;
-          changed();
+          progressed();
           continue;
         }
       }
@@ -516,6 +522,7 @@ function createUpdater({
     }
     if (await bundledIs(m)) {
       if (!active) {
+        target = null;
         if (!s.bundled || s.bundled.version !== m.version) { const t = readState(); t.bundled = { version: m.version, model: m.model_json.model }; await writeState(t); }
         await tidy(null);
         return set('current');
