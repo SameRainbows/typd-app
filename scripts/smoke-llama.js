@@ -17,6 +17,10 @@
  * Exit 0 only if the text is non-empty and contains --expect (default: "airport", from
  * test/fixtures/dictation-3s.wav: "Can you remind me what time the train to the airport
  * leaves on Sunday?").
+ *
+ * warm() itself now ends with the app's self-test on the same clip (local.js): without
+ * --gpu-layers, wrong text on the GPU restarts the server on the CPU, and the log (TYPD_DEBUG)
+ * says which path was chosen; with --gpu-layers it is tested but never changed.
  */
 
 const fs = require('fs');

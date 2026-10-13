@@ -6,5 +6,5 @@
   "spoken": "can you remind me what time the the train to the airport leaves on sunday",
   "clean": "Can you remind me what time the train to the airport leaves on Sunday?",
   "smoke_expect": "airport",
-  "used_by": "scripts/smoke-llama.js, .github/workflows/mac.yml"
+  "used_by": "scripts/smoke-llama.js, .github/workflows/mac.yml, and the app itself: the self-test after every warm start (src/main/pipeline/local.js; shipped in app.asar)"
 }

@@ -263,6 +263,11 @@ function stop() {
   local.stop();
 }
 
+/** A model update landed (modelUpdate.js): restart the server on it, self-test included. */
+function switchModel() {
+  return ENGINE === 'single' ? local.switchModel() : Promise.resolve();
+}
+
 module.exports = {
   run,
   runStub,
@@ -270,6 +275,7 @@ module.exports = {
   wake,
   warm,
   stop,
+  switchModel,
   ENGINE,
   buildContext: context.current,
   buildContextFrom: context.build,

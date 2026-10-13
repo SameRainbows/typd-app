@@ -3,7 +3,9 @@
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
+const { once } = require('events');
 const { spawn } = require('child_process');
+const { activeModel } = require('../modelUpdate');
 
 /**
  * The single dictation model: audio in, finished writing out, on this machine.
@@ -63,9 +65,31 @@ function defaultServer() {
   return path.join(root(), 'vendor', 'llama', exe);
 }
 
-const MODEL_DIR = process.env.TYPD_MODEL_DIR ||
-  (RESOURCES ? path.join(RESOURCES, 'models', 'typd-dictate') : path.join(root(), 'models', 'typd-dictate'));
+const BUNDLED_DIR = RESOURCES ? path.join(RESOURCES, 'models', 'typd-dictate') : path.join(root(), 'models', 'typd-dictate');
 const SERVER = process.env.TYPD_LLAMA_SERVER || defaultServer();
+
+function userData() {
+  try {
+    const electron = require('electron');
+    if (electron && electron.app && typeof electron.app.getPath === 'function') return electron.app.getPath('userData');
+  } catch {
+    // not running under Electron
+  }
+  return null;
+}
+const USER_DATA = userData();
+const USER_MODELS = USER_DATA ? path.join(USER_DATA, 'models') : null;
+
+/**
+ * Which model folder to load: TYPD_MODEL_DIR first (development and the eval tools, which
+ * point it at any folder); then the downloaded version <userData>/models/current.json names,
+ * if its folder is complete (src/main/modelUpdate.js puts it there); otherwise the model
+ * bundled with the app. {dir, version}: version is null for anything not downloaded.
+ */
+function resolveModel({ env = process.env, modelsDir = USER_MODELS, bundled = BUNDLED_DIR } = {}) {
+  if (env.TYPD_MODEL_DIR) return { dir: env.TYPD_MODEL_DIR, version: null };
+  return (modelsDir && activeModel(modelsDir)) || { dir: bundled, version: null };
+}
 /*
  * model.json beside the weights says which files to load and what the model was
  * trained to do, so a better model is a drop-in: copy the files, edit the json.
@@ -76,17 +100,34 @@ const SERVER = process.env.TYPD_LLAMA_SERVER || defaultServer();
  *            sent while the user is still talking (see openStream).
  * A model without a flag is never sent that prompt: an untrained prompt is noise.
  */
-function readSpec() {
+function readSpec(dir) {
   const fallback = { model: 'typd-dictate-0.6b-q4_k_m.gguf', mmproj: 'mmproj-qwen3-asr-0.6b-q8_0.gguf', context: false, revise: false };
   try {
-    return { ...fallback, ...JSON.parse(fs.readFileSync(path.join(MODEL_DIR, 'model.json'), 'utf8')) };
+    return { ...fallback, ...JSON.parse(fs.readFileSync(path.join(dir, 'model.json'), 'utf8')) };
   } catch {
     return fallback;
   }
 }
-const SPEC = readSpec();
-const MODEL = path.join(MODEL_DIR, SPEC.model);
-const MMPROJ = path.join(MODEL_DIR, SPEC.mmproj);
+
+// The model in use. Set at load, and again by switchModel() when a model update lands.
+let MODEL_DIR, VERSION, SPEC, MODEL, MMPROJ, PREFILL;
+function load(m = resolveModel()) {
+  MODEL_DIR = m.dir;
+  VERSION = m.version;
+  SPEC = readSpec(MODEL_DIR);
+  MODEL = path.join(MODEL_DIR, SPEC.model);
+  MMPROJ = path.join(MODEL_DIR, SPEC.mmproj);
+  // The fine-tuning prompt, exactly: an empty system turn, the audio, and the
+  // assistant turn opened with the language tag. Anything else is a prompt the
+  // model never saw in training.
+  //
+  // Models up to round 10 were always told "English" here, which made Turkish come
+  // out misspelt or translated. From round 11 the model writes the tag itself
+  // ("language Turkish<asr_text>..."); their model.json says "prefill": "" and the
+  // tag is stripped from what is shown.
+  PREFILL = typeof SPEC.prefill === 'string' ? SPEC.prefill : 'language English<asr_text>';
+}
+load();
 
 // The revise prompt the model was trained with, word for word.
 const REVISE_SYSTEM = 'Revise the highlighted text by following the spoken instruction. ' +
@@ -109,19 +150,11 @@ function revisePrompt(span) {
 }
 const PORT = Number(process.env.TYPD_LLAMA_PORT || 8737);
 
-// The fine-tuning prompt, exactly: an empty system turn, the audio, and the
-// assistant turn opened with the language tag. Anything else is a prompt the
-// model never saw in training.
-//
-// Models up to round 10 were always told "English" here, which made Turkish come
-// out misspelt or translated. From round 11 the model writes the tag itself
-// ("language Turkish<asr_text>..."); their model.json says "prefill": "" and the
-// tag is stripped from what is shown.
-const PREFILL = typeof SPEC.prefill === 'string' ? SPEC.prefill : 'language English<asr_text>';
-
 let proc = null;
 let starting = null;
 let startError = null;
+let stopping = null;      // a switch is taking the old server down; warm() waits for it
+const warmListeners = [];
 
 function debug(...args) {
   if (process.env.TYPD_DEBUG) console.log('[typd:local]', ...args);
@@ -138,13 +171,185 @@ function health() {
   });
 }
 
-/** Start the model server and wait until it answers. Safe to call more than once. */
+/*
+ * The self-test. On a Mac in CI (run 38462461381) the Metal build of llama-server loaded the
+ * 1.7B model and answered "8888..." where the CPU build wrote the sentence: a GPU path can be
+ * wrong without crashing, and only a crash used to send Typd to the CPU. So every warm start
+ * -- at launch, and after each model switch -- ends with the CI smoke test's clip
+ * (test/fixtures/dictation-3s.wav, 3.6 s, shipped inside the app) transcribed by the server
+ * just started. Wrong text on the GPU: restart on the CPU (-ngl 0) and test again; if that
+ * passes, <userData>/models/gpu.json remembers it, so this model starts on the CPU from then on
+ * (until the app is updated, which may bring a llama.cpp that fixes the GPU). Wrong on the CPU
+ * too: the model failed, and warm() rejects -- modelUpdate.js reverts a model it has just
+ * installed. It runs inside warm(), which a dictation awaits, so it never runs during one.
+ * TYPD_SELFTEST=0 skips it; an explicit TYPD_GPU_LAYERS is obeyed as given (tested, never changed).
+ */
+const FIXTURE = path.join(__dirname, '..', '..', '..', 'test', 'fixtures', 'dictation-3s.wav');
+// "Can you remind me what time the train to the airport leaves on Sunday?" -- its content words.
+const FIXTURE_WORDS = ['remind', 'time', 'train', 'airport', 'leaves', 'sunday'];
+
+/** Did the model hear the fixture? 3+ of its content words, and no character run past 20. */
+function selfTestPasses(text) {
+  const t = String(text || '').toLowerCase();
+  if (/(.)\1{20,}/su.test(t)) return false;
+  const words = new Set(t.match(/\p{L}+/gu) || []);
+  return FIXTURE_WORDS.filter((w) => words.has(w)).length >= 3;
+}
+
+const where = (layers) => (String(layers) === '0' ? 'CPU' : 'GPU');
+
+/**
+ * Start the server and prove it -- the decision only: warm() supplies the real steps, the bench
+ * fake ones. Starts with all layers on the GPU unless this model is remembered as CPU-only, or
+ * `explicit` says otherwise. Returns {layers, tested}; throws if no path passes.
+ */
+async function bringUp({ explicit, remembered, serve, stopServer, test, remember, log = () => {}, enabled = true }) {
+  let layers = await serve(explicit || (remembered ? '0' : '99'));
+  if (!enabled) return { layers, tested: false };
+  let r = await test();
+  log(`self-test on the ${where(layers)}: ${r.ok ? 'passed' : 'FAILED'} ${JSON.stringify(String(r.text).slice(0, 80))}`);
+  if (!r.ok && String(layers) !== '0' && !explicit) {
+    await stopServer();
+    layers = await serve('0');
+    const cpu = await test();
+    log(`self-test on the CPU: ${cpu.ok ? 'passed' : 'FAILED'} ${JSON.stringify(String(cpu.text).slice(0, 80))}`);
+    if (cpu.ok) await remember({ gpuSaid: String(r.text).slice(0, 80) });
+    r = cpu;
+  }
+  if (!r.ok) {
+    await stopServer();
+    throw new Error('The dictation model failed its self-test');
+  }
+  log(`path chosen: ${where(layers)} (-ngl ${layers})`);
+  return { layers, tested: true };
+}
+
+function appVersion() {
+  try { return require('../../../package.json').version; } catch { return '0.0.0'; }
+}
+
+/** Models that start straight on the CPU, by version (or file name, for the bundled one). */
+const gpuMemory = {
+  file: USER_MODELS ? path.join(USER_MODELS, 'gpu.json') : null,
+  mem: {},
+  all() {
+    if (!this.file) return this.mem;
+    try { return JSON.parse(fs.readFileSync(this.file, 'utf8')) || {}; } catch { return {}; }
+  },
+  get(id) {
+    const e = this.all()[id];
+    return e && e.layers === '0' && e.app === appVersion() ? e : null;
+  },
+  set(id, entry) {
+    const all = { ...this.all(), [id]: { layers: '0', app: appVersion(), at: new Date().toISOString(), ...entry } };
+    if (!this.file) { this.mem = all; return; }
+    try {
+      fs.mkdirSync(path.dirname(this.file), { recursive: true });
+      fs.writeFileSync(this.file + '.tmp', JSON.stringify(all, null, 1));
+      fs.renameSync(this.file + '.tmp', this.file);
+      debug('remembered:', id, 'starts on the CPU from now on (' + this.file + ')');
+    } catch (err) {
+      debug('could not save', this.file, err && err.message);
+    }
+  }
+};
+const modelId = () => VERSION || path.basename(MODEL);
+
+function launch(layers) {
+  const child = spawn(SERVER, [
+    '-m', MODEL, '--mmproj', MMPROJ,
+    '--host', '127.0.0.1', '--port', String(PORT),
+    '-ngl', String(layers),
+    // Under 1 GB of VRAM in total (1,011 MiB measured, 2026-10-05) with no measurable quality
+    // change: 8-bit KV cache, smaller micro-batches, and a 2,048-token window. The worst real
+    // dictation piece (71 s + the longest screen context) needs ~2,014 tokens; long revise
+    // selections are refused up front in pipeline/index.js instead of overflowing.
+    '-c', '2048', '-ctk', 'q8_0', '-ctv', 'q8_0', '-ub', '256', '-np', '1',
+    '--cache-ram', '0',                           // no host prompt cache: every dictation is new audio
+    // The built-in warm-up reserves ~550 MB for a 30 s audio window that a dictation never
+    // needs at once; the self-test (or the silent request) warms it instead (1.76 -> 1.35 GB).
+    '--no-warmup',
+    '--no-webui'
+  ], { windowsHide: true, stdio: ['ignore', 'ignore', process.env.TYPD_DEBUG ? 'inherit' : 'ignore'] });
+  child.on('exit', (code) => {
+    debug('server exited', code);
+    if (proc === child) proc = null;
+  });
+  // A binary that cannot be executed (lost its executable bit, quarantined) emits
+  // 'error' instead of 'exit'; unhandled, that would take the whole app down.
+  child.on('error', (err) => {
+    debug('server could not start:', err && err.message);
+    if (proc === child) proc = null;
+  });
+  return child;
+}
+
+/** Launch with `layers` and wait until it answers; returns the layers it ended up on. */
+async function serve(layers) {
+  // On macOS a GPU that is present but refuses the work (Metal in a VM, say) kills the
+  // server during load rather than falling back on its own; one retry on the CPU covers
+  // it. Only for the default layer count: an explicit TYPD_GPU_LAYERS is obeyed as given.
+  const cpuRetry = process.platform === 'darwin' && !process.env.TYPD_GPU_LAYERS;
+  proc = launch(layers);
+  const t0 = Date.now();
+  while (Date.now() - t0 < 120000) {
+    if (!proc && cpuRetry && String(layers) !== '0') {
+      debug('server died while loading on the GPU; retrying on the CPU');
+      layers = '0';
+      proc = launch(layers);
+    }
+    if (!proc) throw new Error('The dictation model failed to start');
+    if (await health()) {
+      debug('server up in', Date.now() - t0, 'ms on the', where(layers));
+      return String(layers);
+    }
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  throw new Error('The dictation model took too long to start');
+}
+
+/** Kill `child`, and wait until it has exited and the port is free. */
+async function ended(child) {
+  if (child && child.exitCode === null && child.signalCode === null) {
+    const exited = once(child, 'exit').catch(() => {});
+    child.kill();
+    await Promise.race([exited, new Promise((r) => setTimeout(r, 5000))]);
+    if (child.exitCode === null && child.signalCode === null) {
+      try { child.kill('SIGKILL'); } catch { /* gone */ }
+      await Promise.race([exited, new Promise((r) => setTimeout(r, 2000))]);
+    }
+  }
+  for (let i = 0; i < 40 && (await health()); i++) await new Promise((r) => setTimeout(r, 100));
+}
+
+/** The fixture through the server just started: {ok, text}. */
+async function selfTest() {
+  const wav = fs.readFileSync(FIXTURE).toString('base64');
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 60000);
+  let text = '';
+  try {
+    for await (const t of ask([wav], ctrl.signal, '', 160)) text = t;
+  } catch (err) {
+    return { ok: false, text: 'error: ' + ((err && err.message) || err) };
+  } finally {
+    clearTimeout(timer);
+  }
+  return { ok: selfTestPasses(text), text };
+}
+
+/** Every warm start's outcome, {ok, error, dir, version}: modelUpdate.js listens. */
+function onWarm(fn) { warmListeners.push(fn); }
+
+/** Start the model server; wait until it answers and passes its self-test. Safe to call more than once. */
 function warm() {
   if (starting) return starting;
   if (proc && !startError) return Promise.resolve();
 
-  starting = (async () => {
+  const loaded = { dir: MODEL_DIR, version: VERSION };
+  const run = (async () => {
     startError = null;
+    if (stopping) await stopping;
     for (const [what, file] of [['model', MODEL], ['audio projector', MMPROJ], ['llama-server', SERVER]]) {
       if (!fs.existsSync(file)) throw new Error(`Dictation ${what} missing at ${file}`);
     }
@@ -152,69 +357,55 @@ function warm() {
     // A server left behind by a crashed run would hold the port; reuse it
     // rather than fail, since it is serving the same files.
     if (await health()) {
-      debug('reusing server on', PORT);
+      debug('reusing server on', PORT, '(left by an earlier run; not self-tested)');
       return;
     }
 
-    // On macOS a GPU that is present but refuses the work (Metal in a VM, say) kills the
-    // server during load rather than falling back on its own; one retry on the CPU covers
-    // it. Only for the default layer count: an explicit TYPD_GPU_LAYERS is obeyed as given.
-    let layers = process.env.TYPD_GPU_LAYERS || '99';   // no GPU at all: llama.cpp uses the CPU
-    const cpuRetry = process.platform === 'darwin' && !process.env.TYPD_GPU_LAYERS;
-    const launch = () => {
-      const child = spawn(SERVER, [
-        '-m', MODEL, '--mmproj', MMPROJ,
-        '--host', '127.0.0.1', '--port', String(PORT),
-        '-ngl', layers,
-        // Under 1 GB of VRAM in total (1,011 MiB measured, 2026-10-05) with no measurable quality
-        // change: 8-bit KV cache, smaller micro-batches, and a 2,048-token window. The worst real
-        // dictation piece (71 s + the longest screen context) needs ~2,014 tokens; long revise
-        // selections are refused up front in pipeline/index.js instead of overflowing.
-        '-c', '2048', '-ctk', 'q8_0', '-ctv', 'q8_0', '-ub', '256', '-np', '1',
-        '--cache-ram', '0',                           // no host prompt cache: every dictation is new audio
-        // The built-in warm-up reserves ~550 MB for a 30 s audio window that a dictation never
-        // needs at once; the silent request below warms it instead (1.76 -> 1.35 GB, same speed).
-        '--no-warmup',
-        '--no-webui'
-      ], { windowsHide: true, stdio: ['ignore', 'ignore', process.env.TYPD_DEBUG ? 'inherit' : 'ignore'] });
-      child.on('exit', (code) => {
-        debug('server exited', code);
-        if (proc === child) proc = null;
-      });
-      // A binary that cannot be executed (lost its executable bit, quarantined) emits
-      // 'error' instead of 'exit'; unhandled, that would take the whole app down.
-      child.on('error', (err) => {
-        debug('server could not start:', err && err.message);
-        if (proc === child) proc = null;
-      });
-      return child;
-    };
-    proc = launch();
-
+    const explicit = process.env.TYPD_GPU_LAYERS;
+    const memo = explicit ? null : gpuMemory.get(modelId());
+    if (memo) debug(modelId(), 'starts on the CPU: its GPU self-test failed on', memo.at);
     const t0 = Date.now();
-    while (Date.now() - t0 < 120000) {
-      if (!proc && cpuRetry && layers !== '0') {
-        debug('server died while loading on the GPU; retrying on the CPU');
-        layers = '0';
-        proc = launch();
-      }
-      if (!proc) throw new Error('The dictation model failed to start');
-      if (await health()) {
-        await nudge('', 30000);   // the first dictation would otherwise pay for the warm-up
-        debug('ready in', Date.now() - t0, 'ms');
-        return;
-      }
-      await new Promise((r) => setTimeout(r, 150));
-    }
-    throw new Error('The dictation model took too long to start');
-  })()
+    const r = await bringUp({
+      explicit,
+      remembered: Boolean(memo),
+      serve,
+      stopServer: async () => { const old = proc; proc = null; await ended(old); },
+      test: selfTest,
+      remember: (entry) => gpuMemory.set(modelId(), entry),
+      log: debug,
+      enabled: process.env.TYPD_SELFTEST !== '0' && fs.existsSync(FIXTURE)
+    });
+    if (!r.tested) await nudge('', 30000);   // the first dictation would otherwise pay for the warm-up
+    debug('model', modelId(), 'ready in', Date.now() - t0, 'ms');
+  })();
+  starting = run
     .catch((err) => { startError = err; throw err; })
     .finally(() => { starting = null; });
 
   // warm() is called during launch and nobody awaits it there; a failure is
   // surfaced on the first dictation instead of as an unhandled rejection.
-  starting.catch(() => {});
+  const tell = (outcome) => setImmediate(() => {
+    for (const fn of warmListeners) { try { fn({ ...outcome, ...loaded }); } catch { /* a listener's problem */ } }
+  });
+  starting.then(() => tell({ ok: true }), (error) => tell({ ok: false, error }));
   return starting;
+}
+
+/**
+ * Load whatever model resolves now -- modelUpdate.js has just pointed current.json elsewhere --
+ * by stopping the server, waiting for it to exit, and warming it on the new files (self-test
+ * included). Resolves when it is ready; rejects if it does not start or fails the self-test.
+ * The caller waits until no dictation is in progress; one that begins meanwhile waits in warm().
+ */
+async function switchModel() {
+  if (starting) await starting.catch(() => {});
+  const old = proc;
+  proc = null;
+  startError = null;
+  stopping = ended(old).finally(() => { stopping = null; });
+  load();
+  debug('switching to', MODEL_DIR, VERSION ? `(${VERSION})` : '(bundled)');
+  return warm();
 }
 
 function stop() {
@@ -483,7 +674,11 @@ function body(parts, system, extra) {
 
 async function* dictateParts(parts, signal, system = '', maxTokens = 1024) {
   await warm();
+  yield* ask(parts, signal, system, maxTokens);
+}
 
+/** The request itself, to a server already up (the self-test calls it from inside warm()). */
+async function* ask(parts, signal, system = '', maxTokens = 1024) {
   const payload = body(parts, system, { stream: true, max_tokens: maxTokens });
 
   const queue = [];
@@ -696,5 +891,9 @@ module.exports = {
   canRevise: () => Boolean(SPEC.revise),
   usesContext: () => Boolean(SPEC.context),
   streams: () => Boolean(SPEC.stream),
-  MODEL, PORT
+  switchModel, onWarm, resolveModel, selfTestPasses, bringUp,
+  get MODEL() { return MODEL; },
+  get MODEL_DIR() { return MODEL_DIR; },
+  get VERSION() { return VERSION; },
+  BUNDLED_DIR, PORT, FIXTURE
 };
