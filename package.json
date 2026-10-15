@@ -18,9 +18,11 @@
     "bench:hotkeys": "node bench/hotkeys.js",
     "bench:home": "node bench/home.js",
     "bench:updates": "node bench/updates.js",
+    "bench:public": "node bench/public-build.js",
     "fetch:llama-mac": "node scripts/fetch-llama-mac.js",
     "smoke": "node scripts/smoke-llama.js",
     "dist:win": "electron-builder --win --x64",
+    "dist:win:public": "node scripts/public-build.js win",
     "dist:mac": "node scripts/fetch-llama-mac.js && electron-builder --mac",
     "build:icons": "electron scripts/build-icons.js && python scripts/build-icons.py",
     "fetch:model": "node scripts/fetch-model.js"
