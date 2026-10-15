@@ -16,7 +16,9 @@
  * If it names a version this machine is not running, its files are downloaded into
  * <userData>/models/<version>.partial/ -- one file at a time, resumable with Range, held to
  * RATE so the connection stays the user's, retried with backoff -- while dictation goes on with
- * the old model. Every file is checked against the manifest's size and sha256; then the folder
+ * the old model. The files are the model, its mmproj and, if model_json names one in
+ * "revise_lora", the revise adapter (local.js). Every file is checked against the manifest's
+ * size and sha256; then the folder
  * becomes <userData>/models/<version>/ (with model.json and manifest.json written beside the
  * files) and <userData>/models/current.json names it. local.js loads the version current.json
  * names, if its folder is complete; otherwise the bundled model.
@@ -92,6 +94,7 @@ function isComplete(dir) {
   if (!m || checkManifest(m) || !spec) return null;
   const names = m.files.map((f) => f.name);
   if (!names.includes(spec.model) || !names.includes(spec.mmproj)) return null;
+  if (spec.revise_lora != null && !names.includes(spec.revise_lora)) return null;
   for (const f of m.files) {
     try { if (fs.statSync(path.join(dir, f.name)).size !== f.size) return null; } catch { return null; }
   }
@@ -120,6 +123,8 @@ function checkManifest(m) {
   }
   const mj = m.model_json;
   if (!mj || typeof mj !== 'object' || Array.isArray(mj) || !names.has(mj.model) || !names.has(mj.mmproj)) return 'bad model_json';
+  // The revise adapter, when there is one, is one more of the version's files (local.js loads it).
+  if (mj.revise_lora != null && (!names.has(mj.revise_lora) || mj.revise_lora === mj.model || mj.revise_lora === mj.mmproj)) return 'bad model_json';
   if (m.min_app !== undefined && (typeof m.min_app !== 'string' || !/^\d+\.\d+\.\d+$/.test(m.min_app))) return 'bad min_app';
   return null;
 }
@@ -234,6 +239,7 @@ function createUpdater({
   async function bundledIs(m) {
     const spec = bundledSpec();
     if (!spec || spec.model !== m.model_json.model || spec.mmproj !== m.model_json.mmproj) return false;
+    if ((spec.revise_lora || null) !== (m.model_json.revise_lora || null)) return false;   // same weights, adapter added or dropped
     for (const f of m.files) {
       const p = path.join(bundledDir, f.name);
       try { if ((await fsp.stat(p)).size !== f.size) return false; } catch { return false; }

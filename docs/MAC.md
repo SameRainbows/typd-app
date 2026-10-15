@@ -108,7 +108,7 @@ run `node scripts/fetch-llama-mac.js arm64 && npx electron-builder --mac dmg zip
 the targets: with `--arm64` alone, electron-builder still builds every arch listed in package.json).
 
 - **The model.** `scripts/before-pack.js` reads `models/typd-dictate/model.json` and ships only the
-  model and mmproj it names. A new model needs a new release (model files plus `SHA256SUMS`) and a
+  model and mmproj it names (and its `revise_lora` adapter, if it names one). A new model needs a new release (model files plus `SHA256SUMS`) and a
   new `MODEL_TAG` in `.github/workflows/mac.yml`.
 - **llama.cpp.** `scripts/fetch-llama-mac.js` downloads the official macOS builds of the release
   Windows uses (b11351), checks their SHA-256, and keeps only `llama-server` and the libraries it

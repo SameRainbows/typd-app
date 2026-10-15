@@ -76,6 +76,23 @@ section('which model folder local.js loads');
   fs.writeFileSync(path.join(models, 'current.json'), '{not json');
   check('an unreadable current.json -> the bundled model', r().dir === bundled);
   check('activeModel(missing folder) -> null', activeModel(path.join(tmp, 'nowhere')) === null);
+
+  // A version with a revise adapter (model.json "revise_lora"): one more file, held to the same rules.
+  const lspec = { model: 'm.gguf', mmproj: 'p.gguf', revise: true, revise_lora: 'rev-lora.gguf' };
+  const files = { 'm.gguf': Buffer.from('model'), 'p.gguf': Buffer.from('proj'), 'rev-lora.gguf': Buffer.from('adapter') };
+  const v3 = versionDir(models, 'v3', files, lspec);
+  fs.writeFileSync(path.join(models, 'current.json'), JSON.stringify({ version: 'v3', confirmed: true }));
+  check('adapter: a complete version with its adapter -> that folder', r().dir === v3 && r().version === 'v3');
+  check('adapter: local.js resolves it beside the weights', local.reviseLora(v3, lspec) === path.join(v3, 'rev-lora.gguf'));
+  fs.writeFileSync(path.join(v3, 'rev-lora.gguf'), 'adapter, cut sh');
+  check('adapter: of the wrong size -> the bundled model', r().dir === bundled);
+  fs.rmSync(path.join(v3, 'rev-lora.gguf'));
+  check('adapter: missing from the folder -> the bundled model', r().dir === bundled);
+  const v4 = versionDir(models, 'v4', { 'm.gguf': files['m.gguf'], 'p.gguf': files['p.gguf'] }, lspec);
+  fs.writeFileSync(path.join(models, 'current.json'), JSON.stringify({ version: 'v4', confirmed: true }));
+  check('adapter: model.json naming an adapter the manifest does not list -> the bundled model', r().dir === bundled && fs.existsSync(v4));
+  check('no adapter: model.json without revise_lora -> none', local.reviseLora(v1, spec) === null && local.reviseLora(v1, { ...spec, revise: true }) === null);
+  check('no adapter: a model without revise ignores revise_lora', local.reviseLora(v3, { ...lspec, revise: false }) === null);
 }
 
 section('manifest rules');
@@ -88,6 +105,12 @@ section('manifest rules');
   check('a version with a path is refused', checkManifest({ ...good, version: '../x' }) !== null);
   check('model_json naming a missing file is refused', checkManifest({ ...good, model_json: { model: 'a.gguf', mmproj: 'c.gguf' } }) !== null);
   check('a short sha256 is refused', checkManifest({ ...good, files: [{ ...good.files[0], sha256: 'abc' }, good.files[1]] }) !== null);
+  const lora = { ...good, files: [...good.files, { name: 'c.gguf', size: 3, sha256: 'c'.repeat(64) }], model_json: { ...good.model_json, revise: true, revise_lora: 'c.gguf' } };
+  check('adapter: a third file named by model_json.revise_lora', checkManifest(lora) === null);
+  check('adapter: revise_lora naming a file not listed is refused', checkManifest({ ...lora, files: good.files }) !== null);
+  check('adapter: revise_lora naming the model itself is refused', checkManifest({ ...lora, model_json: { ...lora.model_json, revise_lora: 'a.gguf' } }) !== null);
+  check('adapter: revise_lora that is not a file name is refused', checkManifest({ ...lora, model_json: { ...lora.model_json, revise_lora: 7 } }) !== null);
+  check('no adapter: revise_lora null is the same as none', checkManifest({ ...good, model_json: { ...good.model_json, revise_lora: null } }) === null);
   check('older(0.1.0, 0.2.0) / not older(0.1.0, 0.1.0) / not older(0.10.0, 0.9.9)', older('0.1.0', '0.2.0') && !older('0.1.0', '0.1.0') && !older('0.10.0', '0.9.9'));
   check('labelOf(typd-dictate-1.7b-r24_1p7b-q4_k_m.gguf) = r24_1p7b', labelOf('typd-dictate-1.7b-r24_1p7b-q4_k_m.gguf') === 'r24_1p7b');
 }
@@ -421,7 +444,88 @@ async function updaterTests() {
     check('2 MiB at 4 MiB/s takes about half a second, not less', r.state === 'current' && ms >= 400, { ms, r });
   }
 
+  await adapterTests(s, make, modelsDir, bundledDir, current, () => switches, (v) => { switches = v; });
+
   s.server.close();
+}
+
+/* --------------------------------------------- a version with a revise adapter */
+
+/** Publish `files` (model, mmproj, adapter, in that order) with model_json naming the adapter. */
+function publishLora(s, version, files, extra = {}) {
+  publish(s, version, files, extra);
+  const names = Object.keys(files);
+  s.manifest.model_json = { ...s.manifest.model_json, revise_lora: names[2] };
+}
+
+async function adapterTests(s, make, modelsDir, bundledDir, current, switches, setSwitches) {
+  section('a version with a revise adapter: downloaded, verified and kept like the weights');
+  const lora = crypto.randomBytes(700000);
+  const files = (v) => ({ ['typd-' + v + '.gguf']: crypto.randomBytes(600000), 'mmproj-c.gguf': s.files['v9/mmproj-c.gguf'], 'rev-a.gguf': lora });
+  {
+    const u = make();
+    const before = current().version;
+    publishLora(s, 'v10', files('v10'));
+    s.corrupt['rev-a.gguf'] = true;
+    setSwitches([]);
+    let r = await u.check();
+    check('corrupt adapter: caught by sha256, deleted, still on the old model, nothing switched',
+      r.state === 'retry' && /rev-a\.gguf failed verification/.test(r.why) && !fs.existsSync(path.join(modelsDir, 'v10.partial', 'rev-a.gguf')) &&
+      current().version === before && switches().length === 0, { r, cur: current() });
+    delete s.corrupt['rev-a.gguf'];
+    delete s.files['v10/rev-a.gguf'];
+    s.requests = [];
+    r = await u.check();
+    check('adapter missing on the server: the download fails and is retried later, nothing switched',
+      r.state === 'retry' && /rev-a\.gguf: HTTP 404/.test(r.why) && current().version === before && switches().length === 0, r);
+    s.files['v10/rev-a.gguf'] = lora;
+    r = await u.check();
+    const dir = path.join(modelsDir, 'v10');
+    const spec = readJson(path.join(dir, 'model.json'));
+    check('then downloaded, verified and switched', r.state === 'current' && current().version === 'v10' && switches().join() === 'v10', r);
+    check('the adapter is kept with the version, byte for byte', sha(fs.readFileSync(path.join(dir, 'rev-a.gguf'))) === sha(lora) &&
+      readJson(path.join(dir, 'manifest.json')).files.length === 3);
+    check('model.json names it, and local.js would load it', spec.revise_lora === 'rev-a.gguf' &&
+      local.resolveModel({ env: {}, modelsDir, bundled: bundledDir }).dir === dir && local.reviseLora(dir, spec) === path.join(dir, 'rev-a.gguf'));
+  }
+  {
+    const u = make();
+    publishLora(s, 'v11', files('v11'));
+    s.requests = [];
+    const r = await u.check();
+    check('the same adapter in the next version: copied from this one (same sha256), never requested',
+      r.state === 'current' && current().version === 'v11' && fileRequests(s, 'rev-a.gguf').length === 0 && fileRequests(s, 'typd-v11.gguf').length === 1, r);
+  }
+  {
+    const u = make();
+    publish(s, 'v12', { 'typd-v12.gguf': crypto.randomBytes(500000), 'mmproj-c.gguf': s.files['v9/mmproj-c.gguf'] });
+    const r = await u.check();
+    const dir = path.join(modelsDir, 'v12');
+    const spec = readJson(path.join(dir, 'model.json'));
+    check('a version without an adapter: two files, no revise_lora, local.js loads none',
+      r.state === 'current' && current().version === 'v12' && fs.readdirSync(dir).sort().join() === 'manifest.json,mmproj-c.gguf,model.json,typd-v12.gguf' &&
+      !('revise_lora' in spec) && local.reviseLora(dir, spec) === null, { r, files: fs.readdirSync(dir) });
+  }
+  {
+    // The bundled weights, now with an adapter the bundled model.json does not name: not "the
+    // bundled model" -- running it would leave the adapter off. Every file is on disk already.
+    const oldModel = fs.readFileSync(path.join(bundledDir, 'old.gguf')), oldProj = fs.readFileSync(path.join(bundledDir, 'old-mmproj.gguf'));
+    fs.writeFileSync(path.join(bundledDir, 'rev-a.gguf'), lora);
+    s.manifest = {
+      version: 'r-old-lora', min_app: '0.1.0', notes: '',
+      files: [{ name: 'old.gguf', size: oldModel.length, sha256: sha(oldModel) }, { name: 'old-mmproj.gguf', size: oldProj.length, sha256: sha(oldProj) },
+        { name: 'rev-a.gguf', size: lora.length, sha256: sha(lora) }],
+      model_json: { model: 'old.gguf', mmproj: 'old-mmproj.gguf', revise: true, revise_lora: 'rev-a.gguf' }
+    };
+    s.requests = [];
+    setSwitches([]);
+    const u = make();
+    const r = await u.check();
+    check('bundled weights + an adapter the bundled model.json lacks: installed as a version from local copies, no download',
+      r.state === 'current' && current().version === 'r-old-lora' && fileRequests(s).length === 0 && switches().join() === 'r-old-lora' &&
+      readJson(path.join(modelsDir, 'r-old-lora', 'model.json')).revise_lora === 'rev-a.gguf', { r, cur: current(), n: fileRequests(s).length });
+    fs.rmSync(path.join(bundledDir, 'rev-a.gguf'));
+  }
 }
 
 function finish() {
