@@ -181,7 +181,9 @@ async function* run(opts = {}) {
     yield { type: 'expect', chars: core.length };
 
     let text = '';
-    for await (const partial of local.dictate(audio.samples, audio.sampleRate, signal, local.revisePrompt(core))) {
+    // local.revise, not local.dictate with the revise prompt: it is what switches the model's
+    // revise adapter on for this one request (model.json "revise_lora").
+    for await (const partial of local.revise(audio.samples, audio.sampleRate, signal, core)) {
       if (signal && signal.aborted) return;
       text = partial;
       yield { type: 'partial', text };

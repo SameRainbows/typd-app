@@ -40,7 +40,7 @@ function root() {
  * checkout. Packaged: outside app.asar, in the app's resources folder, because a native
  * process cannot be spawned from inside the archive and llama-server cannot read weights
  * through it (package.json build.extraResources puts them there):
- *   <resources>/models/typd-dictate/   model.json + the two GGUF files it names
+ *   <resources>/models/typd-dictate/   model.json + the GGUF files it names (two, or three with a revise adapter)
  *   <resources>/llama/                 llama-server(.exe) and its libraries
  * macOS has one llama.cpp build per architecture (scripts/fetch-llama-mac.js): Metal on
  * Apple Silicon, CPU only on Intel.
@@ -98,6 +98,10 @@ function resolveModel({ env = process.env, modelsDir = USER_MODELS, bundled = BU
  * revise  -- it applies a spoken instruction to highlighted text by itself.
  * stream  -- it was trained on audio in pause-split pieces, so the pieces can be
  *            sent while the user is still talking (see openStream).
+ * revise_lora -- optional, with revise: a LoRA adapter file in the same folder that is switched
+ *            on for revise requests only (dictation runs the base model, unchanged). See launch()
+ *            and body(). A missing file, or one the server cannot load, means revise runs on the
+ *            base model, as it does without the field.
  * A model without a flag is never sent that prompt: an untrained prompt is noise.
  */
 function readSpec(dir) {
@@ -109,14 +113,20 @@ function readSpec(dir) {
   }
 }
 
+/** The revise adapter model.json names, as a path, or null (none named, or the model does not revise). */
+function reviseLora(dir, spec) {
+  return spec.revise && typeof spec.revise_lora === 'string' && spec.revise_lora ? path.join(dir, spec.revise_lora) : null;
+}
+
 // The model in use. Set at load, and again by switchModel() when a model update lands.
-let MODEL_DIR, VERSION, SPEC, MODEL, MMPROJ, PREFILL;
+let MODEL_DIR, VERSION, SPEC, MODEL, MMPROJ, LORA, PREFILL;
 function load(m = resolveModel()) {
   MODEL_DIR = m.dir;
   VERSION = m.version;
   SPEC = readSpec(MODEL_DIR);
   MODEL = path.join(MODEL_DIR, SPEC.model);
   MMPROJ = path.join(MODEL_DIR, SPEC.mmproj);
+  LORA = reviseLora(MODEL_DIR, SPEC);
   // The fine-tuning prompt, exactly: an empty system turn, the audio, and the
   // assistant turn opened with the language tag. Anything else is a prompt the
   // model never saw in training.
@@ -156,6 +166,18 @@ let startError = null;
 let stopping = null;      // a switch is taking the old server down; warm() waits for it
 const warmListeners = [];
 
+/*
+ * The revise adapter (model.json "revise_lora") the running server has loaded: {file, id}, or
+ * null. llama-server loads it at start, switched off (--lora-init-without-apply), and body() names
+ * its scale in every request: 1 for a revise, 0 for everything else, so dictation, the self-test,
+ * the ping and the primed pieces run the base model, bit for bit. Measured on llama.cpp 631109b34
+ * (dictation-research LOG.md, 2026-10-15): with an adapter loaded, a request without the field
+ * runs at whatever scale earlier requests left, so none may leave it out; a change of scale drops
+ * the prompt cache (a revise's prompt is new anyway). --lora-scaled is not used: it cannot parse
+ * an absolute Windows path.
+ */
+let adapter = null;
+
 function debug(...args) {
   if (process.env.TYPD_DEBUG) console.log('[typd:local]', ...args);
 }
@@ -168,6 +190,28 @@ function health() {
     });
     req.on('error', () => resolve(false));
     req.on('timeout', () => { req.destroy(); resolve(false); });
+  });
+}
+
+/**
+ * Has the server on PORT -- one this run did not start -- loaded the adapter `file`? {file, id},
+ * or null: it may have been started without it (the adapter would not load), or by an eval tool.
+ */
+function loadedAdapter(file) {
+  return new Promise((resolve) => {
+    const req = http.get({ host: '127.0.0.1', port: PORT, path: '/lora-adapters', timeout: 2000, agent: false }, (res) => {
+      let text = '';
+      res.setEncoding('utf8');
+      res.on('data', (c) => { text += c; });
+      res.on('end', () => {
+        let list = null;
+        try { list = JSON.parse(text); } catch { /* not a list: none */ }
+        const hit = Array.isArray(list) && list.find((a) => a && Number.isInteger(a.id) && path.basename(String(a.path)) === path.basename(file));
+        resolve(hit ? { file, id: hit.id } : null);
+      });
+    });
+    req.on('error', () => resolve(null));
+    req.on('timeout', () => { req.destroy(); resolve(null); });
   });
 }
 
@@ -269,7 +313,8 @@ function launch(layers) {
     // The built-in warm-up reserves ~550 MB for a 30 s audio window that a dictation never
     // needs at once; the self-test (or the silent request) warms it instead (1.76 -> 1.35 GB).
     '--no-warmup',
-    '--no-webui'
+    '--no-webui',
+    ...(adapter ? ['--lora', adapter.file, '--lora-init-without-apply'] : [])
   ], { windowsHide: true, stdio: ['ignore', 'ignore', process.env.TYPD_DEBUG ? 'inherit' : 'ignore'] });
   child.on('exit', (code) => {
     debug('server exited', code);
@@ -293,6 +338,14 @@ async function serve(layers) {
   proc = launch(layers);
   const t0 = Date.now();
   while (Date.now() - t0 < 120000) {
+    if (!proc && adapter) {
+      // An adapter the server cannot load (corrupt, cut short, made for another model, no memory
+      // left for it) takes the whole server down. Revise works without it, on the base model.
+      debug('server died while loading with the revise adapter', path.basename(adapter.file) + '; starting without it (revise runs on the base model)');
+      adapter = null;
+      proc = launch(layers);
+      continue;
+    }
     if (!proc && cpuRetry && String(layers) !== '0') {
       debug('server died while loading on the GPU; retrying on the CPU');
       layers = '0';
@@ -322,7 +375,7 @@ async function ended(child) {
   for (let i = 0; i < 40 && (await health()); i++) await new Promise((r) => setTimeout(r, 100));
 }
 
-/** The fixture through the server just started: {ok, text}. */
+/** The fixture through the server just started: {ok, text}. A dictation, so the revise adapter is off. */
 async function selfTest() {
   const wav = fs.readFileSync(FIXTURE).toString('base64');
   const ctrl = new AbortController();
@@ -349,17 +402,22 @@ function warm() {
   const loaded = { dir: MODEL_DIR, version: VERSION };
   const run = (async () => {
     startError = null;
+    adapter = null;
     if (stopping) await stopping;
     for (const [what, file] of [['model', MODEL], ['audio projector', MMPROJ], ['llama-server', SERVER]]) {
       if (!fs.existsSync(file)) throw new Error(`Dictation ${what} missing at ${file}`);
     }
+    const lora = LORA && fs.existsSync(LORA) ? LORA : null;
+    if (LORA && !lora) debug('revise adapter missing at', LORA, '- revise runs on the base model');
 
     // A server left behind by a crashed run would hold the port; reuse it
     // rather than fail, since it is serving the same files.
     if (await health()) {
-      debug('reusing server on', PORT, '(left by an earlier run; not self-tested)');
+      if (lora) adapter = await loadedAdapter(lora);
+      debug('reusing server on', PORT, '(left by an earlier run; not self-tested)' + (adapter ? ' with the revise adapter' : ''));
       return;
     }
+    adapter = lora ? { file: lora, id: 0 } : null;
 
     const explicit = process.env.TYPD_GPU_LAYERS;
     const memo = explicit ? null : gpuMemory.get(modelId());
@@ -658,8 +716,12 @@ function ping(system = '') {
   if (!starting) nudge(system);   // a server that is not up just refuses the connection
 }
 
-/** The request body for audio in one or more pieces (base64 WAVs, in order). */
-function body(parts, system, extra) {
+/**
+ * The request body for audio in one or more pieces (base64 WAVs, in order). Every request
+ * goes through here. With a revise adapter loaded it names the adapter's scale: on only when
+ * `asRevise` (see `adapter`); without one the body is what it always was.
+ */
+function body(parts, system, extra, asRevise = false) {
   return JSON.stringify({
     messages: [
       { role: 'system', content: system || '' },
@@ -668,18 +730,19 @@ function body(parts, system, extra) {
     ],
     temperature: 0,
     cache_prompt: true,
+    ...(adapter ? { lora: [{ id: adapter.id, scale: asRevise ? 1 : 0 }] } : {}),
     ...extra
   });
 }
 
-async function* dictateParts(parts, signal, system = '', maxTokens = 1024) {
+async function* dictateParts(parts, signal, system = '', maxTokens = 1024, asRevise = false) {
   await warm();
-  yield* ask(parts, signal, system, maxTokens);
+  yield* ask(parts, signal, system, maxTokens, asRevise);
 }
 
 /** The request itself, to a server already up (the self-test calls it from inside warm()). */
-async function* ask(parts, signal, system = '', maxTokens = 1024) {
-  const payload = body(parts, system, { stream: true, max_tokens: maxTokens });
+async function* ask(parts, signal, system = '', maxTokens = 1024, asRevise = false) {
+  const payload = body(parts, system, { stream: true, max_tokens: maxTokens }, asRevise);
 
   const queue = [];
   let done = false;
@@ -879,6 +942,17 @@ function prime(parts, system, signal) {
   });
 }
 
+/**
+ * Revise `span` by the spoken instruction in `samples`: the replacement text, streamed
+ * (cumulative) like dictate(). The one request that runs with the revise adapter on. The
+ * instruction is short (pipeline/index.js sends anything past 20 s as dictation), so it goes
+ * in one piece, and like the training it has no output cap: a short instruction can rewrite a
+ * long span.
+ */
+async function* revise(samples, sampleRate, signal, span) {
+  yield* dictateParts([toWav(samples, sampleRate).toString('base64')], signal, revisePrompt(span), 1024, true);
+}
+
 /** The whole text at once -- for revise mode, where the words are an instruction. */
 async function transcribe(samples, sampleRate, signal, system = '') {
   let text = '';
@@ -887,13 +961,15 @@ async function transcribe(samples, sampleRate, signal, system = '') {
 }
 
 module.exports = {
-  warm, stop, ping, dictate, transcribe, openStream, dictationBudget, loopCut, splitLong, readSeam, joinPieces, contextPrompt, revisePrompt,
+  warm, stop, ping, dictate, revise, transcribe, openStream, dictationBudget, loopCut, splitLong, readSeam, joinPieces, contextPrompt, revisePrompt,
   canRevise: () => Boolean(SPEC.revise),
   usesContext: () => Boolean(SPEC.context),
   streams: () => Boolean(SPEC.stream),
-  switchModel, onWarm, resolveModel, selfTestPasses, bringUp,
+  switchModel, onWarm, resolveModel, selfTestPasses, bringUp, reviseLora,
   get MODEL() { return MODEL; },
   get MODEL_DIR() { return MODEL_DIR; },
   get VERSION() { return VERSION; },
+  /** The revise adapter the running server has loaded (a path), or null. */
+  get REVISE_ADAPTER() { return adapter ? adapter.file : null; },
   BUNDLED_DIR, PORT, FIXTURE
 };
