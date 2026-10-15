@@ -6,7 +6,7 @@ const {
 } = require('electron');
 
 const { createOverlayWindow, positionOverlay, showOverlay } = require('./overlay-window');
-const { registerHotkeys } = require('./hotkeys');
+const { registerHotkeys, registerFlagHotkey } = require('./hotkeys');
 const hotkeyLogic = require('./hotkey-logic');
 const settings = require('./settings');
 const home = require('./home-window');
@@ -18,7 +18,8 @@ const pipeline = require('./pipeline');
 const inject = require('./inject');
 const learn = require('./learn');
 const dictionary = require('./dictionary');
-const collect = require('./collect');   // tester builds only; inert without tester.json
+const sharing = require('./sharing');   // only with consent: the public beta's choice, or a tester build's key
+const ask = require('./ask-window');    // sharing's two questions: consent, and "That was wrong"
 const modelUpdate = require('./modelUpdate');   // tester builds and the developer's machines; inert without a key
 
 const MAC = process.platform === 'darwin';
@@ -117,6 +118,7 @@ const AUDIO_TIMEOUT_MS = 4000;
 let overlay = null;
 let tray = null;
 let hotkeys = null;
+let flagKey = null;         // "That was wrong" (registerFlagHotkey); null when sharing is not in this build
 let session = null;
 let firstRunNote = false;   // the pill says "Ready — tap … and talk" once, on the very first launch
 
@@ -351,10 +353,11 @@ async function endSession() {
         keepHistory(current, event.text, 'pasted');
         send('session:done', { text: event.text, target: appLabel(current.target) });
         learn.watch(event.text, current.target && current.target.process, inject.focusContext, learned);
-        // Tester builds only (a tester.json is present, see collect.js): queue this audio and
-        // text for upload to the developer, with the tester's consent. Only after the paste
-        // has landed, never awaited, and it never reads the screen context or the span.
-        collect.add(current, event.text);
+        // Kept in memory as the last dictation (for "That was wrong"), and queued for the
+        // developer only if this person chose to share, or this is a tester build (sharing.js).
+        // Only after the paste has landed, never awaited, and never the screen context or span.
+        sharing.add(current, event.text);
+        refreshTray();
         continue;
       }
 
@@ -415,7 +418,13 @@ const trayUi = createTray({
   copy: (text) => inject.copy(text),
   statusAction,
   forget: (term) => forget(term),
-  modelLine: () => modelUpdate.line()
+  modelLine: () => modelUpdate.line(),
+  flag: () => openFlag(),
+  canFlag: () => {
+    const s = sharing.get();
+    return s ? (s.lastInfo() ? 'ready' : 'none') : null;
+  },
+  flagKey: () => (flagKey && flagKey.binding) || null
 });
 
 const refreshTray = () => trayUi.refresh();
@@ -439,6 +448,37 @@ function forget(term) {
   trayUi.forgotten(term);
   home.changed('dictionary');
 }
+
+/* ------------------------------------------------------------- sharing */
+
+/**
+ * "That was wrong" (the tray item, or the flag shortcut): opens the small window on the last
+ * dictation. Never while a dictation is running -- the flag is for the one that landed.
+ */
+function openFlag() {
+  const s = sharing.get();
+  if (!s || session) return;
+  if (!s.lastInfo()) { note('Nothing to flag yet'); return; }
+  ask.open('flag');
+}
+
+/** The consent screen answered (or Settings switched sharing off). */
+async function chooseSharing(share) {
+  const s = sharing.get();
+  if (!s) return { ok: false };
+  const r = await s.choose(share ? 'on' : 'off');
+  home.changed('sharing');
+  return r;
+}
+
+ask.register({
+  sharing: () => sharing.get(),
+  choice: () => settings.get('share'),
+  choose: chooseSharing,
+  flagged: (r) => {
+    if (r.state === 'flagged') note(r.how === 'shared' ? 'Shared to fix it — thank you' : 'Flagged — thank you');
+  }
+});
 
 /* ------------------------------------------------------------- model, mic */
 
@@ -579,8 +619,15 @@ app.whenReady().then(() => {
     status.set({ key: failed ? 'failed' : 'ok', keyWhy: failed ? hotkeys.reason : '' });
   };
 
+  // "That was wrong": a second, separate shortcut, only where sharing exists (hotkeys.js).
+  const bindFlag = () => {
+    if (flagKey) flagKey.close();
+    flagKey = sharing.get() ? registerFlagHotkey(settings.get('flagHotkey'), hotkeys.name, openFlag) : null;
+  };
+
   hotkeys = bindHotkeys(settings.get('hotkey'));
   keyFailed();
+  bindFlag();
 
   /**
    * Swap the live key. The old one is closed first (one hook, one shortcut); if the new
@@ -588,6 +635,9 @@ app.whenReady().then(() => {
    */
   const applyHotkey = (binding) => {
     if (session) return { ok: false, reason: 'Finish the dictation first.' };
+    if (flagKey && flagKey.binding && String(binding).toLowerCase() === flagKey.binding.toLowerCase()) {
+      return { ok: false, reason: flagKey.label + ' is Typd’s “That was wrong” shortcut. Pick another key.' };
+    }
     const previous = hotkeys.name;
     hotkeys.close();
     const next = bindHotkeys(binding);
@@ -599,6 +649,7 @@ app.whenReady().then(() => {
     }
     hotkeys = next;
     keyFailed();
+    bindFlag();
     refreshTray();
     return { ok: true };
   };
@@ -606,14 +657,21 @@ app.whenReady().then(() => {
   home.register({
     hotkey: () => (hotkeys ? hotkeys.name : settings.get('hotkey')),
     applyHotkey,
-    pauseHotkey: (on) => { if (hotkeys && hotkeys.pause) hotkeys.pause(on); },
+    // The key picker listening: the flag shortcut lets go too, so the page can see every key.
+    pauseHotkey: (on) => {
+      if (hotkeys && hotkeys.pause) hotkeys.pause(on);
+      if (on) { if (flagKey) flagKey.close(); } else bindFlag();
+    },
     hotkeyChanged: () => status.touch(),
     sideButtons: () => Boolean(buttons),
     model: () => ({ name: require('path').basename(require('./pipeline/local').MODEL).replace(/\.gguf$/i, '') }),
     copy: (text) => inject.copy(text),
     retryModel: warmModel,
     historyChanged: () => refreshTray(),
-    wordRemoved: (term) => trayUi.forgotten(term)
+    wordRemoved: (term) => trayUi.forgotten(term),
+    askConsent: () => ask.open('consent'),
+    chooseSharing,
+    flagKey: () => (flagKey && flagKey.binding) || null
   });
 
   settings.onChange((key) => {
@@ -633,6 +691,14 @@ app.whenReady().then(() => {
   }
 
   trayUi.build();
+
+  // The public beta's one question, on the first run (and until it is answered): what sharing
+  // means, and two equal buttons. Nothing is shared before "Share my dictations" is pressed.
+  // A tester build has no such screen -- its tester agreed in person (sharing.js).
+  {
+    const s = sharing.get();
+    if (s && s.needsConsent() && !stub && !preview) setTimeout(() => ask.open('consent'), 2500);
+  }
 
   // First run: start at login is on by default, so make it so -- the installed app's own
   // login entry, or the Startup shortcut when run from source.
@@ -790,6 +856,7 @@ app.whenReady().then(() => {
 
 app.on('will-quit', () => {
   if (hotkeys) hotkeys.close();
+  if (flagKey) flagKey.close();
   inject.stop();
   pipeline.stop();
 });

@@ -1,0 +1,102 @@
+/* The consent and "That was wrong" windows: the Typd window's materials (home.css) at a smaller
+   size. Monochrome, one danger red, hairlines; light or dark with the system. */
+:root {
+  --bg: #FBFBFC;
+  --card: #FFFFFF;
+  --line: rgba(16, 18, 23, 0.10);
+  --line-firm: rgba(16, 18, 23, 0.18);
+  --text: #14161B;
+  --dim: #5A6068;
+  --faint: #8A9099;
+  --chip: rgba(16, 18, 23, 0.06);
+  --ink: #16181D;
+  --ink-on: #FFFFFF;
+  --danger: #AF2C21;
+  --font-ui: "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+  --font-display: "Segoe UI Variable Display", "Segoe UI", -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #17191E;
+    --card: #1E2127;
+    --line: rgba(255, 255, 255, 0.08);
+    --line-firm: rgba(255, 255, 255, 0.15);
+    --text: #E6E8EC;
+    --dim: #9AA0A9;
+    --faint: #6F757E;
+    --chip: rgba(255, 255, 255, 0.07);
+    --ink: #E6E8EC;
+    --ink-on: #14161B;
+    --danger: #E0675C;
+  }
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--bg); color: var(--text);
+  font: 13.5px/1.5 var(--font-ui);
+  -webkit-font-smoothing: antialiased;
+  padding: 26px 30px 24px;
+}
+button, input { font: inherit; color: inherit; }
+[hidden] { display: none !important; }
+p { margin: 0; }
+
+h1 { margin: 0 0 8px; font: 600 20px/1.25 var(--font-display); letter-spacing: -0.01em; }
+h2 { margin: 0 0 2px; font: 600 13px/1.35 var(--font-ui); }
+.lede { color: var(--dim); margin-bottom: 16px; }
+.dim { color: var(--dim); }
+.small { font-size: 12px; }
+.error { color: var(--danger); font-size: 12.5px; margin-top: 10px; }
+
+/* consent */
+.facts { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; margin-bottom: 14px;
+  background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
+.facts p { color: var(--dim); }
+.notes { display: flex; flex-direction: column; gap: 4px; margin-bottom: 18px; font-size: 12.5px; }
+.notes .minor { font-weight: 600; color: var(--text); }
+.choices { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+/* Two equal buttons: the same size, weight and colour. Neither is the "default". */
+.choice {
+  min-height: 52px; padding: 8px 12px; border-radius: 10px;
+  border: 1px solid var(--line-firm); background: var(--card);
+  font-size: 13px; font-weight: 600; line-height: 1.3; cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.choice:hover { background: var(--chip); border-color: var(--ink); }
+.choice:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.choice:disabled { opacity: 0.5; cursor: default; }
+.foot { margin-top: 12px; text-align: center; font-size: 12px; color: var(--faint); }
+
+/* flag */
+.said {
+  margin: 0 0 14px; padding: 10px 12px; border-left: 2px solid var(--line-firm);
+  background: var(--card); border-radius: 0 8px 8px 0; color: var(--dim);
+  max-height: 84px; overflow: hidden; white-space: pre-wrap; word-wrap: break-word;
+}
+label { display: block; font-weight: 600; margin-bottom: 6px; }
+label .dim { font-weight: 400; }
+input[type="text"] {
+  width: 100%; height: 34px; padding: 0 12px; border-radius: 8px;
+  border: 1px solid var(--line-firm); background: var(--card); outline: none;
+}
+input[type="text"]:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
+.ask { margin-top: 14px; display: flex; flex-direction: column; gap: 4px; }
+.ask strong { font-weight: 600; }
+.actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; }
+.btn {
+  height: 30px; padding: 0 14px; border-radius: 7px;
+  border: 1px solid var(--line-firm); background: var(--card);
+  font-size: 12.5px; font-weight: 500; cursor: pointer; white-space: nowrap;
+}
+.btn:hover { background: var(--chip); }
+.btn.solid { background: var(--ink); color: var(--ink-on); border-color: var(--ink); }
+.btn.solid:hover { opacity: 0.88; }
+.btn.ghost { background: transparent; }
+.btn:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
+.btn:disabled { opacity: 0.5; cursor: default; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}

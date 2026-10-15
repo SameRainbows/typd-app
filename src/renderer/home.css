@@ -276,6 +276,13 @@ select option { background: var(--card); color: var(--text); }
 .label .text { margin-top: 6px; }
 .label .error { color: var(--danger); }
 .share { margin-top: 8px !important; display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; color: var(--text) !important; }
+.label .minor { font-size: 12px; }
+.label .links { margin-top: 6px; display: flex; gap: 16px; flex-wrap: wrap; }
+.label .links .text { margin-top: 0; }
+.label .flag-line { margin-top: 8px; line-height: 26px; }
+.label .flag-line .keys { margin: 0 2px; vertical-align: baseline; }
+.label .id-line { font-size: 11.5px; color: var(--faint); font-variant-numeric: tabular-nums; }
+#betaConfirm { margin-top: 8px; }
 .mic { display: flex; flex-direction: column; gap: 8px; }
 .mic select { width: 100%; height: 30px; }
 .meter { height: 4px; border-radius: 2px; background: var(--chip); overflow: hidden; }

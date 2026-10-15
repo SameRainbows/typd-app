@@ -126,7 +126,7 @@ the targets: with `--arm64` alone, electron-builder still builds every arch list
   stay in a private repository.
 - **Tester build.** Set `TYPD_TESTER_CONFIG` to a tester's `tester.json` and build. The file is
   copied to `Contents/Resources/tester.json` before signing, which turns on
-  `src/main/collect.js`. Without the variable, the build contains no `tester.json`.
+  tester sharing (`src/main/sharing.js`). Without the variable, the build contains no `tester.json`.
   ```bash
   TYPD_TESTER_CONFIG=~/tester.<name>.json npx electron-builder --mac dmg --arm64 \
     -c.directories.output=dist/tester '-c.mac.artifactName=${productName}-${version}-mac-${arch}-tester.${ext}'

@@ -9,7 +9,7 @@
     "start": "electron .",
     "dev": "electron . --dev",
     "stub": "electron . --stub",
-    "bench": "node bench/wiring.js && node bench/hotkeys.js && node bench/home.js && node bench/revise.js && node bench/formatting.js && node bench/learn.js && node bench/updates.js",
+    "bench": "node bench/wiring.js && node bench/hotkeys.js && node bench/home.js && node bench/revise.js && node bench/formatting.js && node bench/learn.js && node bench/updates.js && node bench/sharing.js",
     "bench:revise": "node bench/revise.js",
     "bench:format": "node bench/formatting.js",
     "bench:selection": "node bench/selection.js 90 --copy",
@@ -18,6 +18,7 @@
     "bench:hotkeys": "node bench/hotkeys.js",
     "bench:home": "node bench/home.js",
     "bench:updates": "node bench/updates.js",
+    "bench:sharing": "node bench/sharing.js",
     "fetch:llama-mac": "node scripts/fetch-llama-mac.js",
     "smoke": "node scripts/smoke-llama.js",
     "dist:win": "electron-builder --win --x64",
@@ -130,7 +131,7 @@
       "artifactName": "${productName}-${version}-mac-${arch}.${ext}",
       "extendInfo": {
         "LSUIElement": true,
-        "NSMicrophoneUsageDescription": "Typd listens only while you are dictating, after you press its key. Your voice is turned into text on this Mac and never leaves it.",
+        "NSMicrophoneUsageDescription": "Typd listens only while you are dictating, after you press its key. Your voice is turned into text on this Mac, and leaves it only if you choose to share your dictations.",
         "NSAppleEventsUsageDescription": "Typd pastes the text you dictated into the app you were typing in, and reads the text you highlighted when you ask it to change it."
       },
       "extraResources": [

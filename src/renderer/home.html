@@ -186,13 +186,38 @@
             <h2 id="recTitle">Keep recordings</h2>
             <p id="recInfo">Saved on this PC to make the model better at your voice.</p>
             <button class="text" type="button" id="openRec">Open folder</button>
-            <!-- Tester builds only (collect.js): the sharing line and its pause, inside this row. -->
+            <!-- Tester builds only (sharing.js): the sharing line and its pause, inside this row. -->
             <p class="share" id="shareLine" hidden>
               <span id="shareText"></span>
               <button class="text" type="button" id="sharePause"></button>
             </p>
           </div>
           <label class="switch"><input type="checkbox" id="keepRecordings" aria-labelledby="recTitle" /><span></span></label>
+        </div>
+
+        <!-- The public beta (sharing.js): off until the person picks share on the consent screen.
+             Turning it on opens that screen again; off is immediate. -->
+        <div class="row" id="betaRow" hidden>
+          <div class="label">
+            <h2 id="betaTitle">Share dictations</h2>
+            <p id="betaHelp">Off: everything stays on this PC.</p>
+            <p class="minor" id="betaMinor">Under 18? Ask a parent before you share.</p>
+            <p class="links">
+              <button class="text" type="button" id="betaAbout">What’s shared</button>
+              <button class="text danger" type="button" id="betaDelete" hidden>Delete what I’ve shared…</button>
+            </p>
+            <p class="flag-line" id="betaFlag" hidden></p>
+            <p class="id-line" id="betaId" hidden></p>
+          </div>
+          <label class="switch"><input type="checkbox" id="betaShare" aria-labelledby="betaTitle" /><span></span></label>
+        </div>
+      </div>
+
+      <div class="confirm" id="betaConfirm" hidden>
+        <p id="betaConfirmText">Delete every dictation this PC has shared, on the server and still waiting here, and turn sharing off?</p>
+        <div class="confirm-actions">
+          <button class="btn danger" type="button" id="betaConfirmYes">Delete</button>
+          <button class="btn ghost" type="button" id="betaConfirmNo">Cancel</button>
         </div>
       </div>
 

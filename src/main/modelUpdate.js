@@ -4,11 +4,12 @@
  * Model updates, for tester builds and the developer's own machines: follow the dictation model
  * the developer publishes, without ever making a dictation wait for it.
  *
- * Inert unless a key is present -- the same principle as collect.js: an ordinary build never
- * contacts the server. The key comes from, in order:
+ * Inert unless a key is present -- an ordinary build never contacts the server for a model. (The
+ * public beta's install key, sharing.js, is not one: it can upload dictations and flags, nothing
+ * else.) The key comes from, in order:
  *   <userData>/model-updates.json   {endpoint, key}: the developer's own machines (a READER_ key
  *                                   from typd-collect/keys.mjs; it can read the model, nothing else)
- *   <resources>/tester.json         tester builds (the file collect.js reads; development:
+ *   <resources>/tester.json         tester builds (the file sharing.js reads; development:
  *                                   the repo's tester.json, only with TYPD_TESTER_DEV=1)
  * TYPD_MODEL_DIR (eval tools, a fixed model folder) turns it off.
  *

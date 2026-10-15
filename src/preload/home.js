@@ -35,6 +35,12 @@ contextBridge.exposeInMainWorld('typdHome', {
     openRecordings: call('settings:open-recordings')
   },
 
+  sharing: {
+    set: call('sharing:set'),
+    remove: call('sharing:delete'),
+    about: call('sharing:about')
+  },
+
   hotkey: {
     pause: call('hotkey:pause'),
     set: call('hotkey:set'),

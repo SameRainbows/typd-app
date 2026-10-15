@@ -180,5 +180,29 @@ check('keycaps for a chord', same(logic.parts('Ctrl+Shift+Space', 'win32'), ['Ct
 check('keycaps on a Mac', same(logic.parts('Command+Shift+Space', 'darwin'), ['⇧', '⌘', 'Space']));
 check('verb: tap a key, press a chord', logic.verb('RightAlt', 'win32') === 'tap' && logic.verb('Ctrl+Shift+D', 'win32') === 'press');
 
+section('the "That was wrong" shortcut (flags the last dictation; sharing.js)');
+for (const p of ['win32', 'darwin']) {
+  const flag = logic.flagDefaultFor(p);
+  const v = logic.validate(flag, p);
+  check(`${p}: ${flag} is a combination Typd accepts`, v.ok && v.kind === 'chord' && logic.validFlag(flag, p) === v.binding, v);
+  check(`${p}: never the dictation key or the suggested combination`,
+    v.binding !== logic.defaultFor(p) && v.binding !== logic.validate(p === 'darwin' ? 'Command+Shift+Space' : 'Ctrl+Shift+Space', p).binding);
+  const acc = logic.parseAccelerator(flag, p);
+  check(`${p}: no Ctrl+Alt (AltGr), no Win or Command key (Finder's Empty Trash is Shift+Command+Delete)`, !(acc.mods.ctrl && acc.mods.alt) && !acc.mods.cmd);
+}
+check("a single key is never the flag (the native hook is dictation's)",
+  logic.validFlag('RightAlt', 'win32') === null && logic.validFlag('F13', 'win32') === null && logic.validFlag('RightMeta', 'darwin') === null);
+check('Ctrl+Alt+Backspace is refused as the flag too', logic.validFlag('Ctrl+Alt+Backspace', 'win32') === null);
+check('another combination can be chosen', logic.validFlag('Ctrl+Shift+F9', 'win32') === 'Ctrl+Shift+F9');
+{
+  // Pressed with Right Alt as its Alt: Right Alt held with Shift and Backspace is a chord, never
+  // a tap, so the flag cannot also start a dictation.
+  const t = logic.createTrigger({ kind: 'modifier', isOpen: () => false });
+  t.down(0); t.other(); t.other();
+  check('Right Alt + Shift + Backspace does not toggle dictation', t.up(120) === null);
+  t.down(1000);
+  check('a clean Right Alt tap still does', t.up(1100) === 'toggle');
+}
+
 console.log('\n' + (failures ? failures + ' FAILED' : 'all hotkey checks passed') + '\n');
 process.exit(failures ? 1 : 0);
