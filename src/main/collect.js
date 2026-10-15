@@ -1,14 +1,11 @@
 'use strict';
 
 /**
- * Tester builds only: share finished dictations with the developer, with consent.
- *
- * Law 1 says your voice never leaves the machine, and in every ordinary build it does not:
- * this module is inert unless a tester.json sits beside the app's resources (packaged:
- * <resources>/tester.json; development: the repo root, git-ignored) holding
- * {tester, endpoint, key}. The few people who have one agreed, explicitly, to their recordings
- * and transcripts being used to develop and benchmark the model. Settings says so in one line,
- * and pausing there queues and sends nothing.
+ * The outbox and its uploader: finished dictations, queued on disk and sent one at a time to
+ * typd-collect. Electron-free, so plain Node drives it (bench/sharing.js, and typd-collect's
+ * e2e.mjs and recordings.test.mjs). WHETHER anything is queued or sent is decided by
+ * sharing.js -- the person's choice in the public beta, or a tester build's bundled key -- and
+ * this module only ever sends what that layer let in.
  *
  * One item is: the captured audio as a 16 kHz mono 16-bit WAV, the text Typd pasted, the mode,
  * the model file, the name of the app it went into, timestamps and durations, OS and app
@@ -21,6 +18,9 @@
  * to an outbox on disk, and one uploader sends one item at a time, deleting the local copy only
  * after the server answers 2xx. Failures back off exponentially; the outbox survives restarts,
  * sleep and being offline, and is capped at 2 GB, oldest dropped first.
+ *
+ * "That was wrong" (a flag) on an item still here rewrites its meta before it goes; on one
+ * already sent it queues a small <name>.flag record, sent to /v1/flag after the items.
  */
 
 const fs = require('fs');
@@ -35,26 +35,45 @@ const MAX_WAV = 15 * 1024 * 1024;          // the server refuses this size or la
 const BACKOFF_MIN_MS = 10e3;
 const BACKOFF_MAX_MS = 15 * 60e3;          // offline for a day still retries every quarter hour
 const UPLOAD_TIMEOUT_MS = 120e3;
-const START_DELAY_MS = 20e3;               // a restart resumes the outbox once launch has settled
 const SEND_REVISE_TEXT = false;
+const NOTE_MAX = 200;
+const NAME_RE = /^\d{8}T\d{6}Z-[0-9a-f]{16}$/;
 
 /** tester.json, checked; null (and the module stays inert) unless it is complete and sane. */
 function readConfig(file) {
   try {
     const c = JSON.parse(fs.readFileSync(file, 'utf8'));
     if (!c || !/^[a-z0-9_]{1,32}$/.test(c.tester) || typeof c.key !== 'string' || c.key.length < 16) return null;
-    const url = new URL(c.endpoint);
-    const local = url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname);
-    if (url.protocol !== 'https:' && !local) return null;
+    const endpoint = checkEndpoint(c.endpoint);
+    if (!endpoint) return null;
     return {
       tester: c.tester,
-      endpoint: url.href.replace(/\/+$/, ''),
+      endpoint,
       key: c.key,
       with: typeof c.with === 'string' && c.with.trim() ? c.with.trim().slice(0, 40) : 'the developer'
     };
   } catch {
     return null;
   }
+}
+
+/** https anywhere, or http on this machine only (tests, a local wrangler dev). Null otherwise. */
+function checkEndpoint(raw) {
+  try {
+    const url = new URL(raw);
+    const local = url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname);
+    if (url.protocol !== 'https:' && !local) return null;
+    return url.href.replace(/\/+$/, '');
+  } catch {
+    return null;
+  }
+}
+
+/** A flag's note: one line, no control characters, at most 200 characters. */
+function oneLine(s) {
+  return typeof s === 'string'
+    ? s.replace(/[\x00-\x1f\x7f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, NOTE_MAX)   // \s takes U+2028/2029 too
+    : '';
 }
 
 /** 2026-10-09T19:45:12.345Z -> 20261009T194512Z. The server builds the same stamp for its key. */
@@ -94,19 +113,34 @@ async function writeAtomic(file, data) {
 }
 
 /**
- * The outbox and its uploader. Electron-free so a plain Node script can drive it (the
- * end-to-end check in typd-collect does).
+ * The outbox and its uploader.
  *
- *   config   readConfig() result
- *   dir      the outbox folder; <name>.wav + <name>.json per item, <name> = <stamp>-<id>
- *   paused   () => boolean; while true nothing is queued and nothing is sent
+ *   config     {endpoint, key, tester?} -- or a function returning it, or null while there is
+ *              no key yet (the public beta before enrollment)
+ *   ensureKey  async () => config: called when config is null and there is something to send
+ *              (enrolls). Throwing backs off, honouring err.retryAfter (seconds)
+ *   dir        the outbox folder; <name>.wav + <name>.json per item, <name> = <stamp>-<id>;
+ *              <name>.flag for a flag on an item already sent
+ *   paused     () => boolean; while true nothing is queued and nothing is sent -- except an
+ *              item the person shared on its own (consent 'flag'), which is the point of it
+ *   on401      () => boolean; the key was refused: true stops sharing (the default), false
+ *              backs off and tries again (a key only just made may not have reached every
+ *              data centre yet)
+ *   onSent     (name) => void, after the server accepted an item
  */
-function createCollector({ config, dir, paused = () => false, log = () => {}, about = {}, fetch = globalThis.fetch, cap = OUTBOX_CAP }) {
+function createCollector({
+  config, ensureKey = null, dir, paused = () => false, log = () => {}, about = {},
+  fetch = globalThis.fetch, cap = OUTBOX_CAP, on401 = () => true, onSent = () => {}
+}) {
   const rejectedDir = path.join(dir, 'rejected');
+  const configNow = typeof config === 'function' ? config : () => config;
   let busy = false;
+  let running = null;    // the pass in progress, so idle() can wait for it
   let timer = null;
   let failures = 0;
-  let revoked = false;   // the server refused the key: this tester was removed
+  let revoked = false;   // the server refused the key: this tester or install was removed
+  let stopped = false;   // stop(): nothing more is sent until resume()
+  let sending = null;    // the item on the wire right now
 
   function schedule(ms) {
     clearTimeout(timer);
@@ -124,6 +158,8 @@ function createCollector({ config, dir, paused = () => false, log = () => {}, ab
     schedule(ms);
   }
 
+  const readJson = async (file) => { try { return JSON.parse(await fsp.readFile(file, 'utf8')); } catch { return null; } };
+
   /** Items whose two files are both complete, oldest first (names start with a UTC stamp). */
   async function ready() {
     let names;
@@ -133,6 +169,20 @@ function createCollector({ config, dir, paused = () => false, log = () => {}, ab
       .filter((n) => n.endsWith('.json') && have.has(n.slice(0, -5) + '.wav'))
       .map((n) => n.slice(0, -5))
       .sort();
+  }
+
+  /** Flags waiting for an item already sent. */
+  async function flagsWaiting() {
+    let names;
+    try { names = await fsp.readdir(dir); } catch { return []; }
+    return names.filter((n) => n.endsWith('.flag')).map((n) => n.slice(0, -5)).sort();
+  }
+
+  /** May this item go now? Always while sharing is on; while paused, only one shared on its own. */
+  async function sendable(name) {
+    if (!paused()) return true;
+    const meta = await readJson(path.join(dir, name + '.json'));
+    return Boolean(meta && meta.consent === 'flag');
   }
 
   async function drop(name) {
@@ -149,7 +199,7 @@ function createCollector({ config, dir, paused = () => false, log = () => {}, ab
     }
   }
 
-  async function send(name) {
+  async function send(cfg, name) {
     const [wav, meta] = await Promise.all([
       fsp.readFile(path.join(dir, name + '.wav')),
       fsp.readFile(path.join(dir, name + '.json'))
@@ -162,9 +212,9 @@ function createCollector({ config, dir, paused = () => false, log = () => {}, ab
       wav,
       Buffer.from(`\r\n--${boundary}--\r\n`)
     ]);
-    const res = await fetch(config.endpoint + '/v1/upload', {
+    const res = await fetch(cfg.endpoint + '/v1/upload', {
       method: 'POST',
-      headers: { Authorization: 'Bearer ' + config.key, 'Content-Type': 'multipart/form-data; boundary=' + boundary },
+      headers: { Authorization: 'Bearer ' + cfg.key, 'Content-Type': 'multipart/form-data; boundary=' + boundary },
       body,
       signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS)
     });
@@ -172,49 +222,105 @@ function createCollector({ config, dir, paused = () => false, log = () => {}, ab
     return res;
   }
 
-  /** One uploader: one item at a time, oldest first, until the outbox is empty or a send fails. */
+  async function sendFlag(cfg, name) {
+    const rec = (await readJson(path.join(dir, name + '.flag'))) || {};
+    const res = await fetch(cfg.endpoint + '/v1/flag', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + cfg.key, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, note: oneLine(rec.note) }),
+      signal: AbortSignal.timeout(30e3)
+    });
+    await res.text().catch(() => '');
+    return res;
+  }
+
+  /** The key to send with, enrolling first if there is none yet. Null: backed off (or no way to get one). */
+  async function key() {
+    const cfg = configNow();
+    if (cfg || !ensureKey) return cfg || null;
+    try {
+      return await ensureKey();
+    } catch (err) {
+      log('no key yet, will retry', err && err.status ? err.status : (err && err.message));
+      retry(err && err.retryAfter);
+      return null;
+    }
+  }
+
+  /**
+   * One uploader: items one at a time, oldest first, then waiting flags, until there is nothing
+   * left or a send fails (then the backoff timer is already set).
+   */
+  async function work() {
+    for (;;) {
+      if (revoked || stopped) return;
+      let next = null;
+      for (const name of await ready()) if (await sendable(name)) { next = name; break; }
+      // A flag goes even while paused: it is about an item already sent, and pressing it is the consent.
+      const flag = next ? null : (await flagsWaiting())[0];
+      if (!next && !flag) { failures = 0; return; }
+      const cfg = await key();
+      if (!cfg) return;
+      if (revoked || stopped) return;
+      let res;
+      // `sending` covers the send and the delete after it, so mark() knows when a rewrite of
+      // this item's meta could be lost.
+      sending = next;
+      try {
+        res = next ? await send(cfg, next) : await sendFlag(cfg, flag);
+      } catch (err) {
+        sending = null;
+        log('send failed, will retry', next || flag, err && err.message);   // offline, asleep, timed out
+        return retry();
+      }
+      try {
+        if (next && res.ok) await drop(next);
+      } finally {
+        sending = null;
+      }
+      if (flag) {
+        // Accepted, or the item is not on the server (deleted, or never got there): either way done.
+        if (res.ok || res.status === 404 || res.status === 400) {
+          await fsp.unlink(path.join(dir, flag + '.flag')).catch(() => {});
+          failures = 0;
+          log('flag sent', flag, res.status);
+          continue;
+        }
+      } else if (res.ok) {
+        failures = 0;
+        log('sent', next);
+        try { onSent(next); } catch { /* the listener's problem */ }
+        continue;
+      }
+      if (res.status === 401) {
+        if (on401()) {
+          revoked = true;
+          log('key refused; sharing stopped');
+          return;
+        }
+        log('key not accepted yet; will retry');
+        return retry(60);
+      }
+      if (!flag && [400, 413, 415, 422].includes(res.status)) {
+        log('refused', next, res.status, '-> rejected/');
+        await setAside(next);
+        continue;
+      }
+      log('server said', res.status, '- will retry');
+      return retry(res.headers.get('retry-after'));
+    }
+  }
+
   async function pass() {
     if (busy) return;
     busy = true;
     clearTimeout(timer);
     timer = null;
-    try {
-      for (;;) {
-        if (revoked || paused()) return;
-        const [next] = await ready();
-        if (!next) { failures = 0; return; }
-        let res;
-        try {
-          res = await send(next);
-        } catch (err) {
-          log('send failed, will retry', next, err && err.message);   // offline, asleep, timed out
-          return retry();
-        }
-        if (res.ok) {
-          await drop(next);
-          failures = 0;
-          log('sent', next);
-          continue;
-        }
-        if (res.status === 401) {
-          revoked = true;
-          log('key refused; sharing stopped until restart');
-          return;
-        }
-        if ([400, 413, 415, 422].includes(res.status)) {
-          log('refused', next, res.status, '-> rejected/');
-          await setAside(next);
-          continue;
-        }
-        log('server said', res.status, '- will retry');
-        return retry(res.headers.get('retry-after'));
-      }
-    } catch (err) {
+    running = work().catch((err) => {
       log('outbox error', err && err.message);
       retry();
-    } finally {
-      busy = false;
-    }
+    }).finally(() => { busy = false; running = null; });
+    return running;
   }
 
   /** Oldest items go first once the outbox (sent-pending and rejected) passes 2 GB. */
@@ -228,7 +334,7 @@ function createCollector({ config, dir, paused = () => false, log = () => {}, ab
         const p = path.join(d, n);
         const st = await fsp.stat(p).catch(() => null);
         if (!st || !st.isFile()) continue;
-        const name = n.replace(/\.(wav|json)(\.tmp)?$/, '');
+        const name = n.replace(/\.(wav|json|flag)(\.tmp)?$/, '');
         const g = groups.get(name) || { bytes: 0, files: [] };
         g.bytes += st.size;
         g.files.push(p);
@@ -246,29 +352,27 @@ function createCollector({ config, dir, paused = () => false, log = () => {}, ab
     }
   }
 
-  /** After a crash: half-written files, and a .wav whose .json never landed (or was deleted after a send). */
+  /**
+   * After a crash: half-written files, a .wav whose .json never landed (or was deleted after a
+   * send), and a .json whose .wav is gone (a flag that raced the send; its .flag record went too).
+   */
   async function tidy() {
     let names;
     try { names = await fsp.readdir(dir); } catch { return; }
     const have = new Set(names);
     for (const n of names) {
-      const orphan = n.endsWith('.wav') && !have.has(n.slice(0, -4) + '.json');
+      const orphan = (n.endsWith('.wav') && !have.has(n.slice(0, -4) + '.json')) ||
+        (n.endsWith('.json') && !have.has(n.slice(0, -5) + '.wav'));
       if (n.endsWith('.tmp') || orphan) await fsp.unlink(path.join(dir, n)).catch(() => {});
     }
   }
 
-  async function write(rec) {
-    const created = new Date();
-    const id = crypto.randomBytes(8).toString('hex');
-    const name = `${stamp(created)}-${id}`;
-    const wav = encodeWav(to16k(rec.samples, rec.sampleRate));
-    if (wav.length >= MAX_WAV) { log('too long to send, skipped', name); return; }
-    const seconds = Math.round(((wav.length - 44) / (RATE * 2)) * 100) / 100;
+  function makeMeta(rec, created, id) {
     const iso = (ms) => (ms ? new Date(ms).toISOString() : null);
+    const cfg = configNow();
     const meta = {
       v: 1,
       id,
-      tester: config.tester,
       createdAt: created.toISOString(),
       mode: rec.mode,
       output: rec.mode === 'revise' && !SEND_REVISE_TEXT ? null : rec.text,
@@ -276,8 +380,8 @@ function createCollector({ config, dir, paused = () => false, log = () => {}, ab
       model: rec.model || null,
       engine: rec.engine || null,
       app: rec.app || null,                                   // process name only, never the window title
-      audioSeconds: seconds,
-      recordedAt: iso(rec.endedAt && rec.endedAt - seconds * 1000),   // stop time minus the audio's length
+      audioSeconds: null,
+      recordedAt: null,
       endedAt: iso(rec.endedAt),                              // the second key press
       pastedAt: iso(rec.pastedAt),
       latencyMs: rec.endedAt && rec.pastedAt ? rec.pastedAt - rec.endedAt : null,
@@ -285,26 +389,123 @@ function createCollector({ config, dir, paused = () => false, log = () => {}, ab
       appVersion: about.appVersion || null,
       electron: process.versions.electron || null
     };
+    if (cfg && cfg.tester) meta.tester = cfg.tester;          // the server sets this from the key anyway
+    if (rec.consent === 'all' || rec.consent === 'flag') meta.consent = rec.consent;
+    if (rec.flag) {
+      meta.flag = true;
+      const note = oneLine(rec.note);
+      if (note) meta.note = note;
+    }
     if (rec.test) meta.test = true;
+    return meta;
+  }
+
+  async function write(rec, name, created, id) {
+    const wav = encodeWav(to16k(rec.samples, rec.sampleRate));
+    if (wav.length >= MAX_WAV) { log('too long to send, skipped', name); return false; }
+    const seconds = Math.round(((wav.length - 44) / (RATE * 2)) * 100) / 100;
+    const meta = makeMeta(rec, created, id);
+    meta.audioSeconds = seconds;
+    meta.recordedAt = rec.endedAt ? new Date(rec.endedAt - seconds * 1000).toISOString() : null;   // stop time minus the audio's length
     await fsp.mkdir(dir, { recursive: true });
     await writeAtomic(path.join(dir, name + '.wav'), wav);
     await writeAtomic(path.join(dir, name + '.json'), JSON.stringify(meta, null, 1));
     log('queued', name);
     await enforceCap();
+    return true;
+  }
+
+  const writes = new Map();   // name -> the pending write, so a flag can wait for it
+
+  /**
+   * Queue one finished dictation; returns its name (<stamp>-<id>) at once, or null when nothing
+   * was queued. The disk write happens a tick later. While paused only an item shared on its
+   * own (rec.consent === 'flag') is taken.
+   */
+  function queue(rec) {
+    if (revoked || stopped || (paused() && rec.consent !== 'flag')) return null;
+    if (!rec || !rec.samples || typeof rec.text !== 'string') return null;
+    const created = new Date();
+    const id = crypto.randomBytes(8).toString('hex');
+    const name = `${stamp(created)}-${id}`;
+    const p = new Promise((resolve) => setImmediate(resolve)).then(() => write(rec, name, created, id)).then(
+      (ok) => { if (ok && !failures) schedule(2000); return ok; },   // mid-backoff, the pending retry stands
+      (err) => { log('could not queue', err && err.message); return false; }
+    ).finally(() => writes.delete(name));
+    writes.set(name, p);
+    return name;
+  }
+
+  /**
+   * "That was wrong" on an item this outbox queued. Still here: its meta gets flag and note
+   * before it goes ('marked'). Already sent (or on the wire right now): a .flag record goes to
+   * /v1/flag after the items ('queued'). Set aside as refused: 'rejected'.
+   */
+  async function mark(name, note) {
+    if (!NAME_RE.test(String(name))) return 'rejected';
+    note = oneLine(note);
+    if (writes.has(name)) await writes.get(name);
+    const file = path.join(dir, name + '.json'), wavFile = path.join(dir, name + '.wav');
+    let marked = false;
+    if (sending !== name) {
+      const meta = await readJson(file);
+      if (meta && fs.existsSync(wavFile)) {
+        meta.flag = true;
+        if (note) meta.note = note;
+        await writeAtomic(file, JSON.stringify(meta, null, 1));
+        marked = true;
+      } else if (!meta && fs.existsSync(path.join(rejectedDir, name + '.json'))) {
+        return 'rejected';
+      }
+    }
+    // Sent already, or sent while the meta was being rewritten: the server needs telling.
+    const gone = !fs.existsSync(wavFile);
+    if (marked && gone) await fsp.unlink(file).catch(() => {});   // the meta of an item already sent, re-created
+    if (!marked || gone || sending === name) {
+      await fsp.mkdir(dir, { recursive: true });
+      await writeAtomic(path.join(dir, name + '.flag'), JSON.stringify({ name, note, at: new Date().toISOString() }));
+    }
+    if (!failures) schedule(1000);
+    return marked && !gone ? 'marked' : 'queued';
+  }
+
+  /**
+   * Delete what is waiting here. keepOneOff: an item shared on its own (consent 'flag') stays --
+   * turning sharing off withdraws "all of them", not that one.
+   */
+  async function clear({ keepOneOff = false } = {}) {
+    await Promise.all([...writes.values()]);
+    let names = [];
+    try { names = await fsp.readdir(dir); } catch { /* nothing queued */ }
+    const keep = new Set();
+    if (keepOneOff) {
+      for (const n of names.filter((x) => x.endsWith('.json'))) {
+        const meta = await readJson(path.join(dir, n));
+        if (meta && meta.consent === 'flag') keep.add(n.slice(0, -5));
+      }
+    }
+    let removed = 0;
+    for (const n of names) {
+      const base = n.replace(/\.(wav|json|flag)(\.tmp)?$/, '');
+      if (keep.has(base)) continue;
+      const p = path.join(dir, n);
+      const st = await fsp.stat(p).catch(() => null);
+      if (!st || !st.isFile()) continue;
+      await fsp.unlink(p).catch(() => {});
+      if (n.endsWith('.json')) removed++;
+    }
+    if (!keepOneOff) await fsp.rm(rejectedDir, { recursive: true, force: true }).catch(() => {});
+    return removed;
   }
 
   return {
-    /** Queue one finished dictation. Returns at once; the disk write happens a tick later. */
+    /** Queue one finished dictation. Returns at once (true when queued); the disk write happens a tick later. */
     add(rec) {
-      if (revoked || paused()) return false;
-      setImmediate(() => {
-        write(rec).then(
-          () => { if (!failures) schedule(2000); },   // mid-backoff, the pending retry stands
-          (err) => log('could not queue', err && err.message)
-        );
-      });
-      return true;
+      return Boolean(queue(rec));
     },
+    queue,
+    mark,
+    clear,
     /** Launch: clean up after any crash, then send whatever a previous run left behind. */
     async start() {
       await tidy();
@@ -316,89 +517,20 @@ function createCollector({ config, dir, paused = () => false, log = () => {}, ab
       failures = 0;
       schedule(ms);
     },
+    /** Nothing more is sent (an upload in flight finishes) until resume(). */
+    stop() { stopped = true; clearTimeout(timer); timer = null; },
+    resume() { stopped = false; },
+    /** Resolves when no send is in progress. */
+    async idle() { while (running) await running; },
+    /** The key was replaced (a fresh enrollment): forget that the old one was refused. */
+    reset() { revoked = false; failures = 0; },
     pending: async () => (await ready()).length,
-    status: () => ({ tester: config.tester, with: config.with, state: revoked ? 'stopped' : paused() ? 'paused' : 'on' })
+    isRevoked: () => revoked,
+    status: () => {
+      const cfg = configNow();
+      return { tester: cfg && cfg.tester, with: cfg && cfg.with, state: revoked ? 'stopped' : paused() ? 'paused' : 'on' };
+    }
   };
 }
 
-/* ------------------------------------------------------------- the app's instance */
-
-let electron = null;
-try {
-  const e = require('electron');
-  if (e && typeof e === 'object' && e.app) electron = e;   // under plain Node this is a path string
-} catch { /* not running in Electron */ }
-
-const debug = (...a) => { if (process.env.TYPD_DEBUG) console.log('[typd:collect]', ...a); };
-let main;   // undefined until first asked; false when this is not a tester build
-
-function instance() {
-  if (main !== undefined) return main;
-  main = false;
-  if (!electron) return main;
-  const { app, powerMonitor } = electron;
-  // A development run collects only when asked to (TYPD_TESTER_DEV=1). The repo root is also
-  // where the developer runs their own Typd every day, and a stray tester.json there once
-  // queued the developer's dictations under a tester's name (2026-10-09). A packaged build
-  // carries tester.json only when it was built as a tester build (scripts/after-pack.js).
-  if (!app.isPackaged && process.env.TYPD_TESTER_DEV !== '1') return main;
-  const file = app.isPackaged ? path.join(process.resourcesPath, 'tester.json') : path.join(__dirname, '..', '..', 'tester.json');
-  const config = readConfig(file);
-  if (!config) return main;
-
-  const settings = require('./settings');
-  main = createCollector({
-    config,
-    dir: path.join(app.getPath('userData'), 'outbox'),
-    paused: () => settings.get('sharePaused'),
-    log: debug,
-    about: { appVersion: app.getVersion() }
-  });
-  app.whenReady().then(() => {
-    const t = setTimeout(() => main.start(), START_DELAY_MS);
-    if (t.unref) t.unref();
-    for (const ev of ['resume', 'unlock-screen']) powerMonitor.on(ev, () => main.wake());
-    settings.onChange((key, value) => { if (key === 'sharePaused' && !value) main.wake(1000); });
-  });
-  return main;
-}
-
-// Built at load, so an outbox left by the previous run resumes without waiting for a dictation.
-instance();
-
-/**
- * Called once per session, after its text was pasted successfully (src/main/index.js).
- * Never throws and never waits.
- */
-function add(session, text) {
-  try {
-    const c = instance();
-    // A stub session's text never came from its audio; it would be a wrong label.
-    if (!c || process.argv.includes('--stub')) return;
-    if (!session || !session.audio || !session.audio.samples || typeof text !== 'string') return;
-    let model = null, engine = null;
-    try { model = path.basename(require('./pipeline/local').MODEL); } catch { /* unknown */ }
-    try { engine = require('./pipeline').ENGINE; } catch { /* unknown */ }
-    c.add({
-      samples: session.audio.samples,
-      sampleRate: session.audio.sampleRate,
-      text,
-      mode: session.mode,
-      app: session.target && session.target.process ? session.target.process : null,
-      model,
-      engine,
-      endedAt: session.endedAt || null,
-      pastedAt: Date.now()
-    });
-  } catch (err) {
-    debug('add failed', err && err.message);
-  }
-}
-
-/** For Settings: null in an ordinary build, else {tester, with, state: 'on'|'paused'|'stopped'}. */
-function status() {
-  const c = instance();
-  return c ? c.status() : null;
-}
-
-module.exports = { add, status, createCollector, readConfig, encodeWav };
+module.exports = { createCollector, readConfig, checkEndpoint, encodeWav, oneLine, stamp, NOTE_MAX };

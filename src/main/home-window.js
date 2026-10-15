@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { app, BrowserWindow, ipcMain, shell, nativeTheme } = require('electron');
 const settings = require('./settings');
-const collect = require('./collect');
+const sharing = require('./sharing');
 const dictionary = require('./dictionary');
 const { store } = require('./store');
 const status = require('./status');
@@ -114,12 +114,15 @@ function recordingsInfo() {
 }
 
 function settingsState() {
+  const flag = deps && deps.flagKey ? deps.flagKey() : null;
   return {
     ...settings.get(),
     startAtLogin: loginItem(),
     loginSupported: MAC ? require('./mac/login-item').supported() : true,
     recordings: recordingsInfo(),
-    sharing: collect.status()   // null except in a tester build
+    // null where sharing is not in this build; {mode: 'tester', ...} or {mode: 'beta', ...} (sharing.js)
+    sharing: sharing.status(),
+    flagKey: flag ? { label: hotkeyLogic.label(flag, process.platform), parts: hotkeyLogic.parts(flag, process.platform) } : null
   };
 }
 
@@ -279,6 +282,22 @@ function register(d) {
     return settings.set(key, value);
   });
   handle('settings:state', () => settingsState());
+
+  // Sharing (the public beta). Turning it on always goes through the consent screen; off is
+  // immediate. Deleting empties the outbox and deletes what the server holds for this install.
+  handle('sharing:set', async (on) => {
+    if (typeof on !== 'boolean' || !sharing.get()) return null;
+    if (on) { deps.askConsent(); return { asking: true, settings: settingsState() }; }
+    const r = await deps.chooseSharing(false);
+    return { ...r, settings: settingsState() };
+  });
+  handle('sharing:delete', async () => {
+    const s = sharing.get();
+    if (!s) return null;
+    const r = await s.deleteShared();
+    return { ...r, settings: settingsState() };
+  });
+  handle('sharing:about', () => { if (!sharing.get()) return false; deps.askConsent(); return true; });
   handle('settings:open-recordings', () => {
     const dir = settings.recordingsDir();
     fs.mkdirSync(dir, { recursive: true });

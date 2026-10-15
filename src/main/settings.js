@@ -19,7 +19,12 @@ const DEFAULTS = {
   // Any key hotkey-logic.validate accepts: 'RightAlt', 'RightCtrl', 'F13', 'Ctrl+Shift+Space'...
   // macOS: Right ⌘ rather than Right Option, which types characters on most Mac layouts.
   hotkey: hotkeyLogic.defaultFor(process.platform),
-  sharePaused: false    // tester builds only (collect.js): true queues and sends nothing
+  sharePaused: false,   // tester builds only (sharing.js): true queues and sends nothing
+  // The public beta (sharing.js): '' until the consent screen is answered, then 'on' or 'off'.
+  // Nothing is shared unless it is 'on'.
+  share: '',
+  // "That was wrong": a combination (globalShortcut) that flags the last dictation; '' = none.
+  flagHotkey: hotkeyLogic.flagDefaultFor(process.platform)
 };
 
 /** Two good choices, for anything that wants to suggest one: the default key and a chord. */
@@ -40,6 +45,8 @@ function read() {
   // An old 'CommandOrControl+Shift+Space' is written the current way; anything unusable falls
   // back to the default rather than leaving Typd with no key at all.
   cache.hotkey = hotkeyLogic.normalize(cache.hotkey, process.platform, { sideButtons: true });
+  if (!['', 'on', 'off'].includes(cache.share)) cache.share = '';
+  if (cache.flagHotkey && !hotkeyLogic.validFlag(cache.flagHotkey, process.platform)) cache.flagHotkey = DEFAULTS.flagHotkey;
   return cache;
 }
 
@@ -62,6 +69,12 @@ function set(key, value) {
     const v = hotkeyLogic.validate(value, process.platform, { sideButtons: true });
     if (!v.ok) return false;
     value = v.binding;
+  }
+  if (key === 'share' && !['', 'on', 'off'].includes(value)) return false;
+  if (key === 'flagHotkey' && value) {
+    const v = hotkeyLogic.validFlag(value, process.platform);
+    if (!v) return false;
+    value = v;
   }
   if (typeof value === 'string' && value.length > 512) return false;
   if (s[key] === value) return true;

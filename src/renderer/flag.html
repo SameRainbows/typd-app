@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:" />
+  <title>Typd</title>
+  <link rel="stylesheet" href="ask.css" />
+</head>
+<body>
+  <!-- "That was wrong" on the last dictation (main/ask-window.js, main/sharing.js). -->
+  <h1>That was wrong</h1>
+  <p class="said" id="said"></p>
+
+  <form id="form" autocomplete="off">
+    <label for="note">What should it have said? <span class="dim">(optional)</span></label>
+    <input type="text" id="note" maxlength="200" spellcheck="true" placeholder="One line is plenty" />
+
+    <!-- Sharing is on: the dictation was shared, so it is only marked. -->
+    <p class="ask dim" id="onText" hidden>Typd marks this dictation so the developer can see what went wrong.</p>
+
+    <!-- It was never shared: ask, for this one only. -->
+    <div class="ask" id="askText" hidden>
+      <p><strong>Share this one dictation so it can be fixed?</strong></p>
+      <p class="dim">Only this dictation’s audio and text go to the developer, with your note. Nothing else, and sharing stays as it is.</p>
+      <p class="dim small" id="reviseNote" hidden>It was a revision: only your spoken instruction goes, never the text you highlighted.</p>
+      <p class="dim small">Under 18? Ask a parent first.</p>
+    </div>
+
+    <p class="error" id="error" hidden></p>
+
+    <div class="actions">
+      <button class="btn ghost" type="button" id="cancel">Cancel</button>
+      <button class="btn solid" type="submit" id="go">Flag it</button>
+    </div>
+  </form>
+
+  <script src="flag.js"></script>
+</body>
+</html>

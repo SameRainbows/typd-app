@@ -29,6 +29,9 @@ function preview40(text) {
  * @param {(id: string) => void} deps.statusAction             a click on the status line
  * @param {(term: string) => void} deps.forget                 undo a learned word
  * @param {() => string|null} [deps.modelLine]                 model-update line (modelUpdate.js)
+ * @param {() => void} [deps.flag]                             "That was wrong" on the last dictation
+ * @param {() => 'ready'|'none'|null} [deps.canFlag]           null: sharing is not in this build
+ * @param {() => string|null} [deps.flagKey]                   its shortcut, shown beside it
  */
 function createTray(deps) {
   let tray = null;
@@ -80,6 +83,12 @@ function createTray(deps) {
     const last = lastDictation();
     // Tester builds and the developer's machines: which model, and whether it is updating.
     const model = deps.modelLine ? deps.modelLine() : null;
+    // Where sharing exists (sharing.js): flag the last dictation, with its shortcut beside it.
+    const canFlag = deps.canFlag ? deps.canFlag() : null;
+    const flagKey = deps.flagKey ? deps.flagKey() : null;
+    const flagItem = canFlag
+      ? [{ label: 'That was wrong…', enabled: canFlag === 'ready', click: () => deps.flag(), ...(flagKey ? { accelerator: flagKey, registerAccelerator: false } : {}) }]
+      : [];
     return Menu.buildFromTemplate([
       s.action ? { label: s.line, click: () => deps.statusAction(s.action.id) } : { label: s.line, enabled: false },
       ...(model ? [{ label: model, enabled: false }] : []),
@@ -88,6 +97,7 @@ function createTray(deps) {
       last
         ? { label: 'Copy “' + preview40(last) + '”', click: () => deps.copy(last) }
         : { label: 'Nothing dictated yet', enabled: false },
+      ...flagItem,
       ...(lastLearned ? [{ label: `Forget learned word “${lastLearned}”`, click: () => deps.forget(lastLearned) }] : []),
       { label: 'Microphone', submenu: micMenu() },
       { label: 'Change shortcut…', click: () => deps.open('settings', { capture: true }) },

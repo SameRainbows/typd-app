@@ -325,4 +325,32 @@ function registerHotkeys({ onPress, onRelease, onCancel, onAltDown, binding, int
   };
 }
 
-module.exports = { registerHotkeys, BINDING: label(BINDING), label, tapKey, DEFAULT_BINDING };
+/**
+ * "That was wrong": one combination, pressed, that flags the last dictation (sharing.js). Always a
+ * combination through globalShortcut -- never the native hook, which is dictation's -- and never
+ * the same keys as dictation: if the dictation key is that very combination, the flag shortcut
+ * stands down (the tray item still works). TYPD_FLAG_HOTKEY overrides Settings, for testing.
+ *
+ * @param {string} binding      settings 'flagHotkey' ('' = none)
+ * @param {string} dictationKey the dictation binding in use
+ * @param {() => void} onFlag
+ * @returns {{binding: string|null, label: string|null, ok: boolean, close: () => void}}
+ */
+function registerFlagHotkey(binding, dictationKey, onFlag) {
+  const want = logic.validFlag(process.env.TYPD_FLAG_HOTKEY || binding || '', PLATFORM);
+  const none = { binding: null, label: null, ok: false, close() {} };
+  if (!want) return none;
+  const main = logic.validate(dictationKey, PLATFORM);
+  if (main.ok && main.binding.toLowerCase() === want.toLowerCase()) return none;
+  let ok = false;
+  try { ok = globalShortcut.register(want, () => onFlag()); } catch { ok = false; }
+  if (process.env.TYPD_DEBUG) console.log('[typd:hotkey] flag', want, ok ? 'registered' : 'taken by another app');
+  return {
+    binding: ok ? want : null,
+    label: ok ? label(want) : null,
+    ok,
+    close() { if (ok && globalShortcut.isRegistered(want)) globalShortcut.unregister(want); ok = false; }
+  };
+}
+
+module.exports = { registerHotkeys, registerFlagHotkey, BINDING: label(BINDING), label, tapKey, DEFAULT_BINDING };

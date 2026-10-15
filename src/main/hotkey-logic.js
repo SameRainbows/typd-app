@@ -71,8 +71,22 @@ const KEYS = {
 const DEFAULTS = { win32: 'RightAlt', darwin: 'RightMeta' };
 const CHORD_EXAMPLE = { win32: 'Ctrl+Shift+Space', darwin: 'Command+Shift+Space' };
 
+/*
+ * "That was wrong": flags the last dictation (sharing.js). A combination, so globalShortcut
+ * hands it to Typd alone, and Backspace because it reads as "undo that". Chosen not to clash:
+ *   - with Typd's own key: the default is a lone modifier tap, and any other key held with it
+ *     makes a chord, which never toggles (createTrigger); the suggested combination is Space
+ *   - with AltGr: no Ctrl+Alt (Windows), and Alt+Shift+Backspace types nothing
+ *   - with the system: Windows switches the input language on Alt+Shift alone, and a third key
+ *     cancels that; Ctrl+Shift+Delete (clear browsing data) is a different key from Backspace.
+ *     On a Mac, Option+Delete deletes a word and ⌘+Shift+Delete empties the Trash in Finder, so
+ *     it is Control+Shift+Delete there, which macOS leaves alone.
+ */
+const FLAG_DEFAULTS = { win32: 'Alt+Shift+Backspace', darwin: 'Ctrl+Shift+Backspace' };
+
 const keysFor = (platform) => KEYS[platform] || KEYS.win32;
 const defaultFor = (platform) => DEFAULTS[platform] || DEFAULTS.win32;
+const flagDefaultFor = (platform) => FLAG_DEFAULTS[platform] || FLAG_DEFAULTS.win32;
 
 /** The single-key entry a binding names (any case), or null for an accelerator. */
 function single(binding, platform) {
@@ -282,6 +296,15 @@ function validate(binding, platform, opts = {}) {
 }
 
 /**
+ * May this be the "That was wrong" shortcut? Only a combination validate() accepts (a single key
+ * would go to the native hook, which belongs to dictation). Returns the stored form, or null.
+ */
+function validFlag(binding, platform) {
+  const v = validate(binding, platform);
+  return v.ok && v.kind === 'chord' ? v.binding : null;
+}
+
+/**
  * A stored binding brought up to date: the old 'CommandOrControl+Shift+Space'
  * keeps working, an unknown value falls back to the platform default.
  */
@@ -347,6 +370,6 @@ function createTrigger(o) {
 }
 
 module.exports = {
-  KEYS, TAP_MS, HOLD_MS, keysFor, defaultFor, single, parseAccelerator, formatAccelerator,
+  KEYS, TAP_MS, HOLD_MS, keysFor, defaultFor, flagDefaultFor, validFlag, single, parseAccelerator, formatAccelerator,
   parts, label, shortLabel, verb, validate, normalize, refuseSingle, createTrigger
 };

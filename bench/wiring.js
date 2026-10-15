@@ -142,6 +142,49 @@ check('the overlay reports devices for the tray menu',
 check('the pill is pinned dark, whatever the system theme',
   /<html[^>]*data-scheme="dark"/.test(html) && !/@media \(prefers-color-scheme/.test(read('src/renderer/overlay.css')));
 
+/* --------------------------------------------- the consent and flag windows */
+
+// The public beta's two questions (ask-window.js, preload/ask.js, renderer/consent.* and
+// flag.*): the same silent seams as the Typd window, and the promises the consent screen makes.
+section('the consent and "That was wrong" windows');
+const aMain = read('src/main/ask-window.js');
+const aPre = read('src/preload/ask.js');
+for (const page of ['consent', 'flag']) {
+  const pHtml = read('src/renderer/' + page + '.html');
+  const pJs = read('src/renderer/' + page + '.js');
+  const pIds = [...new Set([...pJs.matchAll(/\$\('([^']+)'\)/g)].map((m) => m[1]))];
+  const missing = pIds.filter((id) => !pHtml.includes('id="' + id + '"'));
+  check(page + ': every $(id) exists in its page (' + pIds.length + ')', !missing.length, missing.join(', '));
+  const used = [...new Set([...pJs.matchAll(/api\.([a-z]+)\(/g)].map((m) => m[1]))];
+  const notExposed = used.filter((u) => !new RegExp('^ {2}' + u + '(:|\\()', 'm').test(aPre));
+  check(page + ': every api.* it calls is exposed by preload/ask.js', !notExposed.length, notExposed.join(', '));
+  check(page + ': loads only its own script and ask.css, under the same CSP',
+    pHtml.includes('<script src="' + page + '.js"></script>') && pHtml.includes('href="ask.css"') && pHtml.includes("script-src 'self'"));
+}
+const aCalls = [...aPre.matchAll(/call\('([^']+)'\)/g)].map((m) => m[1]);
+const aHandled = [...aMain.matchAll(/handle\('([^']+)'/g)].map((m) => m[1]);
+const aUnhandled = aCalls.filter((c) => !aHandled.includes(c));
+check('every preload/ask.js call has a handler (' + aCalls.length + ')', !aUnhandled.length, aUnhandled.join(', '));
+check('every handler goes through handle(), which checks the page',
+  (aMain.match(/ipcMain\.handle\(/g) || []).length === 1 && /const kind = pageOf\(e\);\s*return kind \? fn\(kind/.test(aMain));
+const aEvents = (aPre.match(/const EVENTS = \[([^\]]+)\]/) || [, ''])[1];
+const aSent = [...new Set([...aMain.matchAll(/send\('([a-z]+:[a-z-]+)'/g)].map((m) => m[1]))];
+const aListened = [...new Set(['consent', 'flag'].flatMap((p) => [...read('src/renderer/' + p + '.js').matchAll(/api\.on\('([^']+)'/g)].map((m) => m[1])))];
+const aNotAllowed = [...aSent, ...aListened].filter((c) => !aEvents.includes("'" + c + "'"));
+check('every event sent or listened for is allowed by preload/ask.js', !aNotAllowed.length, aNotAllowed.join(', '));
+
+const cHtml = read('src/renderer/consent.html');
+const choices = [...cHtml.matchAll(/<button class="([^"]+)" type="button" id="(share|keep)">([^<]+)<\/button>/g)];
+check('consent: two buttons of the same class (equal), with the agreed words',
+  choices.length === 2 && choices[0][1] === choices[1][1] &&
+  choices.some((c) => c[3] === 'Share my dictations to improve Typd') && choices.some((c) => c[3] === 'Keep everything on my computer'));
+check("consent: says what is never shared, and asks under-18s for a parent's OK",
+  /Never shared/.test(cHtml) && /screen/.test(cHtml) && /window titles/.test(cHtml) && /Under 18\? Ask a parent/.test(cHtml));
+check('flag: asks "Share this one dictation so it can be fixed?"', /Share this one dictation so it can be fixed\?/.test(read('src/renderer/flag.html')));
+check('main opens the consent screen only while it is unanswered', /needsConsent\(\) && !stub && !preview\) setTimeout\(\(\) => ask\.open\('consent'\)/.test(main));
+check('a consent screen closed unanswered means off, never on', /deps\.choose\(false\)/.test(aMain) && !/deps\.choose\(true\)/.test(aMain));
+check('main queues a dictation only through sharing.add', /sharing\.add\(current, event\.text\)/.test(main) && !/collect\.add\(/.test(main));
+
 /* ------------------------------------------------------------------ timing */
 
 section('timing constants that must agree');

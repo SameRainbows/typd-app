@@ -473,9 +473,11 @@
     $('recInfo').textContent = s.recordings.count
       ? s.recordings.count.toLocaleString() + ' recordings, ' + s.recordings.mb.toLocaleString() + ' MB on this ' + m + '. They make the model better at your voice.'
       : 'Saved on this ' + m + ' to make the model better at your voice.';
+    // A tester build: one line inside this row, with a pause (sharing.js, mode 'tester').
     var sh = s.sharing;
-    $('shareLine').hidden = !sh;
-    if (sh) {
+    var tester = Boolean(sh && sh.mode === 'tester');
+    $('shareLine').hidden = !tester;
+    if (tester) {
       var word = sh.state === 'stopped' ? 'stopped' : s.sharePaused ? 'paused' : 'on';
       $('shareText').textContent = 'Sharing recordings with ' + sh.with + ' for model testing — ' + word;
       $('sharePause').hidden = sh.state === 'stopped';
@@ -484,7 +486,76 @@
         ? 'Your voice is never sent anywhere while sharing is paused.'
         : 'While sharing is on, your recordings are also sent to ' + sh.with + '.';
     }
+    renderBeta();
   }
+
+  /* --------------------------------------------------------- the public beta */
+
+  // Sharing, the public beta's way (sharing.js, mode 'beta'): off until the person picks share
+  // on the consent screen. Turning the switch on opens that screen; nothing changes until it is
+  // answered (main says so with home:changed 'sharing').
+  function renderBeta() {
+    var s = S.settings, sh = s.sharing, m = S.platform.machine;
+    var beta = Boolean(sh && sh.mode === 'beta');
+    $('betaRow').hidden = !beta;
+    if (!beta) { $('betaConfirm').hidden = true; return; }
+    var on = sh.state === 'on';
+    $('betaShare').checked = on;
+    $('betaHelp').textContent = sh.state === 'stopped'
+      ? 'Stopped: the server no longer accepts this ' + m + '. Turn sharing off and on again to start over.'
+      : on
+        ? 'On: each dictation’s audio and text go to the developer to improve Typd. Never your screen, selections or window titles.'
+        : 'Off: everything stays on this ' + m + '.';
+    $('betaDelete').hidden = !(sh.shared || on);
+    $('betaId').hidden = !sh.id;
+    $('betaId').textContent = sh.id ? 'Anonymous ID ' + sh.id : '';
+    var fk = s.flagKey;
+    $('betaFlag').hidden = false;
+    if (fk) withKeys($('betaFlag'), 'Typd got it wrong? {key} flags your last dictation, or “That was wrong” in the tray.', fk.parts);
+    else $('betaFlag').textContent = 'Typd got it wrong? “That was wrong” in the tray flags your last dictation.';
+    $('privacyRest').textContent = on
+      ? 'While sharing is on, your dictations are also sent to the developer to improve Typd.'
+      : 'Nothing you say is sent anywhere unless you choose to share it.';
+  }
+
+  function reloadSettings() {
+    return api.settings.state().then(function (st) { if (st) { S.settings = st; renderRecordings(); } });
+  }
+
+  $('betaShare').addEventListener('change', function (e) {
+    var want = e.target.checked;
+    // On waits for the consent screen; until it is answered the switch shows what is true now.
+    e.target.checked = !want;
+    api.sharing.set(want).then(function (r) {
+      if (!r) return;
+      if (r.settings) { S.settings = r.settings; renderRecordings(); }
+      if (!want) toast('Sharing is off');
+    });
+  });
+
+  $('betaAbout').addEventListener('click', function () { api.sharing.about(); });
+
+  $('betaDelete').addEventListener('click', function () {
+    $('betaConfirm').hidden = false;
+    $('betaConfirmNo').focus();
+  });
+  $('betaConfirmNo').addEventListener('click', function () { $('betaConfirm').hidden = true; });
+  $('betaConfirmYes').addEventListener('click', function () {
+    $('betaConfirmYes').disabled = true;
+    api.sharing.remove().then(function (r) {
+      $('betaConfirmYes').disabled = false;
+      $('betaConfirm').hidden = true;
+      if (!r) return;
+      if (r.settings) { S.settings = r.settings; renderRecordings(); }
+      if (r.ok) {
+        toast(r.deleted ? 'Deleted ' + r.deleted.toLocaleString() + (r.deleted === 1 ? ' shared dictation' : ' shared dictations') : 'Deleted. Nothing is stored anymore');
+      } else {
+        failSettings(r.reason === 'offline'
+          ? "Couldn't reach the server. Sharing is off; try deleting again when you're online."
+          : "The server couldn't delete it just now. Sharing is off; try again later.");
+      }
+    });
+  });
 
   $('sharePause').addEventListener('click', function () {
     var next = !S.settings.sharePaused;
@@ -757,6 +828,7 @@
   });
 
   api.on('home:changed', function (p) {
+    if (p.what === 'sharing' && S) reloadSettings();
     if (p.what === 'history' || p.what === 'counts') {
       api.get().then(function (st) { if (st) { S.counts = st.counts; renderCounts(st.counts); } });
       if (current === 'history') loadHistory();
