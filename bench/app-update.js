@@ -183,6 +183,7 @@ async function updaterTests() {
     ...over
   });
   const state = () => readJson(path.join(dir, 'state.json')) || {};
+  const patchStateBench = async (fn) => { const st = state(); fn(st); fs.writeFileSync(path.join(dir, 'state.json'), JSON.stringify(st)); };
 
   section('nothing published, then a new version: download, verify, stage, wait for idle, apply');
   {
@@ -392,6 +393,24 @@ async function updaterTests() {
     r = await u.check();
     check('an install whose llama.cpp is not the one the package needs: "reinstall", nothing downloaded', r.state === 'reinstall' && fileRequests(s).length === 0, r);
     fs.writeFileSync(path.join(app, 'resources', 'llama', 'llama-server.exe'), 'llama v1');
+  }
+
+  section('the same version published again with other bytes: fetched and staged again, never the old copy');
+  {
+    helperWorks = false;   // the apply stops short, so the first staged copy stays on disk
+    const first = publish('1.1.0');
+    await make({ appVersion: '0.7.0' }).check();
+    const before = fs.readFileSync(path.join(dir, '1.1.0', 'staged.sha256'), 'utf8');
+    const second = publish('1.1.0');
+    helperWorks = true; quits = 0; s.requests = [];
+    let r = await make({ appVersion: '0.7.0' }).check();
+    if (r.state === 'retry') r = await make({ appVersion: '0.7.0' }).check();   // the old zip is noticed and deleted first
+    const after = fs.readFileSync(path.join(dir, '1.1.0', 'staged.sha256'), 'utf8');
+    check('the new bytes are downloaded and staged; what is installed is the new package',
+      before === first.entry.sha256 && after === second.entry.sha256 && fileRequests(s).length >= 1 && r.state === 'applying' && quits === 1 &&
+      readJson(path.join(dir, 'pending.json')).newApp === path.join(dir, '1.1.0', 'staged', 'Typd'), { r, before: before.slice(0, 8), after: after.slice(0, 8) });
+    fs.rmSync(path.join(dir, 'pending.json'), { force: true });
+    await patchStateBench((st) => { delete st.aborts; delete st.bad; });
   }
 
   section('limits: 429, disk space, the rate cap, one check at a time');

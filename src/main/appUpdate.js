@@ -441,9 +441,12 @@ function createAppUpdater(o) {
 
   /* --------------------------------------------------------------- staging */
 
-  /** <version>/staged/<app>, unzipped and checked, or null. */
+  /** <version>/staged/<app>, unzipped from this very package (staged.sha256) and checked, or null. */
   function stagedApp(p, e) {
     const staged = path.join(vdir(p.version), 'staged');
+    let from = '';
+    try { from = fs.readFileSync(staged + '.sha256', 'utf8').trim(); } catch { return null; }
+    if (from !== e.sha256) return null;
     const meta = readJson(path.join(staged, 'typd-update.json'));
     if (!meta || meta.version !== p.version || meta.platform !== platform || meta.app !== e.app) return null;
     const a = path.join(staged, e.app);
@@ -491,6 +494,7 @@ function createAppUpdater(o) {
     const tmp = staged + '.partial';
     await fsp.rm(tmp, { recursive: true, force: true });
     await fsp.rm(staged, { recursive: true, force: true });
+    await fsp.rm(staged + '.sha256', { force: true });
     try {
       await extract(zip, tmp, platform);
     } catch (err) {
@@ -498,6 +502,7 @@ function createAppUpdater(o) {
       throw new Retry('unzip failed: ' + ((err && (err.stderr || err.message)) || err).toString().slice(0, 200));
     }
     await renameRetry(tmp, staged);
+    await fsp.writeFile(staged + '.sha256', e.sha256);
     const a = stagedApp(p, e);
     if (!a) {
       // A package that is not what its signed manifest says: a publishing mistake. Same as a failed start.
