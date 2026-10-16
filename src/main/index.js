@@ -783,10 +783,14 @@ app.whenReady().then(() => {
 
   // The public beta's one question, on the first run (and until it is answered): what sharing
   // means, and two equal buttons. Nothing is shared before "Share my dictations" is pressed.
-  // A tester build has no such screen -- its tester agreed in person (sharing.js).
+  // A tester build has no such screen -- its tester agreed in person (sharing.js). After a quiet
+  // app-update relaunch it waits, like the Mac permission dialog, until someone is at the keyboard.
   {
     const s = sharing.get();
-    if (s && s.needsConsent() && !stub && !preview) setTimeout(() => ask.open('consent'), 2500);
+    if (s && s.needsConsent() && !stub && !preview) {
+      const askConsent = () => { if (s.needsConsent()) ask.open('consent'); };
+      if (appUpdater && appUpdater.firstStart) appUpdate.whenUserActive(askConsent); else setTimeout(askConsent, 2500);
+    }
   }
 
   // First run: start at login is on by default, so make it so -- the installed app's own

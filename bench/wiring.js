@@ -181,7 +181,11 @@ check('consent: two buttons of the same class (equal), with the agreed words',
 check("consent: says what is never shared, and asks under-18s for a parent's OK",
   /Never shared/.test(cHtml) && /screen/.test(cHtml) && /window titles/.test(cHtml) && /Under 18\? Ask a parent/.test(cHtml));
 check('flag: asks "Share this one dictation so it can be fixed?"', /Share this one dictation so it can be fixed\?/.test(read('src/renderer/flag.html')));
-check('main opens the consent screen only while it is unanswered', /needsConsent\(\) && !stub && !preview\) setTimeout\(\(\) => ask\.open\('consent'\)/.test(main));
+check('main opens the consent screen only while it is unanswered',
+  /needsConsent\(\) && !stub && !preview\) \{/.test(main) && /const askConsent = \(\) => \{ if \(s\.needsConsent\(\)\) ask\.open\('consent'\); \};/.test(main) &&
+  (main.match(/ask\.open\('consent'\)/g) || []).length === 2);   // and askConsent, from Settings
+check("after an app update's quiet relaunch, not until someone is at the keyboard",
+  /if \(appUpdater && appUpdater\.firstStart\) appUpdate\.whenUserActive\(askConsent\); else setTimeout\(askConsent, 2500\);/.test(main));
 check('a consent screen closed unanswered means off, never on', /deps\.choose\(false\)/.test(aMain) && !/deps\.choose\(true\)/.test(aMain));
 check('main queues a dictation only through sharing.add', /sharing\.add\(current, event\.text\)/.test(main) && !/collect\.add\(/.test(main));
 

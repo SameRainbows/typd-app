@@ -18,7 +18,8 @@
  *   node bench/app-update-e2e.js run <A.app> <packages dir>          (macOS)
  *       <packages dir> holds B's and C's update packages.
  *       1. Install A in a temp folder, serve B's signed manifest on 127.0.0.1, start A with fast
- *          timers and no input threshold, as nobody is at a CI runner's keyboard.
+ *          timers and no input threshold, as nobody is at a CI runner's keyboard. The consent
+ *          screen counts as answered (share "off" in settings.json, unless already answered).
  *       2. Wait until A has updated itself to B: B relaunched by the helper through `open`, passed
  *          its start-up self-test (the model's included), reports its version, shows no window and
  *          no Dock icon, has its menu-bar item, carries A's model, is validly signed, has no
@@ -128,6 +129,18 @@ async function run(aApp, pkgDir) {
   const report = path.join(T, 'report.json');
   const userData = path.join(os.homedir(), 'Library', 'Application Support', 'typd');
   const dir = path.join(userData, 'app-update');
+  // A person who has used Typd has answered the public beta's consent screen (sharing.js). A fresh
+  // runner has not: the screen would open, hold the update back (a Typd window is open, so busy)
+  // and be the window B must not show. Answered "off" here, as that person might have.
+  {
+    const f = path.join(userData, 'settings.json');
+    const saved = readJson(f) || {};
+    if (saved.share !== 'on' && saved.share !== 'off') {
+      fs.mkdirSync(userData, { recursive: true });
+      fs.writeFileSync(f, JSON.stringify({ ...saved, share: 'off' }, null, 2));
+      console.log('the consent screen answered "off" in ' + f);
+    }
+  }
   const env = {
     ...process.env, TYPD_DEBUG: '1', TYPD_APP_UPDATE_URL: endpoint, TYPD_APP_UPDATE_REPORT: report,
     TYPD_APP_UPDATE_FIRST_MS: '3000', TYPD_APP_UPDATE_EVERY_MS: '10000', TYPD_APP_UPDATE_IDLE_MS: '2000',
