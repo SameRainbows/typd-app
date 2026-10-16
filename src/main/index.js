@@ -519,7 +519,7 @@ let appUpdater = null;
 function quitForUpdate() {
   const t = setTimeout(() => app.exit(0), 8000);
   if (t.unref) t.unref();
-  app.quit();
+  quit('an app update (appUpdate.js)');
 }
 
 /**

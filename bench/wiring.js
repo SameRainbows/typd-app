@@ -154,9 +154,13 @@ const tray = read('src/main/tray.js');
 const mainFiles = fs.readdirSync(path.join(root, 'src/main')).filter((f) => f.endsWith('.js'));
 const quitters = mainFiles.filter((f) => /app\.(quit|exit)\(/.test(read('src/main/' + f)));
 check('only index.js and the tray call app.quit/app.exit', quitters.join(',') === 'index.js,tray.js', quitters.join(', '));
-check("index.js quits in one place, quit(by), plus the preview's exit",
-  (main.match(/app\.quit\(/g) || []).length === 1 && /function quit\(by\) \{\s*quitBy = by;\s*app\.quit\(\);/.test(main) &&
-  (main.match(/app\.exit\(/g) || []).length === 1);
+check('index.js asks to quit in one place, quit(by), which names who asked',
+  (main.match(/app\.quit\(/g) || []).length === 1 && /function quit\(by\) \{\s*quitBy = by;\s*app\.quit\(\);/.test(main));
+// app.exit skips before-quit: only the preview's screenshot and an app update (its forced
+// exit, and a new version that failed its first start) may use it.
+const exits = main.split('\n').filter((l) => /app\.exit\(/.test(l)).map((l) => l.trim());
+check('app.exit only for the preview and app updates', exits.length === 3 &&
+  exits.every((l) => l === 'app.exit(0);' || /setTimeout\(\(\) => app\.exit\(0\), 8000\)/.test(l) || /v === 'failed'.*app\.exit\(1\)/.test(l)), exits.join(' | '));
 check("the tray's Quit says it was the tray", /label: 'Quit Typd', click: \(\) => \(deps\.quit \? deps\.quit\(\)/.test(tray) && /quit: \(\) => quit\('the tray menu/.test(main));
 check('window-all-closed keeps Typd running', /app\.on\('window-all-closed', \(e\) => e\.preventDefault\(\)\)/.test(main));
 const closedHandler = (hMain.match(/win\.on\('closed', \(\) => \{([\s\S]*?)\n {2}\}\);/) || [, ''])[1];
