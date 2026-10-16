@@ -346,6 +346,8 @@ async function endSession() {
       // 'done' is the only event with a side effect: the text has to land in
       // the app the user was in before the overlay reports that it did.
       if (event.type === 'done') {
+        // Whether the revise adapter ran on this request (pipeline/index.js): a shared item records it.
+        current.reviseAdapter = event.reviseAdapter || false;
         // A revision replaces the selection by pasting over it, which only
         // works while the selection is still there. Clicking away during the
         // several seconds this takes turns the replacement into an insertion

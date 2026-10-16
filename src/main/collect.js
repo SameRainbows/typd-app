@@ -8,11 +8,13 @@
  * this module only ever sends what that layer let in.
  *
  * One item is: the captured audio as a 16 kHz mono 16-bit WAV, the text Typd pasted, the mode,
- * the model file, the name of the app it went into, timestamps and durations, OS and app
- * version. NEVER the screen context, the highlighted span or a window title -- those are other
- * people's words. For a revision the pasted text is left out too (SEND_REVISE_TEXT): it is the
- * highlighted span rewritten, so it would carry the very text that rule keeps out. The spoken
- * instruction's audio is kept.
+ * the model file and the exact model version (modelVersion: r24_1p7b_rev128, not just the GGUF's
+ * name), whether the revise adapter ran on it (reviseAdapter, reviseAdapterFile), the name of the
+ * app it went into, timestamps and durations, OS and app version -- so every shared item and every
+ * flag can be tied to exact versions. NEVER the screen context, the highlighted span or a window
+ * title -- those are other people's words. For a revision the pasted text is left out too
+ * (SEND_REVISE_TEXT): it is the highlighted span rewritten, so it would carry the very text that
+ * rule keeps out. The spoken instruction's audio is kept.
  *
  * Nothing here is on the critical path. add() returns at once; a tick later the item is written
  * to an outbox on disk, and one uploader sends one item at a time, deleting the local copy only
@@ -20,7 +22,9 @@
  * sleep and being offline, and is capped at 2 GB, oldest dropped first.
  *
  * "That was wrong" (a flag) on an item still here rewrites its meta before it goes; on one
- * already sent it queues a small <name>.flag record, sent to /v1/flag after the items.
+ * already sent it queues a small <name>.flag record, sent to /v1/flag after the items, with the
+ * app and model version and OS of the moment it was pressed (`about`; the server keeps them as
+ * the item's flaggedWith).
  */
 
 const fs = require('fs');
@@ -224,10 +228,12 @@ function createCollector({
 
   async function sendFlag(cfg, name) {
     const rec = (await readJson(path.join(dir, name + '.flag'))) || {};
+    const body = { name, note: oneLine(rec.note) };
+    if (rec.about && typeof rec.about === 'object') body.about = rec.about;   // the versions when it was pressed
     const res = await fetch(cfg.endpoint + '/v1/flag', {
       method: 'POST',
       headers: { Authorization: 'Bearer ' + cfg.key, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, note: oneLine(rec.note) }),
+      body: JSON.stringify(body),
       signal: AbortSignal.timeout(30e3)
     });
     await res.text().catch(() => '');
@@ -367,9 +373,21 @@ function createCollector({
     }
   }
 
+  /** The app and model version and OS right now (a flag on an item already sent records them). */
+  function versionsNow() {
+    let modelVersion = null;
+    try { modelVersion = typeof about.modelVersion === 'function' ? about.modelVersion() : about.modelVersion; } catch { modelVersion = null; }
+    return {
+      appVersion: about.appVersion || null,
+      modelVersion: typeof modelVersion === 'string' && modelVersion ? modelVersion.slice(0, 64) : null,
+      os: { platform: process.platform, arch: process.arch }
+    };
+  }
+
   function makeMeta(rec, created, id) {
     const iso = (ms) => (ms ? new Date(ms).toISOString() : null);
     const cfg = configNow();
+    const adapter = rec.reviseAdapter;
     const meta = {
       v: 1,
       id,
@@ -378,6 +396,11 @@ function createCollector({
       output: rec.mode === 'revise' && !SEND_REVISE_TEXT ? null : rec.text,
       outputChars: rec.text.length,
       model: rec.model || null,
+      // The exact model version that wrote it (a published version's name, or the bundled model's).
+      modelVersion: typeof rec.modelVersion === 'string' && rec.modelVersion ? rec.modelVersion.slice(0, 64) : null,
+      // Did the revise adapter run on this item? true (and which file) / false / null: not known.
+      reviseAdapter: adapter === undefined || adapter === null ? null : Boolean(adapter),
+      reviseAdapterFile: typeof adapter === 'string' && adapter ? path.basename(adapter).slice(0, 128) : null,
       engine: rec.engine || null,
       app: rec.app || null,                                   // process name only, never the window title
       audioSeconds: null,
@@ -463,7 +486,7 @@ function createCollector({
     if (marked && gone) await fsp.unlink(file).catch(() => {});   // the meta of an item already sent, re-created
     if (!marked || gone || sending === name) {
       await fsp.mkdir(dir, { recursive: true });
-      await writeAtomic(path.join(dir, name + '.flag'), JSON.stringify({ name, note, at: new Date().toISOString() }));
+      await writeAtomic(path.join(dir, name + '.flag'), JSON.stringify({ name, note, at: new Date().toISOString(), about: versionsNow() }));
     }
     if (!failures) schedule(1000);
     return marked && !gone ? 'marked' : 'queued';

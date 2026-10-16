@@ -33,6 +33,9 @@ know to test.
 > **What it never shares:** what's on your screen, text you had selected, window titles, or
 > anything when you're not dictating.
 >
+> **Update checks** send the app and model version with an anonymous install ID, so I can count
+> versions in use.
+>
 > **What I do with it:** test new versions of the model and, if the quality is good, train it on
 > them. Your recordings are stored privately, never published, and never sold or given to anyone.
 > Only I (and my AI tools on my computer) work with them.

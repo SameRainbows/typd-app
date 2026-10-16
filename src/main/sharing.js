@@ -299,7 +299,8 @@ function instance() {
     choice: { get: () => settings.get('share'), set: (v) => settings.set('share', v) },
     paused: () => settings.get('sharePaused'),
     log: debug,
-    about: { appVersion: app.getVersion() }
+    // A flag on an item already sent records the versions running when it was pressed (collect.js).
+    about: { appVersion: app.getVersion(), modelVersion: () => require('./pipeline/local').modelVersion() }
   });
   app.whenReady().then(() => {
     const t = setTimeout(() => main.start(), START_DELAY_MS);
@@ -325,8 +326,12 @@ function add(session, text) {
     // A stub session's text never came from its audio; it would be a wrong label.
     if (!s || process.argv.includes('--stub')) return;
     if (!session || !session.audio || !session.audio.samples || typeof text !== 'string') return;
-    let model = null, engine = null;
-    try { model = path.basename(require('./pipeline/local').MODEL); } catch { /* unknown */ }
+    let model = null, modelVersion = null, engine = null;
+    try {
+      const local = require('./pipeline/local');
+      model = path.basename(local.MODEL);
+      modelVersion = local.modelVersion();   // the exact version: r24_1p7b_rev128, not just the GGUF's name
+    } catch { /* unknown */ }
     try { engine = require('./pipeline').ENGINE; } catch { /* unknown */ }
     s.add({
       samples: session.audio.samples,
@@ -335,6 +340,9 @@ function add(session, text) {
       mode: session.mode,
       app: session.target && session.target.process ? session.target.process : null,
       model,
+      modelVersion,
+      // The adapter file a local revision ran with, or false: set from the pipeline's 'done' (index.js).
+      reviseAdapter: session.reviseAdapter || false,
       engine,
       endedAt: session.endedAt || null,
       pastedAt: Date.now()

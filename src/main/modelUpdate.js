@@ -13,7 +13,8 @@
  *                                   the repo's tester.json, only with TYPD_TESTER_DEV=1)
  * TYPD_MODEL_DIR (eval tools, a fixed model folder) turns it off.
  *
- * 60 s after launch and every 6 hours it reads the manifest (typd-collect, GET /v1/model/manifest).
+ * 60 s after launch and every 6 hours it reads the manifest (typd-collect, GET /v1/model/manifest);
+ * in a packaged build that request also carries the version counts' headers (versionStats.js).
  * If it names a version this machine is not running, its files are downloaded into
  * <userData>/models/<version>.partial/ -- one file at a time, resumable with Range, held to
  * RATE so the connection stays the user's, retried with backoff -- while dictation goes on with
@@ -147,6 +148,33 @@ function labelOf(modelFile) {
   return base.replace(/^typd-dictate-/, '').replace(/^\d+(\.\d+)?b-/, '').replace(/-q\d[\w]*$/i, '') || base || 'unknown';
 }
 
+/**
+ * The exact version of the model in the folder `dir`, for the data a dictation carries and the
+ * update checks' version counts (collect.js, versionStats.js):
+ *   a downloaded version         its name, as current.json and the manifest give it (`version`)
+ *   any other folder (bundled)   model.json "version" if it names one; else the published version
+ *                                the updater found the bundled files to be (state.json "bundled");
+ *                                else a label from the file names -- r24_1p7b, plus "+<adapter>"
+ *                                when model.json adds a revise adapter (never a published name,
+ *                                which cannot hold "+")
+ */
+function versionOf(dir, { version = null, modelsDir = null } = {}) {
+  if (version && VERSION_RE.test(version)) return version;
+  const spec = dir ? readJson(path.join(dir, 'model.json')) : null;
+  if (!spec || typeof spec.model !== 'string') return 'unknown';
+  if (typeof spec.version === 'string' && VERSION_RE.test(spec.version)) return spec.version;
+  const s = modelsDir ? readJson(path.join(modelsDir, 'state.json')) : null;
+  if (s && s.bundled && s.bundled.model === spec.model && VERSION_RE.test(String(s.bundled.version))) return s.bundled.version;
+  const label = labelOf(spec.model);
+  return (spec.revise && typeof spec.revise_lora === 'string' && spec.revise_lora ? label + '+' + labelOf(spec.revise_lora) : label).slice(0, 64);
+}
+
+/** The version the updater has active: current.json's, if its folder is complete; else the bundled model's. */
+function activeVersion(modelsDir, bundledDir) {
+  const a = modelsDir ? activeModel(modelsDir) : null;
+  return a ? a.version : versionOf(bundledDir, { modelsDir });
+}
+
 async function sha256File(file) {
   const h = crypto.createHash('sha256');
   for await (const chunk of fs.createReadStream(file, { highWaterMark: 1024 * 1024 })) h.update(chunk);
@@ -181,11 +209,14 @@ class Retry extends Error {
  *   busy          () => boolean: a dictation or revision is in progress
  *   switchModel   () => Promise: restart the server on what current.json now names; rejects
  *                 if it does not come up and pass its self-test
+ *   stats         () => headers for the manifest check: the version counts' app version, model
+ *                 version, OS and anonymous install id (versionStats.js), or {} -- a source run,
+ *                 TYPD_NO_APP_UPDATE=1. Never sent with a file download.
  */
 function createUpdater({
   config, modelsDir, bundledDir, appVersion = '0.0.0', fetch = globalThis.fetch, busy = () => false,
   switchModel = async () => {}, log = () => {}, online = () => true, statfs = (p) => fsp.statfs(p),
-  rate = RATE, idleMs = IDLE_MS, firstCheckMs = FIRST_CHECK_MS, everyMs = CHECK_EVERY_MS
+  rate = RATE, idleMs = IDLE_MS, firstCheckMs = FIRST_CHECK_MS, everyMs = CHECK_EVERY_MS, stats = () => ({})
 }) {
   const stateFile = path.join(modelsDir, 'state.json');
   const dirOf = (v) => path.join(modelsDir, v);
@@ -502,7 +533,9 @@ function createUpdater({
     if (!online()) throw new Retry('offline');
     let res;
     try {
-      res = await fetch(config.endpoint + '/v1/model/manifest', { headers: auth(), signal: AbortSignal.timeout(30e3) });
+      let extra = {};
+      try { extra = stats() || {}; } catch { extra = {}; }   // counting must never stop a check
+      res = await fetch(config.endpoint + '/v1/model/manifest', { headers: { ...extra, ...auth() }, signal: AbortSignal.timeout(30e3) });
     } catch (err) {
       throw new Retry('manifest: ' + ((err && err.message) || err));
     }
@@ -646,7 +679,10 @@ function start({ bundledDir, busy, switchModel, onWarm, changed }) {
     busy,
     switchModel,
     log: debug,
-    online: () => !net || typeof net.isOnline !== 'function' || net.isOnline()
+    online: () => !net || typeof net.isOnline !== 'function' || net.isOnline(),
+    // Packaged builds only, and never with TYPD_NO_APP_UPDATE=1 (versionStats.js decides): the
+    // developer's own machine runs from source and is never counted.
+    stats: () => require('./versionStats').statsHeaders()
   });
   if (onWarm) onWarm((r) => main.warmed(r));
   if (changed) main.onChange(changed);
@@ -663,4 +699,4 @@ function line() {
   return main ? main.line() : null;
 }
 
-module.exports = { start, line, createUpdater, activeModel, readCurrent, isComplete, checkManifest, labelOf, older, sha256File, readConfig };
+module.exports = { start, line, createUpdater, activeModel, activeVersion, versionOf, readCurrent, isComplete, checkManifest, labelOf, older, sha256File, readConfig };

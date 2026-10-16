@@ -8,7 +8,8 @@
  * Translocation), it never replaces itself.
  *
  *   1. Check. 2 minutes after launch and every 6 hours, GET <endpoint>/v1/app/manifest
- *      (typd-collect). The answer is {typd_app_update: 1, key, payload, sig}: `payload` is JSON
+ *      (typd-collect), with the version counts' headers (versionStats.js: app and model version,
+ *      OS, an anonymous install id). The answer is {typd_app_update: 1, key, payload, sig}: `payload` is JSON
  *      text and `sig` its Ed25519 signature by the key named `key`, which must be one of
  *      appUpdateKey.js's. Anything else is refused, as is a payload whose `seq` is lower than one
  *      already seen (an old manifest replayed).
@@ -289,6 +290,9 @@ function sidePaths(app, platform) {
  *   warmSettled   () => boolean: the model server's first start has finished, either way
  *   modelOk       () => true | false | null: how that start went
  *   quit          () => void: leave, so the helper can swap
+ *   stats         () => headers for the manifest check: the version counts' app version, model
+ *                 version, OS and anonymous install id (versionStats.js), or {}. Never sent with a
+ *                 package download.
  */
 function createAppUpdater(o) {
   const {
@@ -300,7 +304,7 @@ function createAppUpdater(o) {
     log = () => {}, online = () => true, statfs = (p) => fsp.statfs(p),
     helperScript = null, startedTimeoutS = STARTED_TIMEOUT_S, verdictTimeoutS = VERDICT_TIMEOUT_S,
     helperStartMs = HELPER_START_MS, resultWaitMs = RESULT_WAIT_MS, warmWaitMs = WARM_WAIT_MS,
-    failVersion = null, reportFile = null, reportExtra = () => ({}), relaunchEnv = null
+    failVersion = null, reportFile = null, reportExtra = () => ({}), relaunchEnv = null, stats = () => ({})
   } = o;
   const F = {
     state: path.join(dir, 'state.json'),
@@ -611,7 +615,9 @@ function createAppUpdater(o) {
     if (!online()) throw new Retry('offline');
     let res;
     try {
-      res = await fetch(endpoint + '/v1/app/manifest', { signal: AbortSignal.timeout(30e3) });
+      let headers = {};
+      try { headers = stats() || {}; } catch { headers = {}; }   // counting must never stop a check
+      res = await fetch(endpoint + '/v1/app/manifest', { headers, signal: AbortSignal.timeout(30e3) });
     } catch (err) {
       throw new Retry('manifest: ' + ((err && err.message) || err));
     }
@@ -943,7 +949,8 @@ function start({ busy, onWarm, changed, quit, reportExtra }) {
     online: () => !net || typeof net.isOnline !== 'function' || net.isOnline(),
     failVersion: process.env.TYPD_APP_UPDATE_SELFTEST_FAIL || null,
     reportFile: process.env.TYPD_APP_UPDATE_REPORT || null,
-    reportExtra
+    reportExtra,
+    stats: () => require('./versionStats').statsHeaders()
   });
   if (changed) main.onChange(changed);
   const s = main.startup();

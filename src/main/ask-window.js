@@ -19,7 +19,7 @@ const brand = require('./brand');
  */
 
 const PAGES = { consent: 'consent.html', flag: 'flag.html' };
-const SIZE = { consent: [520, 660], flag: [460, 360] };
+const SIZE = { consent: [520, 700], flag: [460, 360] };   // consent: +40 for the update-check line
 const SURFACE = { dark: '#17191E', light: '#FBFBFC' };
 const MAC = process.platform === 'darwin';
 

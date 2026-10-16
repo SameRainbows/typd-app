@@ -5,7 +5,7 @@ const fs = require('fs');
 const http = require('http');
 const { once } = require('events');
 const { spawn } = require('child_process');
-const { activeModel } = require('../modelUpdate');
+const { activeModel, versionOf } = require('../modelUpdate');
 
 /**
  * The single dictation model: audio in, finished writing out, on this machine.
@@ -969,6 +969,12 @@ module.exports = {
   get MODEL() { return MODEL; },
   get MODEL_DIR() { return MODEL_DIR; },
   get VERSION() { return VERSION; },
+  /**
+   * The exact version of the model loaded now: a downloaded version's name (current.json), else
+   * the bundled (or TYPD_MODEL_DIR) folder's (modelUpdate.versionOf). What a shared dictation
+   * and the update checks' version counts name.
+   */
+  modelVersion: () => versionOf(MODEL_DIR, { version: VERSION, modelsDir: USER_MODELS }),
   /** The revise adapter the running server has loaded (a path), or null. */
   get REVISE_ADAPTER() { return adapter ? adapter.file : null; },
   BUNDLED_DIR, PORT, FIXTURE

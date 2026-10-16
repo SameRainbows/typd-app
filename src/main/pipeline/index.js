@@ -22,7 +22,8 @@ const { runStub } = require('./stub');
  *   { type: 'thinking' }              capture closed, work started
  *   { type: 'expect', chars }         how much output to expect, once known
  *   { type: 'partial', text }         streamed text, cumulative
- *   { type: 'done',    text }         final text
+ *   { type: 'done',    text }         final text; a local revision adds reviseAdapter, the
+ *                                     adapter file it ran with, or false (none loaded)
  *
  * `expect` exists so the overlay can show real progress rather than a sweep on
  * a timer. It is an estimate and it is honest about being one: dictation is
@@ -191,7 +192,9 @@ async function* run(opts = {}) {
 
     const revised = unwrap(text).trim();
     if (!revised) throw new Error('The model returned nothing');
-    yield { type: 'done', text: lead + revised + tail };
+    // Which revise adapter this request ran with (its file name), or false: a shared item records it.
+    const adapter = local.REVISE_ADAPTER;
+    yield { type: 'done', text: lead + revised + tail, reviseAdapter: adapter ? require('path').basename(adapter) : false };
     return;
   }
 
