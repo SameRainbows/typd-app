@@ -414,11 +414,11 @@ function statusAction(id) {
 const trayUi = createTray({
   open: (section, opts) => home.open(section, opts),
   copy: (text) => inject.copy(text),
+  updateLine: () => appUpdate.line(),
+  updateAction: () => require('electron').shell.openExternal(appUpdate.DOWNLOAD_PAGE).catch(() => {}),
   statusAction,
   forget: (term) => forget(term),
-  modelLine: () => modelUpdate.line(),
-  updateLine: () => appUpdate.line(),
-  updateAction: () => require('electron').shell.openExternal(appUpdate.DOWNLOAD_PAGE).catch(() => {})
+  modelLine: () => modelUpdate.line()
 });
 
 const refreshTray = () => trayUi.refresh();

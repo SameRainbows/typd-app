@@ -26,11 +26,11 @@ function preview40(text) {
  * @param {object} deps
  * @param {(section: string, opts?: object) => void} deps.open  the Typd window
  * @param {(text: string) => void} deps.copy                  out of clipboard history
+ * @param {() => {label: string, action?: string}|null} [deps.updateLine]   app-update line (appUpdate.js)
+ * @param {(action: string) => void} [deps.updateAction]       a click on it (the download page)
  * @param {(id: string) => void} deps.statusAction             a click on the status line
  * @param {(term: string) => void} deps.forget                 undo a learned word
  * @param {() => string|null} [deps.modelLine]                 model-update line (modelUpdate.js)
- * @param {() => {label: string, action?: string}|null} [deps.updateLine]   app-update line (appUpdate.js)
- * @param {(action: string) => void} [deps.updateAction]       a click on it (the download page)
  */
 function createTray(deps) {
   let tray = null;
