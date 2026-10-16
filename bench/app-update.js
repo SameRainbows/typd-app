@@ -495,6 +495,7 @@ function fakeWinApp(dir, version, { model = true, tester = false, uninstaller = 
     fs.mkdirSync(path.join(dir, 'resources', 'models', 'typd-dictate'), { recursive: true });
     fs.writeFileSync(path.join(dir, 'resources', 'models', 'typd-dictate', 'model.json'), JSON.stringify({ model: 'm.gguf', mmproj: 'p.gguf' }));
     fs.writeFileSync(path.join(dir, 'resources', 'models', 'typd-dictate', 'm.gguf'), 'the bundled model of ' + version);
+    fs.writeFileSync(path.join(dir, 'resources', 'models', 'typd-dictate', 'p.gguf'), 'its mmproj');
   }
   if (tester) fs.writeFileSync(path.join(dir, 'resources', 'tester.json'), JSON.stringify({ tester: 'bench', key: 'tk_not_a_real_key_0000' }));
   if (uninstaller) fs.writeFileSync(path.join(dir, 'Uninstall Typd.exe'), 'uninstaller');
@@ -525,6 +526,7 @@ function fakeMacApp(bundle, version, launcher, { model = true, tester = false } 
     fs.mkdirSync(path.join(R, 'models', 'typd-dictate'), { recursive: true });
     fs.writeFileSync(path.join(R, 'models', 'typd-dictate', 'model.json'), JSON.stringify({ model: 'm.gguf', mmproj: 'p.gguf' }));
     fs.writeFileSync(path.join(R, 'models', 'typd-dictate', 'm.gguf'), 'the bundled model of ' + version);
+    fs.writeFileSync(path.join(R, 'models', 'typd-dictate', 'p.gguf'), 'its mmproj');   // model.json names both, as a real build's does
   }
   if (tester) fs.writeFileSync(path.join(R, 'tester.json'), JSON.stringify({ tester: 'bench', key: 'tk_not_a_real_key_0000' }));
   execFileSync('codesign', ['--force', '--sign', '-', bundle]);
