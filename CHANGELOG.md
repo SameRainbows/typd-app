@@ -1,5 +1,11 @@
 # What's new
 
+## 0.2.2 · October 2026
+
+- **Mac permissions stay on.** Typd is now signed with its own certificate, so macOS keeps Accessibility, Microphone and Input Monitoring on when Typd updates itself. After this one update you may need to switch them on once more; from then on they stay.
+- **Signed model updates.** Typd installs a new dictation model only when it carries the developer's signature.
+- **Use it for work.** The model licence now allows any use, work and commercial work included. The model files stay inside Typd.
+
 ## 0.2.1 · October 2026
 
 - **Update checks count versions.** When Typd checks for an update, it now sends its version and the model's version with an anonymous install ID, so the developer can see which versions are in use. The ID is random and made on your computer, it is not your sharing ID, and nothing you say or type goes with it.
