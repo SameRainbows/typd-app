@@ -15,6 +15,8 @@
  *   node bench/hotkeys.js
  */
 
+const fs = require('fs');
+const path = require('path');
 const logic = require('../src/main/hotkey-logic');
 
 let failures = 0;
@@ -251,6 +253,21 @@ section('hotkeys.js: a key press can never take Typd down');
     check('and only once', hook.stops === 1);
   } finally {
     Module._load = realLoad;
+  }
+
+  // The Mac build of uiohook-napi is patched so its start can never hang Typd's main thread
+  // (scripts/build-uiohook-mac.js). The patch is exact text: say so here, on any platform,
+  // the day an update to uiohook-napi stops it fitting.
+  {
+    const { patched, MARK } = require('../scripts/build-uiohook-mac.js');
+    const dir = path.join(__dirname, '..', 'node_modules', 'uiohook-napi');
+    let ok = false, why = '';
+    try {
+      const src = fs.readFileSync(path.join(dir, 'src', 'lib', 'uiohook_worker.c'), 'utf8');
+      const out = patched(src, require(path.join(dir, 'package.json')).version);
+      ok = out === null || (out.includes(MARK) && /while \(hook_state == 0\) \{\s*uv_cond_wait/.test(out) && patched(out) === null);
+    } catch (err) { why = err.message; }
+    check('the Mac start-handshake fix fits the installed uiohook-napi', ok, why);
   }
 
   try {

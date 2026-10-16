@@ -22,9 +22,10 @@
     "package:update:win": "node scripts/app-update-package.js win",
     "bench:lora": "node bench/lora.js",
     "fetch:llama-mac": "node scripts/fetch-llama-mac.js",
+    "build:uiohook-mac": "node scripts/build-uiohook-mac.js arm64 x64",
     "smoke": "node scripts/smoke-llama.js",
     "dist:win": "electron-builder --win --x64",
-    "dist:mac": "node scripts/fetch-llama-mac.js && electron-builder --mac",
+    "dist:mac": "node scripts/fetch-llama-mac.js && node scripts/build-uiohook-mac.js arm64 x64 && electron-builder --mac",
     "build:icons": "electron scripts/build-icons.js && python scripts/build-icons.py",
     "fetch:model": "node scripts/fetch-model.js"
   },

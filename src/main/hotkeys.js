@@ -264,9 +264,11 @@ function registerHotkeys({ onPress, onRelease, onCancel, onAltDown, binding, int
         // throw; wait quietly instead and let permissions-mac.js do the asking.
         startWhenAllowed(uIOhook, 'Accessibility is not on for Typd yet');
       } else {
+        const already = MAC && macTap === uIOhook;
         uIOhook.start();   // macOS: a no-op when the tap already runs (kept across key changes)
         hook = uIOhook;
         if (MAC) macTap = uIOhook;
+        if (MAC && !already) console.log('[typd:hotkey] ' + label(BOUND) + ' is listening');
       }
     } catch (err) {
       if (process.env.TYPD_DEBUG) console.log('[typd:hotkey]', err);
