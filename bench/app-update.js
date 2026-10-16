@@ -288,7 +288,11 @@ async function updaterTests() {
 
   section('the new version\'s verdict: the model rule');
   {
-    const pend = (modelOk) => fs.writeFileSync(path.join(dir, 'pending.json'), JSON.stringify({ version: '0.4.0', from: '0.3.0', tag: 't', app, carry: [], modelOk }));
+    // A helper is waiting for the verdict: helper.started names a live process (this one).
+    const pend = (modelOk) => {
+      fs.writeFileSync(path.join(dir, 'pending.json'), JSON.stringify({ version: '0.4.0', from: '0.3.0', tag: 't', app, carry: [], modelOk }));
+      fs.writeFileSync(path.join(dir, 'helper.started'), String(process.pid));
+    };
     pend(true);
     let u = make({ appVersion: '0.4.0' });
     u.startup();
@@ -310,6 +314,14 @@ async function updaterTests() {
     u.startup();
     v = await u.settle({ windowOk: false, modelOk: true });
     check('the window did not load: "failed"', v === 'failed' && /window/.test(readJson(path.join(dir, 'verdict.json')).why));
+    pend(true);
+    const gone = spawnSync(process.execPath, ['-e', 'console.log(process.pid)'], { encoding: 'utf8' }).stdout.trim();
+    fs.writeFileSync(path.join(dir, 'helper.started'), gone);
+    u = make({ appVersion: '0.4.0' });
+    u.startup();
+    v = await u.settle({ windowOk: true, modelOk: false });
+    check('it fails, but the helper is gone (shut down mid-update): it stays rather than leave no Typd at all',
+      v === 'kept' && !exists(path.join(dir, 'pending.json')), { v, files: fs.readdirSync(dir) });
     for (const f of ['pending.json', 'verdict.json', 'result.json']) fs.rmSync(path.join(dir, f), { force: true });
   }
 

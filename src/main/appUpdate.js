@@ -692,6 +692,13 @@ function createAppUpdater(o) {
     } catch (err) { log('could not write the verdict:', err && err.message); }
   }
 
+  /** Is the helper that started this version still waiting for its verdict? (helper.started holds its pid) */
+  function helperAlive() {
+    const pid = Number(String(fs.existsSync(F.started) ? fs.readFileSync(F.started, 'utf8') : '').trim());
+    if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+    try { process.kill(pid, 0); return true; } catch (err) { return err.code === 'EPERM'; }
+  }
+
   /** Carried folders the helper did not put back (it was killed halfway): back into this app. */
   function recoverCarry(pending) {
     if (!app || !pending || !Array.isArray(pending.carry)) return;
@@ -782,8 +789,15 @@ function createAppUpdater(o) {
     if (failVersion && failVersion === appVersion) { ok = false; why = 'TYPD_APP_UPDATE_SELFTEST_FAIL'; }
     writeVerdict(ok ? 'ok' : 'failed', why);
     report();
-    if (!ok) { log('this version failed its start-up self-test:', why, '- the helper puts the old one back'); return 'failed'; }
     const pending = postUpdate;
+    if (!ok && !helperAlive()) {
+      // The helper is gone (the computer was shut down mid-update, say): quitting would leave no
+      // Typd at all, at every launch. Stay, as after any model failure (the tray says so).
+      log('this version failed its start-up self-test:', why, '- but no helper is waiting to put the old one back; staying');
+      await finishUpdated(pending);
+      return 'kept';
+    }
+    if (!ok) { log('this version failed its start-up self-test:', why, '- the helper puts the old one back'); return 'failed'; }
     const t0 = Date.now();
     while (Date.now() - t0 < resultWaitMs) {
       const r = readJson(F.result);
@@ -897,7 +911,7 @@ const envMs = (name, d) => { const n = Number(process.env[name]); return process
 function start({ busy, onWarm, changed, quit, reportExtra }) {
   if (main || !electron) return main;
   const { app, powerMonitor, net } = electron;
-  if (!app.isPackaged && process.env.TYPD_APP_UPDATE_DEV !== '1') { debug('off: run from source'); return null; }
+  if (!app.isPackaged) { debug('off: run from source'); return null; }   // never: from source the "app" would be node_modules/electron
   if (process.env.TYPD_NO_APP_UPDATE === '1') { debug('off: TYPD_NO_APP_UPDATE=1'); return null; }
   const where = installation(app);
   let warm = null;   // the first model start: {ok}
