@@ -19,7 +19,10 @@ const DEFAULTS = {
   // Any key hotkey-logic.validate accepts: 'RightAlt', 'RightCtrl', 'F13', 'Ctrl+Shift+Space'...
   // macOS: Right ⌘ rather than Right Option, which types characters on most Mac layouts.
   hotkey: hotkeyLogic.defaultFor(process.platform),
-  sharePaused: false    // tester builds only (collect.js): true queues and sends nothing
+  sharePaused: false,   // tester builds only (collect.js): true queues and sends nothing
+  // macOS only: keep the Dock icon while Typd runs. Off, Typd lives in the menu bar and the
+  // Dock icon shows only while the Typd window is open (home-window.js, syncDock).
+  showInDock: false
 };
 
 /** Two good choices, for anything that wants to suggest one: the default key and a chord. */

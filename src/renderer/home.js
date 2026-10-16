@@ -455,7 +455,7 @@
     setTimeout(function () { e.hidden = true; }, 5000);
   }
 
-  ['sounds', 'startAtLogin', 'keepRecordings'].forEach(function (k) {
+  ['sounds', 'startAtLogin', 'keepRecordings', 'showInDock'].forEach(function (k) {
     $(k).addEventListener('change', function (e) {
       var box = e.target;
       api.settings.set(k, box.checked).then(function (ok) {
@@ -496,7 +496,8 @@
 
   function renderSettings() {
     var s = S.settings, p = S.platform;
-    ['sounds', 'startAtLogin', 'keepRecordings'].forEach(function (k) { $(k).checked = Boolean(s[k]); });
+    ['sounds', 'startAtLogin', 'keepRecordings', 'showInDock'].forEach(function (k) { $(k).checked = Boolean(s[k]); });
+    $('dockRow').hidden = !p.mac;
     $('mic').options[0].textContent = p.mac ? 'System default' : 'Windows default';
     $('loginTitle').textContent = p.mac ? 'Open at login' : 'Start with Windows';
     $('startAtLogin').disabled = !s.loginSupported;

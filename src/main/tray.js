@@ -31,6 +31,7 @@ function preview40(text) {
  * @param {(id: string) => void} deps.statusAction             a click on the status line
  * @param {(term: string) => void} deps.forget                 undo a learned word
  * @param {() => string|null} [deps.modelLine]                 model-update line (modelUpdate.js)
+ * @param {() => void} [deps.quit]                             quit, saying it was the tray (index.js)
  */
 function createTray(deps) {
   let tray = null;
@@ -102,7 +103,7 @@ function createTray(deps) {
       { label: "What's new", click: () => deps.open('news') },
       { label: 'Send feedback', click: feedback },
       { type: 'separator' },
-      { label: 'Quit Typd', click: () => app.quit() }
+      { label: 'Quit Typd', click: () => (deps.quit ? deps.quit() : app.quit()) }
     ]);
   }
 

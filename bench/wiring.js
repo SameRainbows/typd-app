@@ -142,6 +142,35 @@ check('the overlay reports devices for the tray menu',
 check('the pill is pinned dark, whatever the system theme',
   /<html[^>]*data-scheme="dark"/.test(html) && !/@media \(prefers-color-scheme/.test(read('src/renderer/overlay.css')));
 
+/* -------------------------------------------------------- staying running */
+
+// A tester's Mac: closing the Typd window took Typd and its key with it. Closing a window
+// must never quit, and nothing a key press does may reach uiohook's native callback as an
+// exception (it aborts the process). mac.yml's "Close the Typd window, stay running" step
+// checks the same on a real Mac; these are the seams it relies on.
+section('closing the window never quits');
+const hk = read('src/main/hotkeys.js');
+const tray = read('src/main/tray.js');
+const mainFiles = fs.readdirSync(path.join(root, 'src/main')).filter((f) => f.endsWith('.js'));
+const quitters = mainFiles.filter((f) => /app\.(quit|exit)\(/.test(read('src/main/' + f)));
+check('only index.js and the tray call app.quit/app.exit', quitters.join(',') === 'index.js,tray.js', quitters.join(', '));
+check("index.js quits in one place, quit(by), plus the preview's exit",
+  (main.match(/app\.quit\(/g) || []).length === 1 && /function quit\(by\) \{\s*quitBy = by;\s*app\.quit\(\);/.test(main) &&
+  (main.match(/app\.exit\(/g) || []).length === 1);
+check("the tray's Quit says it was the tray", /label: 'Quit Typd', click: \(\) => \(deps\.quit \? deps\.quit\(\)/.test(tray) && /quit: \(\) => quit\('the tray menu/.test(main));
+check('window-all-closed keeps Typd running', /app\.on\('window-all-closed', \(e\) => e\.preventDefault\(\)\)/.test(main));
+const closedHandler = (hMain.match(/win\.on\('closed', \(\) => \{([\s\S]*?)\n {2}\}\);/) || [, ''])[1];
+check("the window's 'closed' handler forgets the window first and guards each step",
+  /^\s*win = null;/.test(closedHandler) && /try \{ fn\(\); \} catch/.test(closedHandler) && !/quit|exit/.test(closedHandler.replace(/Typd keeps running/, '')));
+check('one activate handler', (main.match(/app\.on\('activate'/g) || []).length === 1);
+check('every uiohook listener is guarded', /onDown = guard\(/.test(hk) && /onUp = guard\(/.test(hk) && /onMouse = guard\(/.test(hk) &&
+  (hk.match(/uIOhook\.on\('/g) || []).length === 4);
+check('the CI test hook runs only with TYPD_TEST_CLOSE_HOME',
+  (main.match(/testCloseHome\(/g) || []).length === 2 && /if \(process\.env\.TYPD_TEST_CLOSE_HOME\) testCloseHome\(/.test(main));
+check('"Show Typd in the Dock": macOS, off by default, wired to the window',
+  /showInDock: false/.test(read('src/main/settings.js')) && /key === 'showInDock'/.test(hMain) &&
+  hHtml.includes('id="showInDock"') && /'showInDock'\]\.forEach/.test(hJs));
+
 /* ------------------------------------------------------------------ timing */
 
 section('timing constants that must agree');

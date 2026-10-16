@@ -269,11 +269,16 @@ function register(d) {
     return true;
   });
 
-  // Settings: the five controls
+  // Settings: the five controls, and the Dock on a Mac
   handle('settings:set', (key, value) => {
     if (key === 'startAtLogin') {
       if (typeof value !== 'boolean' || !setLoginItem(value)) return false;
       return settings.set('startAtLogin', value);
+    }
+    if (key === 'showInDock') {
+      if (!MAC || !settings.set('showInDock', value)) return false;
+      syncDock();
+      return true;
     }
     if (!['mic', 'micLabel', 'sounds', 'keepRecordings', 'sharePaused'].includes(key)) return false;
     return settings.set(key, value);
@@ -345,6 +350,29 @@ function bringForward() {
   if (MAC) app.focus({ steal: true });   // a menu-bar app is not brought forward by showing a window
 }
 
+const debug = (...args) => { if (process.env.TYPD_DEBUG) console.log('[typd:home]', ...args); };
+
+/**
+ * macOS: the Dock icon. With "Show Typd in the Dock" on it stays while Typd runs, and a
+ * click on it opens this window (index.js, 'activate'). Off (the default) Typd is a menu-bar
+ * app: the icon shows only while this window is open, so it is findable with ⌘Tab, and goes
+ * when the window closes. Hiding the icon never quits Typd; the menu-bar icon and the key
+ * stay. Called at launch, when the setting changes, and as the window opens and closes.
+ */
+function syncDock() {
+  if (!MAC || !app.dock) return;
+  const open = Boolean(win && !win.isDestroyed());
+  const want = Boolean(settings.get('showInDock')) || open;
+  try {
+    const shown = app.dock.isVisible();
+    if (want && !shown) app.dock.show();
+    else if (!want && shown) app.dock.hide();
+    debug('dock', want ? 'shown' : 'hidden', open ? '(window open)' : '');
+  } catch (err) {
+    debug('dock:', err && err.message);
+  }
+}
+
 /**
  * Open the window, or bring it forward, on a section: 'home' | 'history' | 'dictionary' |
  * 'settings' | 'news'. `capture`: the hotkey row starts listening for a key at once
@@ -377,16 +405,33 @@ function open(section = 'home', opts = {}) {
   win.webContents.on('will-navigate', (e) => e.preventDefault());
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.once('ready-to-show', () => {
-    if (MAC && app.dock) app.dock.show();   // findable with ⌘Tab while it is open
+    syncDock();   // findable with ⌘Tab while it is open
     bringForward();
   });
+  // Closing the window only closes the window: Typd, its menu-bar icon and its key stay
+  // (nothing here or in index.js quits on a close). Each step is on its own, so one that
+  // fails cannot leave the others undone -- the picker's pause above all, which would
+  // leave the key deaf.
   win.on('closed', () => {
-    revert();                 // a key that was never heard is not kept
-    deps.pauseHotkey(false);  // nor is the picker's pause
     win = null;
-    if (MAC && app.dock) app.dock.hide();
+    const step = (name, fn) => {
+      try { fn(); } catch (err) { console.log('[typd:home] on close, ' + name + ' failed:', (err && err.stack) || err); }
+    };
+    step('revert', () => revert());                     // a key that was never heard is not kept
+    step('pause', () => deps.pauseHotkey(false));       // nor is the picker's pause
+    step('dock', () => syncDock());
+    debug('window closed; Typd keeps running');
   });
   win.loadFile(PAGE, { query: { section: s, capture: opts.capture ? '1' : '' } });
+}
+
+/** Close the window the way its close button does (the CI check in mac.yml uses it). */
+function close() {
+  if (win && !win.isDestroyed()) win.close();
+}
+
+function isOpen() {
+  return Boolean(win && !win.isDestroyed());
 }
 
 function isFocused() {
@@ -398,4 +443,4 @@ function changed(what) {
   send('home:changed', { what });
 }
 
-module.exports = { register, open, isFocused, heard, changed, setLoginItem, loginItem };
+module.exports = { register, open, close, isOpen, isFocused, heard, changed, setLoginItem, loginItem, syncDock };

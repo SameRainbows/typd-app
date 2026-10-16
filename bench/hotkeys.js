@@ -180,5 +180,89 @@ check('keycaps for a chord', same(logic.parts('Ctrl+Shift+Space', 'win32'), ['Ct
 check('keycaps on a Mac', same(logic.parts('Command+Shift+Space', 'darwin'), ['⇧', '⌘', 'Space']));
 check('verb: tap a key, press a chord', logic.verb('RightAlt', 'win32') === 'tap' && logic.verb('Ctrl+Shift+D', 'win32') === 'press');
 
+/* ------------------------------------------------- hotkeys.js, with fakes */
+
+/*
+ * hotkeys.js itself, with Electron and uiohook replaced by fakes. uiohook calls its listeners
+ * from native code and aborts the whole process if one throws (napi_fatal_error), so nothing
+ * a key press sets off may ever reach it; and on a Mac the event tap must survive a change of
+ * key (stopping it can hang Typd: see hotkeys.js, macTap).
+ */
+section('hotkeys.js: a key press can never take Typd down');
+{
+  const Module = require('module');
+  const { EventEmitter } = require('events');
+  const realLoad = Module._load;
+  const realPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+
+  const load = (platform) => {
+    const hook = Object.assign(new EventEmitter(), { starts: 0, stops: 0 });
+    hook.start = () => { hook.starts++; };
+    hook.stop = () => { hook.stops++; };
+    const codes = new Proxy({}, { get: (_, k) => (typeof k === 'string' ? 1000 + [...k].reduce((a, c) => a + c.charCodeAt(0), 0) : undefined) });
+    const fakes = {
+      electron: {
+        globalShortcut: { register: () => true, unregister: () => {}, isRegistered: () => false },
+        systemPreferences: { isTrustedAccessibilityClient: () => true }
+      },
+      'uiohook-napi': { uIOhook: hook, UiohookKey: codes }
+    };
+    Module._load = function (request, ...rest) {
+      return Object.prototype.hasOwnProperty.call(fakes, request) ? fakes[request] : realLoad.call(this, request, ...rest);
+    };
+    Object.defineProperty(process, 'platform', { value: platform });
+    const file = require.resolve('../src/main/hotkeys');
+    delete require.cache[file];
+    try { return { hk: require(file), hook, codes }; } finally { Object.defineProperty(process, 'platform', realPlatform); }
+  };
+
+  try {
+    const { hk, hook, codes } = load('darwin');
+    let presses = 0;
+    const quiet = console.log;
+    const keys = hk.registerHotkeys({
+      binding: 'RightMeta',
+      onPress: () => { presses++; throw new Error('a dictation that cannot start'); },
+      onRelease: () => {}, onCancel: () => {}
+    });
+    let threw = null;
+    console.log = () => {};
+    try {
+      hook.emit('keydown', { keycode: codes.MetaRight });
+      hook.emit('keyup', { keycode: codes.MetaRight });
+    } catch (err) { threw = err; } finally { console.log = quiet; }
+    check('a throwing press never reaches uiohook', !threw && presses === 1, threw ? threw.message : 'presses ' + presses);
+    check('the state line says it listens and counts keys', /Right ⌘.*: listening, 2 key events heard$/.test(keys.state()), keys.state());
+    check('and keysHeard agrees', keys.keysHeard === 2);
+
+    keys.close();
+    check('macOS: a change of key keeps the event tap running', hook.stops === 0, 'stops ' + hook.stops);
+    let after = 0;
+    const next = hk.registerHotkeys({ binding: 'RightAlt', onPress: () => { after++; }, onRelease: () => {}, onCancel: () => {} });
+    hook.emit('keydown', { keycode: codes.AltRight });
+    hook.emit('keyup', { keycode: codes.AltRight });
+    hook.emit('keydown', { keycode: codes.MetaRight });
+    hook.emit('keyup', { keycode: codes.MetaRight });
+    check('the new key works, the old one is gone', after === 1 && presses === 1, 'new ' + after + ', old ' + presses);
+    next.close();
+    hk.stopHook();
+    check('macOS: the tap stops at quit (stopHook)', hook.stops === 1, 'stops ' + hook.stops);
+    hk.stopHook();
+    check('and only once', hook.stops === 1);
+  } finally {
+    Module._load = realLoad;
+  }
+
+  try {
+    const { hk, hook } = load('win32');
+    const keys = hk.registerHotkeys({ binding: 'RightAlt', onPress: () => {}, onRelease: () => {}, onCancel: () => {} });
+    keys.close();
+    check('Windows: close() still stops its hook', hook.stops === 1, 'stops ' + hook.stops);
+  } finally {
+    Module._load = realLoad;
+    delete require.cache[require.resolve('../src/main/hotkeys')];
+  }
+}
+
 console.log('\n' + (failures ? failures + ' FAILED' : 'all hotkey checks passed') + '\n');
 process.exit(failures ? 1 : 0);
