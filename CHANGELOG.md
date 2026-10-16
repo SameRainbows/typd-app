@@ -1,5 +1,10 @@
 # What's new
 
+## 0.2.1 · October 2026
+
+- **Update checks count versions.** When Typd checks for an update, it now sends its version and the model's version with an anonymous install ID, so the developer can see which versions are in use. The ID is random and made on your computer, it is not your sharing ID, and nothing you say or type goes with it.
+- **Shared dictations name their model.** If you share, each dictation and each **That was wrong** now records the exact model version that wrote it, and whether the revise adapter was used.
+
 ## 0.2.0 · October 2026
 
 - **Share your dictations, only if you choose.** On its first start Typd asks once. Nothing is shared unless you pick **Share my dictations to improve Typd**. Change it any time in Settings, where **Delete what I've shared** removes what you sent.
