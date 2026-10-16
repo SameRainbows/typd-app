@@ -1,0 +1,1983 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Typd — the sound lab</title>
+
+<!--
+  An instrument, not a demo.
+
+  ROADMAP step 1.8 sets a bar that cannot be met by reading code: "identifiable
+  without looking, not annoying on the fortieth use, tested with headphones and
+  laptop speakers." Every clause of that is a listening test, and a listening
+  test needs a rig. So this page is the rig — four complete cue sets, every
+  parameter on a slider, an A/B switch, a small-speaker simulation, a repeat
+  gun, and the real session phrase at real timings.
+
+  Law 5 says nothing ships that is not measured. Sound resists measurement, so
+  the one thing here that *can* be a number is: how much of each cue survives a
+  500 Hz high-pass. That is the laptop-speaker failure mode reduced to decibels,
+  it is computed offline on load, and it is the table that decides the argument
+  rather than anyone's adjective.
+
+  Nothing is fetched. The engine uses oscillators, a JS-generated noise buffer,
+  biquads and a waveshaper — all of which survive the overlay's CSP
+  (default-src 'none'), none of which is an AudioWorklet or a file. Whatever
+  works here works there.
+-->
+
+<style>
+/* ===================================================================== page
+   Same ramp as the other studies: a document arguing for restraint should not
+   itself be loud. Hue appears in exactly two places — the verdict chips — and
+   only because a pass/fail needs to be readable at a glance. */
+
+:root {
+  --page:   #F4F5F6;
+  --panel:  #FFFFFF;
+  --sunken: #ECEDEF;
+  --line:   rgba(16, 18, 23, 0.11);
+  --line-2: rgba(16, 18, 23, 0.20);
+  --ink:    #14161B;
+  --muted:  #575D66;
+  --faint:  #8B919B;
+  --pos:    #2A6B48;
+  --warn:   #8A6014;
+  --bad:    #9B2C24;
+  --trace:  #14161B;
+
+  --font-ui: "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-hd: "Segoe UI Variable Display", "Segoe UI", -apple-system, system-ui, sans-serif;
+  --font-mono: "Cascadia Mono", ui-monospace, "SF Mono", Consolas, monospace;
+}
+
+:root[data-theme="dark"] {
+  --page:   #0C0D10;
+  --panel:  #14161A;
+  --sunken: #0A0B0E;
+  --line:   rgba(255, 255, 255, 0.11);
+  --line-2: rgba(255, 255, 255, 0.20);
+  --ink:    #F4F5F7;
+  --muted:  #9DA3AC;
+  --faint:  #6C727B;
+  --pos:    #7FCBA4;
+  --warn:   #D9B063;
+  --bad:    #E38C84;
+  --trace:  #F4F5F7;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap {
+  max-width: 1220px;
+  margin: 0 auto;
+  padding: 40px 24px 110px;
+  display: flex;
+  flex-direction: column;
+  gap: 34px;
+}
+
+.masthead { display: flex; flex-direction: column; gap: 9px; }
+.eyebrow {
+  font-size: 10.5px; letter-spacing: .18em; text-transform: uppercase;
+  color: var(--faint); font-weight: 650;
+}
+.masthead h1 {
+  margin: 0; font-family: var(--font-hd);
+  font-size: clamp(27px, 4vw, 40px); font-weight: 640; letter-spacing: -.028em;
+}
+.masthead p { margin: 0; max-width: 74ch; color: var(--muted); font-size: 15px; }
+
+h2.sec {
+  margin: 0; font-size: 10.5px; letter-spacing: .18em; text-transform: uppercase;
+  color: var(--faint); font-weight: 650;
+}
+.section { display: flex; flex-direction: column; gap: 14px; }
+.lede { margin: 0; max-width: 82ch; color: var(--muted); }
+
+/* ------------------------------------------------------------- controls */
+
+.bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+  padding: 11px 12px; border: 1px solid var(--line); border-radius: 11px;
+  background: var(--panel);
+  position: sticky; top: 0; z-index: 40;
+  box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 8px 24px rgba(0,0,0,.05);
+}
+:root[data-theme="dark"] .bar { box-shadow: 0 1px 2px rgba(0,0,0,.5), 0 8px 24px rgba(0,0,0,.4); }
+
+.grp {
+  display: flex; align-items: center; gap: 2px; padding: 3px;
+  border: 1px solid var(--line); border-radius: 9px; background: var(--sunken);
+}
+.grp > span.lbl {
+  align-self: center; font-size: 10px; letter-spacing: .14em; text-transform: uppercase;
+  color: var(--faint); font-weight: 650; padding: 0 8px 0 6px; white-space: nowrap;
+}
+.grp button, .btn {
+  appearance: none; border: 0; background: transparent; color: var(--muted);
+  font-family: inherit; font-size: 12.5px; font-weight: 550;
+  padding: 6px 11px; border-radius: 6px; cursor: pointer;
+  transition: background 130ms ease, color 130ms ease;
+  white-space: nowrap;
+}
+.grp button:hover, .btn:hover { color: var(--ink); }
+.grp button[aria-pressed="true"] { background: var(--ink); color: var(--page); }
+.btn {
+  border: 1px solid var(--line-2); background: var(--panel);
+  color: var(--ink); font-weight: 600; padding: 8px 13px; border-radius: 9px;
+}
+.btn:active { transform: translateY(1px); }
+.btn[aria-pressed="true"] { background: var(--ink); color: var(--page); border-color: var(--ink); }
+.spacer { flex: 1 1 auto; }
+
+kbd {
+  font-family: var(--font-mono); font-size: 10.5px; font-weight: 600;
+  border: 1px solid var(--line-2); border-bottom-width: 2px; border-radius: 4px;
+  padding: 1px 5px; color: var(--faint); background: var(--panel);
+}
+
+input[type=range] { accent-color: var(--ink); }
+select {
+  appearance: none; font-family: inherit; font-size: 12.5px; font-weight: 600;
+  color: var(--ink); background: var(--panel);
+  border: 1px solid var(--line-2); border-radius: 8px; padding: 6px 10px;
+  cursor: pointer;
+}
+
+.vol { display: flex; align-items: center; gap: 8px; padding: 0 8px; }
+.vol input { width: 110px; }
+.vol b { font-family: var(--font-mono); font-size: 11px; font-weight: 600; color: var(--faint); min-width: 34px; }
+
+/* ------------------------------------------------------------ cue keys */
+
+.keys { display: grid; grid-template-columns: repeat(auto-fit, minmax(158px, 1fr)); gap: 10px; }
+
+.cue {
+  appearance: none; cursor: pointer; text-align: left;
+  border: 1px solid var(--line-2); border-radius: 12px; background: var(--panel);
+  color: var(--ink); font-family: inherit;
+  padding: 13px 14px 12px; display: flex; flex-direction: column; gap: 3px;
+  transition: transform 90ms ease, border-color 120ms ease, background 120ms ease;
+  min-height: 96px;
+}
+.cue:hover { border-color: var(--ink); }
+.cue:active { transform: translateY(1px); }
+.cue.lit { background: var(--ink); color: var(--page); border-color: var(--ink); }
+.cue.lit .cue-note, .cue.lit .cue-hot { color: rgba(255,255,255,.6); }
+:root[data-theme="dark"] .cue.lit .cue-note,
+:root[data-theme="dark"] .cue.lit .cue-hot { color: rgba(0,0,0,.55); }
+.cue-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.cue-name { font-size: 15px; font-weight: 660; letter-spacing: -.01em; }
+.cue-hot { font-family: var(--font-mono); font-size: 11px; color: var(--faint); }
+.cue-note { font-size: 11.5px; color: var(--muted); line-height: 1.4; }
+.cue-flag {
+  align-self: flex-start; margin-top: 2px;
+  font-size: 9.5px; letter-spacing: .12em; text-transform: uppercase; font-weight: 700;
+  border: 1px solid currentColor; border-radius: 4px; padding: 0 4px; color: var(--bad);
+}
+
+/* ------------------------------------------------------------- displays */
+
+.scopes { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media (max-width: 900px) { .scopes { grid-template-columns: 1fr; } }
+
+.disp {
+  border: 1px solid var(--line); border-radius: 11px; background: var(--sunken);
+  overflow: hidden; display: flex; flex-direction: column;
+}
+.disp header {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+  padding: 8px 11px 6px; border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+.disp header b { font-size: 10px; letter-spacing: .16em; text-transform: uppercase; font-weight: 700; color: var(--faint); }
+.disp header i { font-style: normal; font-family: var(--font-mono); font-size: 10.5px; color: var(--faint); }
+.disp canvas { display: block; width: 100%; height: 150px; }
+
+/* ---------------------------------------------------------------- table */
+
+table.metrics { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+table.metrics th, table.metrics td {
+  text-align: right; padding: 7px 10px; border-bottom: 1px solid var(--line);
+  font-variant-numeric: tabular-nums; font-family: var(--font-mono); font-size: 11.5px;
+}
+table.metrics th { color: var(--faint); font-weight: 650; font-size: 10px; letter-spacing: .1em; text-transform: uppercase; font-family: var(--font-ui); }
+table.metrics td:first-child, table.metrics th:first-child { text-align: left; font-family: var(--font-ui); font-weight: 600; font-size: 12.5px; }
+table.metrics tbody tr:hover { background: var(--sunken); }
+
+.chip {
+  display: inline-block; font-size: 10px; font-weight: 700; letter-spacing: .06em;
+  border: 1px solid currentColor; border-radius: 4px; padding: 0 5px; margin-left: 6px;
+  font-family: var(--font-ui);
+}
+.chip.ok  { color: var(--pos); }
+.chip.mid { color: var(--warn); }
+.chip.no  { color: var(--bad); }
+
+/* ----------------------------------------------------------- param edit */
+
+.editor { display: flex; flex-direction: column; gap: 12px; }
+
+.card {
+  border: 1px solid var(--line); border-radius: 12px; background: var(--panel);
+  overflow: hidden;
+}
+.card > summary {
+  cursor: pointer; list-style: none; padding: 11px 14px;
+  display: flex; align-items: center; gap: 10px;
+  border-bottom: 1px solid transparent;
+}
+.card[open] > summary { border-bottom-color: var(--line); }
+.card > summary::-webkit-details-marker { display: none; }
+.card > summary::before {
+  content: "▸"; color: var(--faint); font-size: 11px; transition: transform 120ms ease;
+}
+.card[open] > summary::before { transform: rotate(90deg); }
+.card > summary b { font-size: 13.5px; font-weight: 660; }
+.card > summary em { font-style: normal; font-size: 11.5px; color: var(--muted); }
+.card > summary .mono { font-family: var(--font-mono); font-size: 10.5px; color: var(--faint); }
+
+.voice { padding: 10px 14px 14px; border-top: 1px dashed var(--line); }
+.voice:first-of-type { border-top: 0; }
+.voice > h4 {
+  margin: 0 0 8px; font-size: 10px; letter-spacing: .14em; text-transform: uppercase;
+  color: var(--faint); font-weight: 700;
+}
+.rows { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 4px 18px; }
+.row { display: grid; grid-template-columns: 92px 1fr 58px; align-items: center; gap: 8px; }
+.row label { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row input[type=range] { width: 100%; }
+.row output { font-family: var(--font-mono); font-size: 10.5px; color: var(--faint); text-align: right; font-variant-numeric: tabular-nums; }
+.row select { padding: 3px 7px; font-size: 11px; }
+
+/* ------------------------------------------------------------- assessment */
+
+.prose { max-width: 78ch; display: flex; flex-direction: column; gap: 14px; }
+.prose h3 {
+  margin: 18px 0 0; font-family: var(--font-hd); font-size: 19px; font-weight: 640;
+  letter-spacing: -.02em;
+}
+.prose h4 { margin: 10px 0 -6px; font-size: 13.5px; font-weight: 680; }
+.prose p { margin: 0; color: var(--muted); }
+.prose strong { color: var(--ink); font-weight: 640; }
+.prose ul, .prose ol { margin: 0; padding-left: 20px; color: var(--muted); display: flex; flex-direction: column; gap: 7px; }
+.prose code { font-family: var(--font-mono); font-size: 12px; background: var(--sunken); padding: 1px 5px; border-radius: 4px; color: var(--ink); }
+
+.verdict {
+  border: 1px solid var(--line-2); border-left-width: 3px; border-radius: 10px;
+  padding: 14px 16px; background: var(--panel); max-width: 78ch;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.verdict b { font-size: 13px; }
+
+pre.out {
+  margin: 0; padding: 14px 16px; border: 1px solid var(--line); border-radius: 11px;
+  background: var(--sunken); overflow: auto; max-height: 420px;
+  font-family: var(--font-mono); font-size: 11.5px; line-height: 1.55; color: var(--ink);
+  white-space: pre; tab-size: 2;
+}
+
+.note {
+  font-size: 11.5px; color: var(--faint); max-width: 82ch; margin: 0;
+}
+.counter { font-family: var(--font-mono); font-size: 11.5px; color: var(--faint); }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="eyebrow">Typd · design study · roadmap 1.8</div>
+    <h1>The sound lab</h1>
+    <p>
+      Four complete cue sets, every parameter live, an A/B switch, a laptop-speaker
+      simulation and a repeat gun. The acceptance bar for step 1.8 is a listening
+      test in three parts — identifiable blind, bearable on the fortieth use, honest
+      on small speakers — and none of it can be settled by reading code. Play things.
+      The written assessment is at the bottom, and it is a hypothesis until you have
+      used the buttons above it.
+    </p>
+  </header>
+
+  <!-- ============================================================ toolbar -->
+  <div class="bar" id="bar">
+    <div class="grp">
+      <span class="lbl">Slot A</span>
+      <select id="setA"></select>
+    </div>
+    <div class="grp">
+      <span class="lbl">Slot B</span>
+      <select id="setB"></select>
+    </div>
+    <div class="grp" id="liveGrp">
+      <span class="lbl">Live</span>
+      <button id="liveA" aria-pressed="true">A <kbd>a</kbd></button>
+      <button id="liveB" aria-pressed="false">B <kbd>b</kbd></button>
+    </div>
+    <button class="btn" id="abBtn">A/B the last cue <kbd>x</kbd></button>
+    <button class="btn" id="lapBtn" aria-pressed="false">Laptop speaker <kbd>l</kbd></button>
+    <div class="spacer"></div>
+    <div class="vol">
+      <span class="lbl" style="font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint);font-weight:650">Master</span>
+      <input type="range" id="vol" min="0" max="1.6" step="0.01" value="1" />
+      <b id="volOut">1.00×</b>
+    </div>
+    <button class="btn" id="stopBtn">Stop <kbd>esc</kbd></button>
+    <button class="btn" id="themeBtn">Dark</button>
+  </div>
+
+  <p class="note" id="liveNote"></p>
+
+  <!-- =============================================================== cues -->
+  <section class="section">
+    <h2 class="sec">The cues</h2>
+    <p class="lede">
+      Press a card or its number key. What each one marks is written on it — the cue
+      has to say that much without the card, which is the whole test.
+    </p>
+    <div class="keys" id="keys"></div>
+  </section>
+
+  <!-- ============================================================= scopes -->
+  <section class="section">
+    <h2 class="sec">What you are hearing</h2>
+    <div class="scopes">
+      <div class="disp">
+        <header><b>Waveform · live</b><i id="scopeInfo">—</i></header>
+        <canvas id="scope"></canvas>
+      </div>
+      <div class="disp">
+        <header><b>Spectrum · live</b><i>the marked line is 500 Hz</i></header>
+        <canvas id="spec"></canvas>
+      </div>
+    </div>
+    <div class="disp">
+      <header><b>Last cue · frozen</b><i id="frozenInfo">play something</i></header>
+      <canvas id="frozen" style="height:120px"></canvas>
+    </div>
+    <p class="note">
+      The frozen trace is an offline render of the whole cue, so a 50 ms transient can
+      actually be looked at. The pale trace behind it is the same cue after a 500 Hz
+      high-pass — the gap between the two traces <em>is</em> the laptop-speaker problem.
+    </p>
+  </section>
+
+  <!-- ============================================================ measure -->
+  <section class="section">
+    <h2 class="sec">The one thing that is a number</h2>
+    <p class="lede">
+      Loss is how much level the cue gives up when everything below ~500 Hz is taken
+      away, which is roughly what a laptop speaker does. Under 3 dB the cue is the same
+      sound on both devices. Over 8 dB it is a different sound, and the version you
+      tuned on headphones is not the version most people hear. Peak is headroom against
+      full scale at unity master; length is time to −40 dB, and it is the number that
+      predicts annoyance far better than loudness does.
+    </p>
+    <div class="bar" style="position:static;box-shadow:none">
+      <div class="grp">
+        <span class="lbl">Show</span>
+        <button data-metric="loss" aria-pressed="true">Small-speaker loss</button>
+        <button data-metric="len" aria-pressed="false">Length to −40 dB</button>
+        <button data-metric="peak" aria-pressed="false">Peak dBFS</button>
+      </div>
+      <button class="btn" id="remeasure">Re-measure</button>
+    </div>
+    <table class="metrics" id="metrics"></table>
+  </section>
+
+  <!-- =========================================================== sequence -->
+  <section class="section">
+    <h2 class="sec">In sequence, at real timings</h2>
+    <p class="lede">
+      Cues are never heard alone. A session is a phrase, and a set can pass every
+      cue individually and still be wrong as a phrase — two cues that are fine apart
+      can collide when they are three seconds and one breath apart. Timings below are
+      the measured ones from the README: recognition lands around 350 ms, first token
+      around 550 ms.
+    </p>
+    <div class="bar" style="position:static;box-shadow:none">
+      <button class="btn" data-seq="dictate">Dictate <kbd>space</kbd></button>
+      <button class="btn" data-seq="revise">Revise</button>
+      <button class="btn" data-seq="cancel">Cancelled</button>
+      <button class="btn" data-seq="error">Failed</button>
+      <button class="btn" data-seq="rapid">Three in a row</button>
+      <div class="spacer"></div>
+      <span class="counter" id="seqInfo"></span>
+    </div>
+  </section>
+
+  <!-- ============================================================== forty -->
+  <section class="section">
+    <h2 class="sec">Forty times</h2>
+    <p class="lede">
+      Annoyance does not exist on the first hearing, which is the only hearing most
+      sound design gets. A day of use is roughly forty sessions; compressing them into
+      a minute is not realistic but it is diagnostic — a cue that grates inside sixty
+      seconds will certainly grate inside a day. Do this with something else playing.
+      The cue has to survive being ignored.
+    </p>
+    <div class="bar" style="position:static;box-shadow:none">
+      <div class="grp">
+        <span class="lbl">Cue</span>
+        <select id="fortyCue"></select>
+      </div>
+      <div class="vol">
+        <span class="lbl" style="font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint);font-weight:650">Every</span>
+        <input type="range" id="fortyGap" min="0.6" max="4" step="0.1" value="1.5" />
+        <b id="fortyGapOut">1.5 s</b>
+      </div>
+      <button class="btn" id="fortyBtn">Play it forty times <kbd>f</kbd></button>
+      <div class="spacer"></div>
+      <span class="counter" id="fortyInfo"></span>
+    </div>
+  </section>
+
+  <!-- ============================================================= editor -->
+  <section class="section">
+    <h2 class="sec">Parameters · <span id="editSetName"></span></h2>
+    <p class="lede">
+      Editing changes the live slot. Every cue is a list of voices; a voice is one
+      struck body — a tonal part with an optional inharmonic partial, plus an optional
+      band-passed noise transient for the strike itself. <code>delay</code> is measured
+      from the start of the cue, so it is the gap between notes.
+    </p>
+    <div class="bar" style="position:static;box-shadow:none">
+      <div class="vol">
+        <span class="lbl" style="font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint);font-weight:650">Set gain</span>
+        <input type="range" id="setGain" min="0" max="0.3" step="0.001" value="0.075" />
+        <b id="setGainOut">0.075</b>
+      </div>
+      <div class="vol">
+        <span class="lbl" style="font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint);font-weight:650">Set lowpass</span>
+        <input type="range" id="setCut" min="1000" max="16000" step="100" value="10000" />
+        <b id="setCutOut">10000</b>
+      </div>
+      <div class="spacer"></div>
+      <button class="btn" id="resetSet">Reset this set</button>
+    </div>
+    <div class="editor" id="editor"></div>
+  </section>
+
+  <!-- ============================================================= export -->
+  <section class="section">
+    <h2 class="sec">Export</h2>
+    <p class="lede">
+      Emits the live set as a drop-in for <code>src/renderer/sound.js</code>: the master
+      chain, one synthesis primitive, and the <code>sounds</code> object. It replaces
+      everything in that file from <code>master.gain.value</code> down to the closing
+      brace of <code>sounds</code>; the IIFE wrapper and the <code>window.typdSound</code>
+      block below it stay as they are.
+    </p>
+    <div class="bar" style="position:static;box-shadow:none">
+      <button class="btn" id="exportBtn">Generate</button>
+      <button class="btn" id="copyBtn">Copy</button>
+      <div class="spacer"></div>
+      <span class="counter" id="exportInfo"></span>
+    </div>
+    <pre class="out" id="export">Press Generate.</pre>
+  </section>
+
+  <!-- ========================================================= assessment -->
+  <section class="section">
+    <h2 class="sec">The assessment</h2>
+
+    <div class="prose">
+
+      <h3>What is wrong with the current cues</h3>
+
+      <p>
+        The intent written at the top of <code>sound.js</code> is right and the
+        execution does not deliver it. Six specific faults, in the order they cost
+        the most.
+      </p>
+
+      <h4>1. Half the energy is under the laptop speaker's floor</h4>
+      <p>
+        <code>start</code> is built on 392 Hz and <code>cancel</code> falls to
+        311 Hz. Typical laptop and ultrabook drivers are 30–45 mm and roll off hard
+        below about 500 Hz. The table above measures it: <strong>start loses about
+        9.7 dB, cancel about 9.4</strong>, and both are flagged as failing, while every
+        cue in all three replacement sets holds within about 2 dB. <code>commit</code>
+        thins by 3.4 dB. <code>done</code>, built higher at 659 and 988 Hz, survives —
+        which is itself the argument, because it shows the problem is the choice of
+        register and nothing else. Cancel is the worst of it: the part that carries
+        its meaning is the fall, and the fall is the part that disappears. This is not
+        "quieter on speakers". It is <strong>a different sound on speakers</strong>,
+        which means every judgement made on headphones is void.
+      </p>
+
+      <h4>2. The taming filter does nothing</h4>
+      <p>
+        The master lowpass sits at 2400 Hz with the comment that it makes the tones
+        "sit behind whatever else is playing". Every voice in the set is a
+        <code>sine</code>. A sine has no partials, so a 2.4 kHz lowpass applied to a
+        392 Hz sine removes nothing at all; the filter is inert and has been since it
+        was written. Worse, the belief behind it is backwards: a sustained pure tone
+        is the single most detectable signal in noise there is — it is what audiometry
+        uses precisely because it punches through everything. What makes a cue sit
+        behind music is not darkness, it is <strong>brevity</strong>. Short transients
+        are masked by ongoing sound; long tones are not.
+      </p>
+
+      <h4>3. <code>start</code> and <code>commit</code> are the same sound</h4>
+      <p>
+        Both are a two-note rising exponential glide with a faint octave above, both
+        about 130 ms, both sine, both at full level. They differ only by being
+        transposed up a fourth. Nobody can name an absolute transposition without a
+        reference tone, and these two fire several seconds apart with speech in
+        between, so there is no reference. Blind identifiability — the first clause of
+        the bar — fails here outright, and it fails on the two cues that fire on
+        every single session.
+      </p>
+
+      <h4>4. <code>done</code> is a notification chime</h4>
+      <p>
+        Two pure sines, 659 then 988, a rising perfect fifth 65 ms apart. That is the
+        canonical message-received shape, and the brief rules it out by name. It is
+        also <em>hummable</em>, and hummable is the property that turns a cue into an
+        earworm somewhere around the twentieth repetition. Melody is the enemy of
+        repetition tolerance.
+      </p>
+
+      <h4>5. The levels are balanced by gain, not by loudness</h4>
+      <p>
+        <code>start</code> and <code>commit</code> default to level 1; <code>done</code>
+        runs at 0.55 and 0.45. But at these very low playback levels the ear is around
+        10–12 dB less sensitive at 400 Hz than at 1 kHz, and the speaker takes another
+        10 dB off the same region. So the cue written loudest arrives quietest and the
+        cue written quietest arrives loudest — the exact inverse of the intent, and
+        invisible from the source.
+      </p>
+
+      <h4>6. There is no error cue at all</h4>
+      <p>
+        The roadmap names four cues: start, commit, done, <strong>error</strong>. The
+        file ships start, commit, done, cancel and a parked <code>learned</code>.
+        <code>session:error</code> in <code>overlay.js</code> plays nothing. This is
+        the worst gap in the set, because failure is the one moment the user has
+        already looked away — they pressed the key, spoke, and went back to reading.
+        A silent failure is discovered when they eventually look at the pill, or when
+        they notice the paragraph they expected never arrived. Every other cue is a
+        convenience; this one is the only cue that is load-bearing.
+      </p>
+
+      <h3>What changed, and why</h3>
+
+      <p>Four rules, applied to all three new sets.</p>
+
+      <ol>
+        <li>
+          <strong>Nothing depends on bass.</strong> Every fundamental sits between
+          about 740 Hz and 1.8 kHz. That band is above the small-speaker knee and
+          below the 4–5 kHz region where the ear is most easily irritated. A cue that
+          measures under 3 dB of loss is the same object in both ears and both
+          speakers, and can therefore be judged once.
+        </li>
+        <li>
+          <strong>Shorter, not quieter.</strong> Switch the table to
+          <em>Length to −40 dB</em>. The single-gesture cues drop from 109–136 ms to
+          between 36 and 95 ms; <code>commit</code> goes from 118 ms to 44. The
+          two-strike cues stay around 140 ms and always will, because the gap between
+          the strikes <em>is</em> the message. This is the lever that makes a sound sit
+          behind music, and it is also the lever on annoyance: what irritates on the
+          fortieth hearing is how long the sound occupies attention, not its peak.
+        </li>
+        <li>
+          <strong>Differentiate by gesture, never by transposition.</strong> One
+          strike versus one damped strike versus two strikes versus a falling strike
+          versus two identical dull strikes. Rhythm and envelope are identifiable
+          blind with no reference; pitch offsets are not. This is what fixes fault 3,
+          and it fixes it without adding a note.
+        </li>
+        <li>
+          <strong>Object, not tone.</strong> Each voice carries a second partial at
+          2.756× the fundamental — the first bar mode of a free-free bar, the ratio
+          that gives a marimba or an anvil its characteristic non-piano colour — which
+          decays about three times faster than the fundamental, plus a 5–8 ms
+          band-passed noise transient for the strike itself. That inharmonicity and
+          that fast-dying partial are what read as "something was struck" rather than
+          "an oscillator was switched on", and they are exactly what the current file
+          set out to achieve with a lowpass that could not do it.
+        </li>
+      </ol>
+
+      <h4>The three sets</h4>
+      <ul>
+        <li>
+          <strong>Detent</strong> — the Braun reference taken literally. Almost all of
+          the energy is a high-Q band-passed noise burst, which rings at a pitch
+          without ever being a note. Character: a well-machined switch. Risk: at
+          Q values this high it starts to sound like a synthesised click rather than a
+          mechanism, and it has the least room to express difference between six cues.
+        </li>
+        <li>
+          <strong>Breath</strong> — no oscillators anywhere, filtered noise only. A
+          page turning, air moving, a fingertip on fabric. It is the least intrusive
+          set by a distance. Risk, and it is a real one: it may be <em>too</em>
+          invisible. Turn on the laptop simulation, start some music, and see whether
+          you can still tell <code>done</code> from <code>commit</code>.
+        </li>
+        <li>
+          <strong>Struck</strong> — the middle path, and the one to ship. Enough
+          tonal body to be identifiable through a laptop speaker with music playing,
+          enough inharmonicity and noise to never read as a beep, and the widest
+          usable space between six gestures.
+        </li>
+      </ul>
+
+      <h4>How Struck separates the cues</h4>
+      <ul>
+        <li><strong>start</strong> — one strike, softish attack, ~115 ms tail, tiny downward glide. An object set down. It opens because it rings.</li>
+        <li><strong>commit</strong> — <em>the same pitch as start</em>, harder attack, damped to ~50 ms. Identical note, half the length: it reads as closing because the tail is cut off, not because it went up. Fixing fault 3 without spending a new pitch is the single change I would defend hardest.</li>
+        <li><strong>done</strong> — two strikes, 58 ms apart, second one quieter and a whole tone up. A whole tone is the smallest step that still reads as motion and the largest one that does not read as a tune.</li>
+        <li><strong>cancel</strong> — one strike falling 740 → 555 Hz through a 1.9 kHz lowpass. Dull, dropped, over. The fall is still there, but it now starts above the speaker knee instead of ending below it.</li>
+        <li><strong>error</strong> — two <em>identical</em> dull strikes at 784 Hz, 115 ms apart. Repetition reads as refusal without any interval at all.</li>
+        <li><strong>learned</strong> — one very short, very quiet high tick. A footnote.</li>
+      </ul>
+
+      <h3>Does <code>revise</code> need its own <code>done</code>?</h3>
+
+      <p>
+        <strong>Yes — and only <code>done</code>.</strong>
+      </p>
+      <p>
+        Roadmap 1.5 already says revise must be visibly distinct from dictate, on the
+        grounds that it overwrites the user's own writing and ambiguity there is a
+        data-loss risk. That argument transfers to sound and gets stronger, because
+        sound is the channel that is live precisely when the user is <em>not</em>
+        looking — which is the moment a destructive action most needs marking.
+      </p>
+      <p>
+        Of the five cues, <code>done</code> is the only one whose meaning actually
+        differs between the modes. "Text was added where your cursor was" and "text you
+        wrote has been replaced" are different events, and they are separated by
+        several seconds of model latency from the keypress that chose the mode — long
+        enough for attention to have moved on. Law 3 says every destructive path needs
+        a way back; the way back is <code>Ctrl+Z</code>, and it is only reachable by
+        someone who knows something was overwritten. One second of audio is the
+        cheapest possible way to tell them.
+      </p>
+      <p>
+        The honest argument against is that five cues is already near the limit of what
+        becomes reflex rather than vocabulary, and a sixth risks tipping the whole set
+        from "felt" to "learned". So the differentiation is deliberately minimal:
+        <code>revise done</code> is the same two strikes as <code>done</code>, same
+        timbre, same length, same loudness — with the contour and the emphasis
+        inverted. It descends and lands on the louder note. Not a new sound; the same
+        sound backwards. The set still has five gestures.
+      </p>
+      <p>
+        <code>start</code> should <strong>not</strong> differ by mode, and I built a
+        version that did before cutting it. The user pressed a specific key one frame
+        ago. A distinct revise-start spends a sixth sound telling them something they
+        already know, and it makes the two most frequent cues in the product four
+        instead of two.
+      </p>
+
+      <h3>What I would ship</h3>
+
+      <div class="verdict" style="border-left-color: var(--pos)">
+        <b>Struck, with the error cue wired up and a revise-specific <code>done</code>.</b>
+        <p style="color:var(--muted);margin:0">
+          It is the only one of the three that holds up on a laptop speaker with music
+          playing and still reads as designed rather than as a system beep. Detent is
+          more distinctive per cue and has less headroom across six of them; Breath is
+          the most pleasant and I do not trust it to survive being ignored. Ship
+          Struck, keep Breath in this file, and revisit it if Struck turns out to be
+          the thing people notice.
+        </p>
+      </div>
+
+      <p>
+        This recommendation is a hypothesis with an instrument attached, which is the
+        most law 5 allows on a question this subjective. Two of the three clauses of
+        the acceptance bar can be checked here — small-speaker survival is in the table
+        above as decibels, and the fortieth use is one button away. The third, blind
+        identifiability, needs a second person: play the six cues in random order with
+        the screen turned away and have them name each one. Under five out of six and
+        the set is not finished, whatever the numbers say.
+      </p>
+
+      <h3>What failed</h3>
+
+      <p>
+        Documented because a rejected direction with a reason is a result, and because
+        several of these are the obvious first idea.
+      </p>
+
+      <ol>
+        <li>
+          <strong>Square and sawtooth for the mechanical click.</strong> The intuitive
+          way to make a click sound mechanical is a harmonically rich waveform. It is
+          wrong here: the odd-harmonic stack lands energy at 3f and 5f, straight into
+          the 2–4 kHz region where small speakers have a resonant peak, so the very
+          device that swallows the low end <em>amplifies</em> the buzz. It reads cheap.
+          Band-passed noise gives the same mechanism without the harmonic series, which
+          is why Detent is built on noise. Set any voice to <code>square</code> in the
+          editor with the laptop simulation on and it is immediate.
+        </li>
+        <li>
+          <strong>A falling minor third for <code>error</code>.</strong> The universal
+          "uh-oh". Rejected on three counts: it is the most clichéd interval in
+          interface audio, it is melodic and therefore memorable and therefore
+          irritating by the fortieth use, and it belongs to the operating system's
+          vocabulary rather than the product's. Two identical dull strikes convey
+          refusal through repetition and carry no tune at all.
+        </li>
+        <li>
+          <strong>Making the cues quieter to make them less annoying.</strong> The
+          instinct, and it backfires twice. A quiet long tone is more annoying than a
+          loud short one, because irritation tracks how long the sound holds attention
+          rather than its peak. And dropping the master gain pushes the cue under the
+          laptop speaker's usable floor once any other audio is playing, at which point
+          the user raises the system volume and everything else on the machine gets
+          louder instead. Shortening is the lever; quieting is not.
+        </li>
+        <li>
+          <strong>A downward filter sweep on <code>start</code> in Breath.</strong>
+          Built it, cut it. A bandpass sweeping down over noise is a whoosh, and a
+          whoosh is a game-UI signature — the exact register the brief rules out. The
+          sweep survives only on <code>cancel</code>, where something genuinely is
+          leaving and the gesture is honest.
+        </li>
+        <li>
+          <strong>A three-note <code>done</code>.</strong> Three notes is a phrase, a
+          phrase is a tune, and it pushed the cue past 200 ms — still sounding while
+          the user is already reading the text that landed. Two notes is the ceiling.
+        </li>
+        <li>
+          <strong>Matching cues by equal gain.</strong> The first pass gave every cue
+          the same <code>level</code> and it was audibly lopsided, for the same
+          equal-loudness reason that fault 5 describes. There is no clean fix in code —
+          the per-cue levels here are hand-trimmed toward a rough 40-phon compensation
+          and they are the parameter most likely to still be wrong. Trim them by ear
+          before shipping; that is what the sliders are for.
+        </li>
+        <li>
+          <strong>A separate <code>start</code> for revise mode.</strong> Covered
+          above. Built, then cut for costing a sound to say something already known.
+        </li>
+        <li>
+          <strong>Keeping the 2400 Hz master lowpass.</strong> Inert on the old set and
+          actively harmful on the new ones — it would eat the noise transient at 2.2–2.6
+          kHz that supplies the entire "struck" character. Replaced with a gentler
+          10 kHz lowpass, which takes the fizz off the noise without touching the
+          strike, plus a limiter so that hammering the hotkey (roadmap 0.8) stacks
+          voices without clipping.
+        </li>
+      </ol>
+
+      <h3>One thing this page cannot do</h3>
+      <p>
+        It cannot hear. Every number above is computed and every adjective is a
+        prediction. The frequency choices, the durations and the gestural separation
+        are defensible from physics and from the failure modes named in the bar; the
+        balance between the voices inside each cue is not, and it is the part most
+        likely to need an hour of dragging sliders. Do that hour before wiring any of
+        this into <code>sound.js</code>.
+      </p>
+    </div>
+  </section>
+
+</div>
+
+<script>
+'use strict';
+(function () {
+
+/* =========================================================== the engine ===
+   Deliberately one primitive rather than several. If every cue in every set is
+   the same function with different numbers, then the editor is generic, the
+   export is a data dump, and A/B comparisons are honest — no set gets an
+   advantage from having a nicer synthesiser behind it. */
+
+var DEFAULTS = {
+  freq: 880, glide: 0, glideTime: 0.6, type: 'sine',
+  tone: 1, partial: 0, partialLevel: 0.2, partialDecay: 0.35,
+  noise: 0, noiseFreq: 2000, noiseGlide: 0, noiseQ: 3, noiseDur: 0.02,
+  attack: 0.004, dur: 0.12, level: 0.8, delay: 0,
+  cutoff: 9000, q: 0.7
+};
+
+var PARAMS = [
+  { k: 'freq',         min: 200,    max: 4000,  step: 1,      grp: 'tone',  lbl: 'frequency',    unit: 'Hz' },
+  { k: 'glide',        min: 0,      max: 4000,  step: 1,      grp: 'tone',  lbl: 'glide to',     unit: 'Hz' },
+  { k: 'glideTime',    min: 0.05,   max: 1,     step: 0.01,   grp: 'tone',  lbl: 'glide over',   unit: '×dur' },
+  { k: 'type',         grp: 'tone', lbl: 'oscillator', opts: ['sine', 'triangle', 'square', 'sawtooth'] },
+  { k: 'tone',         min: 0,      max: 1.5,   step: 0.01,   grp: 'tone',  lbl: 'tone level',   unit: '' },
+  { k: 'partial',      min: 0,      max: 8,     step: 0.001,  grp: 'tone',  lbl: 'partial ratio',unit: '×f' },
+  { k: 'partialLevel', min: 0,      max: 1,     step: 0.01,   grp: 'tone',  lbl: 'partial level',unit: '' },
+  { k: 'partialDecay', min: 0.05,   max: 1.5,   step: 0.01,   grp: 'tone',  lbl: 'partial decay',unit: '×dur' },
+
+  { k: 'noise',        min: 0,      max: 1.5,   step: 0.01,   grp: 'noise', lbl: 'strike level', unit: '' },
+  { k: 'noiseFreq',    min: 200,    max: 8000,  step: 10,     grp: 'noise', lbl: 'band centre',  unit: 'Hz' },
+  { k: 'noiseGlide',   min: 0,      max: 8000,  step: 10,     grp: 'noise', lbl: 'band glide to',unit: 'Hz' },
+  { k: 'noiseQ',       min: 0.3,    max: 20,    step: 0.1,    grp: 'noise', lbl: 'band Q',       unit: '' },
+  { k: 'noiseDur',     min: 0.003,  max: 0.3,   step: 0.001,  grp: 'noise', lbl: 'strike decay', unit: 's' },
+
+  { k: 'attack',       min: 0.0005, max: 0.05,  step: 0.0005, grp: 'env',   lbl: 'attack',       unit: 's' },
+  { k: 'dur',          min: 0.01,   max: 0.5,   step: 0.005,  grp: 'env',   lbl: 'decay',        unit: 's' },
+  { k: 'level',        min: 0,      max: 1.4,   step: 0.01,   grp: 'env',   lbl: 'level',        unit: '' },
+  { k: 'delay',        min: 0,      max: 0.6,   step: 0.005,  grp: 'env',   lbl: 'delay',        unit: 's' },
+  { k: 'cutoff',       min: 300,    max: 16000, step: 50,     grp: 'env',   lbl: 'lowpass',      unit: 'Hz' },
+  // Not a filter Q. Web Audio interprets `Q` on lowpass and highpass as a
+  // resonance in decibels, and only as a true Q on bandpass, notch and peaking.
+  // Reading it as a Q is how a "gentle" 0.7 ends up adding 3 dB of lift.
+  { k: 'q',            min: -6,     max: 12,    step: 0.1,    grp: 'env',   lbl: 'lowpass res',  unit: 'dB' }
+];
+
+var noiseCache = new WeakMap();
+
+/* One second of white noise, generated rather than fetched — the overlay's CSP
+   forbids loading anything, and a PRNG is smaller than a WAV anyway.
+
+   Seeded, and read from a fixed offset. Math.random() here would make every
+   playback a different realisation of the noise, which for a 6 ms burst through
+   a Q of 8 is a swing of well over a decibel — enough to make the measurement
+   table jitter, and enough that a cue would not be quite the same sound twice.
+   A UI sound that varies is a UI sound you notice. */
+var NOISE_OFFSET = 0.137;
+
+function noiseBuffer(c) {
+  var b = noiseCache.get(c);
+  if (b) return b;
+  b = c.createBuffer(1, Math.floor(c.sampleRate), c.sampleRate);
+  var d = b.getChannelData(0);
+  var s = 22699;   // any fixed seed; this one is arbitrary and permanent
+  for (var i = 0; i < d.length; i++) {
+    s = (s * 1103515245 + 12345) & 0x7fffffff;
+    d[i] = (s / 0x40000000) - 1;
+  }
+  noiseCache.set(c, b);
+  return b;
+}
+
+/* A high-Q bandpass on white noise passes a narrow slice of the spectrum, so
+   its output level falls as Q rises. Without compensation the `noise` slider
+   would be a joint level-and-Q control and neither would be tunable. This makes
+   it a perceptual level instead, which is what the person dragging it means. */
+function noiseComp(c, v) {
+  var bw = Math.max(20, v.noiseFreq / Math.max(0.3, v.noiseQ));
+  var frac = (bw * 1.571) / (c.sampleRate / 2);
+  return Math.min(24, 1 / Math.sqrt(Math.max(1e-4, frac))) * 0.35;
+}
+
+function addOsc(c, dest, f, to, gt, type, lvl, atk, dur, t) {
+  if (lvl <= 0 || f <= 0) return;
+  var o = c.createOscillator();
+  o.type = type;
+  o.frequency.setValueAtTime(Math.max(20, f), t);
+  if (to > 0) {
+    // Exponential, because pitch is heard logarithmically and a linear sweep
+    // audibly decelerates at the top.
+    o.frequency.exponentialRampToValueAtTime(Math.max(20, to), t + Math.max(dur * gt, 0.005));
+  }
+  var g = c.createGain();
+  // Linear attack from a true zero. The shipped file ramps exponentially from
+  // 0.0001, which is a workaround for exponentialRamp being unable to leave
+  // zero -- a linear ramp on a gain node has no such problem and no epsilon.
+  g.gain.setValueAtTime(0, t);
+  g.gain.linearRampToValueAtTime(lvl, t + atk);
+  // setTargetAtTime is the shape a struck object actually has: steep at first,
+  // then a long approach. A single exponentialRamp is near-linear in decibels,
+  // which is why the current cues fade rather than ring.
+  g.gain.setTargetAtTime(0, t + atk, Math.max(dur / 6, 0.004));
+  o.connect(g); g.connect(dest);
+  o.start(t);
+  o.stop(t + dur + 0.06);
+}
+
+function addNoise(c, dest, v, t) {
+  var lvl = v.noise * noiseComp(c, v);
+  if (lvl <= 0) return;
+  var src = c.createBufferSource();
+  src.buffer = noiseBuffer(c);
+  src.loop = true;
+  var bp = c.createBiquadFilter();
+  bp.type = 'bandpass';
+  bp.frequency.setValueAtTime(Math.max(40, v.noiseFreq), t);
+  if (v.noiseGlide > 0) {
+    bp.frequency.exponentialRampToValueAtTime(Math.max(40, v.noiseGlide), t + v.noiseDur * 0.9);
+  }
+  bp.Q.setValueAtTime(Math.max(0.1, v.noiseQ), t);
+  var g = c.createGain();
+  var atk = Math.min(v.attack, 0.0025);
+  g.gain.setValueAtTime(0, t);
+  g.gain.linearRampToValueAtTime(lvl, t + atk);
+  g.gain.setTargetAtTime(0, t + atk, Math.max(v.noiseDur / 5, 0.002));
+  src.connect(bp); bp.connect(g); g.connect(dest);
+  src.start(t, NOISE_OFFSET);
+  src.stop(t + v.noiseDur * 3 + 0.05);
+}
+
+function voiceEnd(v) {
+  return (v.delay || 0) + Math.max(v.dur, v.noise > 0 ? v.noiseDur * 2.2 : 0) + 0.04;
+}
+
+function scheduleVoice(c, dest, raw, at) {
+  var v = Object.assign({}, DEFAULTS, raw);
+  var t = at + (v.delay || 0);
+  var span = Math.max(v.dur, v.noise > 0 ? v.noiseDur * 2.2 : 0);
+  var tEnd = t + span + 0.03;
+
+  var lp = c.createBiquadFilter();
+  lp.type = 'lowpass';
+  lp.frequency.setValueAtTime(Math.min(20000, Math.max(60, v.cutoff)), t);
+  lp.Q.setValueAtTime(Math.max(0.05, v.q), t);
+
+  var out = c.createGain();
+  out.gain.setValueAtTime(v.level, t);
+
+  // A second gain that does nothing but guarantee silence at the end. The
+  // envelope decays asymptotically and never truly reaches zero, and a node
+  // torn down mid-signal is a click.
+  var kill = c.createGain();
+  kill.gain.setValueAtTime(1, t);
+  kill.gain.setValueAtTime(1, Math.max(t, tEnd - 0.005));
+  kill.gain.linearRampToValueAtTime(0, tEnd);
+
+  lp.connect(out); out.connect(kill); kill.connect(dest);
+
+  if (v.tone > 0) {
+    addOsc(c, lp, v.freq, v.glide, v.glideTime, v.type, v.tone, v.attack, v.dur, t);
+    if (v.partial > 0) {
+      addOsc(c, lp, v.freq * v.partial, v.glide > 0 ? v.glide * v.partial : 0, v.glideTime,
+             v.type, v.tone * v.partialLevel, Math.min(v.attack, 0.003),
+             v.dur * v.partialDecay, t);
+    }
+  }
+  if (v.noise > 0) addNoise(c, lp, v, t);
+}
+
+function scheduleCue(c, dest, voices, at) {
+  for (var i = 0; i < voices.length; i++) scheduleVoice(c, dest, voices[i], at);
+}
+
+function cueLength(voices) {
+  var m = 0;
+  for (var i = 0; i < voices.length; i++) {
+    m = Math.max(m, voiceEnd(Object.assign({}, DEFAULTS, voices[i])));
+  }
+  return m;
+}
+
+/* ============================================================= the sets ===
+   `current` is transcribed from src/renderer/sound.js verbatim, including the
+   2400 Hz master lowpass, so the control in an A/B is genuinely what ships and
+   not a flattering paraphrase of it. */
+
+function V(o) { return Object.assign({}, DEFAULTS, o); }
+
+var SETS = [
+  {
+    id: 'current',
+    name: 'Current',
+    tag: 'control',
+    blurb: 'What ships today: soft sine glides through an inert lowpass.',
+    master: { gain: 0.085, cutoff: 2400, q: 0.6 },
+    cues: {
+      start:  [V({ freq: 392, glide: 523, glideTime: 0.75, dur: 0.13, level: 1,    attack: 0.008, cutoff: 16000 }),
+               V({ freq: 784, glide: 1046, glideTime: 0.75, dur: 0.09, level: 0.22, attack: 0.008, cutoff: 16000 })],
+      commit: [V({ freq: 587, glide: 784, glideTime: 0.75, dur: 0.14, level: 1,    attack: 0.008, cutoff: 16000 }),
+               V({ freq: 1174, glide: 1568, glideTime: 0.75, dur: 0.10, level: 0.20, attack: 0.008, cutoff: 16000 })],
+      done:   [V({ freq: 659, dur: 0.07, level: 0.55, attack: 0.008, cutoff: 16000 }),
+               V({ freq: 988, dur: 0.11, level: 0.45, attack: 0.008, delay: 0.065, cutoff: 16000 })],
+      reviseDone: [V({ freq: 659, dur: 0.07, level: 0.55, attack: 0.008, cutoff: 16000 }),
+               V({ freq: 988, dur: 0.11, level: 0.45, attack: 0.008, delay: 0.065, cutoff: 16000 })],
+      cancel: [V({ freq: 466, glide: 311, glideTime: 0.75, dur: 0.15, level: 0.70, attack: 0.008, cutoff: 16000 })],
+      error:  [],
+      learned:[V({ freq: 880, dur: 0.06, level: 0.30, attack: 0.008, cutoff: 16000 }),
+               V({ freq: 1318, dur: 0.09, level: 0.26, attack: 0.008, delay: 0.055, cutoff: 16000 })]
+    },
+    notes: {
+      error: 'Silent. The shipped build plays nothing on session:error.',
+      reviseDone: 'Identical to done. The shipped build does not distinguish the modes.'
+    }
+  },
+
+  {
+    id: 'detent',
+    name: 'Detent',
+    tag: 'mechanical',
+    blurb: 'A well-machined switch: high-Q noise that rings at a pitch without ever being a note.',
+    master: { gain: 0.085, cutoff: 11000, q: 0.7 },
+    cues: {
+      start:  [V({ freq: 1240, tone: 0.85, dur: 0.055, attack: 0.002, level: 0.85,
+                   noise: 0.85, noiseFreq: 1240, noiseQ: 7, noiseDur: 0.032, cutoff: 9000 })],
+      commit: [V({ freq: 1560, tone: 0.9, dur: 0.042, attack: 0.0012, level: 0.95,
+                   noise: 1.0, noiseFreq: 1560, noiseQ: 8.5, noiseDur: 0.024, cutoff: 10000 })],
+      done:   [V({ freq: 1400, tone: 0.7, dur: 0.035, attack: 0.0012, level: 0.80,
+                   noise: 0.9, noiseFreq: 1400, noiseQ: 7, noiseDur: 0.022, cutoff: 9000 }),
+               V({ freq: 2100, tone: 0.9, dur: 0.10, attack: 0.002, level: 0.50, delay: 0.052,
+                   partial: 2.756, partialLevel: 0.14, partialDecay: 0.30,
+                   noise: 0.50, noiseFreq: 2100, noiseQ: 9, noiseDur: 0.03, cutoff: 9000 })],
+      reviseDone: [V({ freq: 2100, tone: 0.7, dur: 0.032, attack: 0.0012, level: 0.55,
+                   noise: 0.7, noiseFreq: 2100, noiseQ: 9, noiseDur: 0.02, cutoff: 9000 }),
+               V({ freq: 1400, tone: 0.9, dur: 0.105, attack: 0.002, level: 0.80, delay: 0.058,
+                   partial: 2.756, partialLevel: 0.14, partialDecay: 0.30,
+                   noise: 0.55, noiseFreq: 1400, noiseQ: 7, noiseDur: 0.026, cutoff: 8000 })],
+      cancel: [V({ freq: 760, glide: 600, glideTime: 0.5, tone: 0.9, dur: 0.075, attack: 0.003, level: 1.0,
+                   noise: 0.8, noiseFreq: 860, noiseGlide: 600, noiseQ: 2.0, noiseDur: 0.05, cutoff: 1700, q: 0.7 })],
+      error:  [V({ freq: 830, tone: 0.85, dur: 0.06, attack: 0.002, level: 0.95,
+                   noise: 0.8, noiseFreq: 880, noiseQ: 2.2, noiseDur: 0.04, cutoff: 2000 }),
+               V({ freq: 830, tone: 0.85, dur: 0.06, attack: 0.002, level: 0.78, delay: 0.125,
+                   noise: 0.8, noiseFreq: 880, noiseQ: 2.2, noiseDur: 0.04, cutoff: 2000 })],
+      learned:[V({ freq: 2600, tone: 0.5, dur: 0.022, attack: 0.001, level: 0.35,
+                   noise: 0.7, noiseFreq: 2600, noiseQ: 10, noiseDur: 0.014, cutoff: 9000 })]
+    }
+  },
+
+  {
+    id: 'breath',
+    name: 'Breath',
+    tag: 'air',
+    blurb: 'No oscillators at all — filtered noise only. A page turning, at the edge of audible.',
+    // Higher than the others because band-limited noise measures 3 dB down at
+    // the same gain. Character has to come from the timbre, not from being
+    // handicapped in the A/B -- the quieter set wins comparisons it should lose.
+    master: { gain: 0.155, cutoff: 9000, q: 0.7 },
+    cues: {
+      start:  [V({ tone: 0, noise: 1.0, noiseFreq: 1500, noiseQ: 1.2, noiseDur: 0.085,
+                   attack: 0.012, dur: 0.09, level: 0.95, cutoff: 6000 })],
+      commit: [V({ tone: 0, noise: 1.0, noiseFreq: 2100, noiseQ: 1.5, noiseDur: 0.05,
+                   attack: 0.003, dur: 0.06, level: 1.0, cutoff: 7000 })],
+      done:   [V({ tone: 0, noise: 0.9, noiseFreq: 1700, noiseQ: 1.8, noiseDur: 0.045,
+                   attack: 0.003, dur: 0.05, level: 0.90, cutoff: 7000 }),
+               V({ tone: 0, noise: 0.75, noiseFreq: 2500, noiseQ: 2.2, noiseDur: 0.075,
+                   attack: 0.004, dur: 0.085, level: 0.62, delay: 0.055, cutoff: 7000 })],
+      reviseDone: [V({ tone: 0, noise: 0.8, noiseFreq: 2500, noiseQ: 2.2, noiseDur: 0.04,
+                   attack: 0.003, dur: 0.045, level: 0.62, cutoff: 7000 }),
+               V({ tone: 0, noise: 0.9, noiseFreq: 1700, noiseQ: 1.8, noiseDur: 0.08,
+                   attack: 0.004, dur: 0.09, level: 0.90, delay: 0.06, cutoff: 6000 })],
+      cancel: [V({ tone: 0, noise: 1.0, noiseFreq: 1450, noiseGlide: 700, noiseQ: 1.0,
+                   noiseDur: 0.11, attack: 0.006, dur: 0.13, level: 1.0, cutoff: 3000 })],
+      error:  [V({ tone: 0, noise: 1.0, noiseFreq: 950, noiseQ: 1.1, noiseDur: 0.06,
+                   attack: 0.004, dur: 0.07, level: 1.0, cutoff: 2600 }),
+               V({ tone: 0, noise: 1.0, noiseFreq: 950, noiseQ: 1.1, noiseDur: 0.06,
+                   attack: 0.004, dur: 0.07, level: 0.85, delay: 0.13, cutoff: 2600 })],
+      learned:[V({ tone: 0, noise: 0.8, noiseFreq: 3200, noiseQ: 3, noiseDur: 0.018,
+                   attack: 0.002, dur: 0.025, level: 0.40, cutoff: 9000 })]
+    }
+  },
+
+  {
+    id: 'struck',
+    name: 'Struck',
+    tag: 'recommended',
+    blurb: 'A struck body with an inharmonic partial. Enough tone to survive a laptop speaker, never a beep.',
+    master: { gain: 0.072, cutoff: 10000, q: 0.7 },
+    cues: {
+      // The glide is 36 Hz over 90 ms -- far too small to hear as a pitch move,
+      // just enough to stop the note reading as switched on rather than struck.
+      start:  [V({ freq: 900, glide: 864, glideTime: 0.8, dur: 0.115, attack: 0.0035, level: 0.82,
+                   partial: 2.756, partialLevel: 0.20, partialDecay: 0.32,
+                   noise: 0.28, noiseFreq: 2300, noiseQ: 2.0, noiseDur: 0.007, cutoff: 5600 })],
+
+      // Same fundamental as start. Harder attack, half the tail. The gesture
+      // carries the difference so no second pitch has to be spent on it.
+      commit: [V({ freq: 900, dur: 0.052, attack: 0.0015, level: 0.95,
+                   partial: 2.756, partialLevel: 0.30, partialDecay: 0.28,
+                   noise: 0.45, noiseFreq: 2600, noiseQ: 2.2, noiseDur: 0.006, cutoff: 6800 })],
+
+      // A whole tone up: motion without a tune. A third or a fifth would be a
+      // notification chime and would be humming itself back by the tenth use.
+      done:   [V({ freq: 1046, dur: 0.055, attack: 0.002, level: 0.80,
+                   partial: 2.756, partialLevel: 0.16, partialDecay: 0.30,
+                   noise: 0.30, noiseFreq: 2600, noiseQ: 2, noiseDur: 0.006, cutoff: 6800 }),
+               V({ freq: 1174, dur: 0.105, attack: 0.0025, level: 0.55, delay: 0.058,
+                   partial: 2.756, partialLevel: 0.14, partialDecay: 0.30,
+                   noise: 0.16, noiseFreq: 2800, noiseQ: 2, noiseDur: 0.005, cutoff: 6400 })],
+
+      // done, inverted. Descending, landing on the louder note: something was
+      // written over, not added to.
+      reviseDone: [V({ freq: 1174, dur: 0.055, attack: 0.002, level: 0.55,
+                   partial: 2.756, partialLevel: 0.14, partialDecay: 0.30,
+                   noise: 0.35, noiseFreq: 2800, noiseQ: 2, noiseDur: 0.006, cutoff: 6800 }),
+               V({ freq: 1046, dur: 0.105, attack: 0.0025, level: 0.80, delay: 0.058,
+                   partial: 2.756, partialLevel: 0.16, partialDecay: 0.30,
+                   noise: 0.18, noiseFreq: 2400, noiseQ: 2, noiseDur: 0.005, cutoff: 6000 })],
+
+      // Falls, but starts above the speaker knee so the fall is still there on
+      // a laptop. The 1.9 kHz lowpass is what makes it dull rather than sad.
+      cancel: [V({ freq: 740, glide: 555, glideTime: 0.55, dur: 0.10, attack: 0.004, level: 0.95,
+                   noise: 0.20, noiseFreq: 950, noiseQ: 1.4, noiseDur: 0.012, cutoff: 1900 })],
+
+      // Two identical strikes. Refusal by repetition, with no interval at all.
+      error:  [V({ freq: 784, dur: 0.075, attack: 0.002, level: 0.88,
+                   partial: 2.1, partialLevel: 0.10, partialDecay: 0.25,
+                   noise: 0.25, noiseFreq: 1300, noiseQ: 1.6, noiseDur: 0.008, cutoff: 2300, q: 0.8 }),
+               V({ freq: 784, dur: 0.075, attack: 0.002, level: 0.72, delay: 0.115,
+                   partial: 2.1, partialLevel: 0.10, partialDecay: 0.25,
+                   noise: 0.25, noiseFreq: 1300, noiseQ: 1.6, noiseDur: 0.008, cutoff: 2300, q: 0.8 })],
+
+      learned:[V({ freq: 1760, dur: 0.038, attack: 0.002, level: 0.32,
+                   partial: 2.756, partialLevel: 0.12, partialDecay: 0.30,
+                   noise: 0.20, noiseFreq: 3200, noiseQ: 2.5, noiseDur: 0.004, cutoff: 8000 })]
+    }
+  }
+];
+
+var PRISTINE = JSON.parse(JSON.stringify(SETS));
+
+var CUES = [
+  { key: 'start',      hot: '1', label: 'Start',        note: 'The microphone opened. You may now speak.' },
+  { key: 'commit',     hot: '2', label: 'Commit',       note: 'Pressed again. Capture closed, work began.' },
+  { key: 'done',       hot: '3', label: 'Done',         note: 'The text landed in your application.' },
+  { key: 'reviseDone', hot: '4', label: 'Done · revise',note: 'Highlighted text was replaced. Destructive.' },
+  { key: 'cancel',     hot: '5', label: 'Cancel',       note: 'Abandoned. Nothing happened.' },
+  { key: 'error',      hot: '6', label: 'Error',        note: 'It failed — and you are not looking at the screen.' },
+  { key: 'learned',    hot: '7', label: 'Learned',      note: 'A word was added. Parked feature.' }
+];
+
+/* ======================================================== the live chain ===
+   Two output paths built once and switched by routing, so the laptop
+   simulation can be toggled mid-cue without rebuilding anything. */
+
+var ctx = null, bus = null, clean = null, lap = null, analyser = null, tail = null;
+var cur = { setIdx: 0 };
+
+function makeShaper(c, drive) {
+  var ws = c.createWaveShaper();
+  var n = 2048, curve = new Float32Array(n);
+  for (var i = 0; i < n; i++) {
+    var x = (i / (n - 1)) * 2 - 1;
+    curve[i] = Math.tanh(x * drive) / Math.tanh(drive);
+  }
+  ws.curve = curve;
+  ws.oversample = '4x';
+  return ws;
+}
+
+/* A 40 mm driver in a plastic chassis: almost nothing under 500 Hz, a resonant
+   honk in the upper mids, and it distorts long before it gets loud. Two
+   high-passes rather than one -- the real roll-off is far steeper than 6 dB.
+   Q of -3 rather than the reflexive 0.7 because Web Audio reads Q on a
+   highpass as decibels of resonance; 0.7 puts a 3 dB lift right above the
+   corner and the simulation ends up flattering the very cues it should expose.
+   Measured, -3 is flat within a decibel from 900 Hz up and -12 dB at 392. */
+function laptopChain(c, dest) {
+  var hp1 = c.createBiquadFilter(); hp1.type = 'highpass'; hp1.frequency.value = 520; hp1.Q.value = -3;
+  var hp2 = c.createBiquadFilter(); hp2.type = 'highpass'; hp2.frequency.value = 520; hp2.Q.value = -3;
+  var honk = c.createBiquadFilter(); honk.type = 'peaking'; honk.frequency.value = 2800; honk.Q.value = 1.2; honk.gain.value = 6;
+  var pre = c.createGain(); pre.gain.value = 2.6;
+  var ws = makeShaper(c, 2.2);
+  var post = c.createGain(); post.gain.value = 0.42;
+  var top = c.createBiquadFilter(); top.type = 'lowpass'; top.frequency.value = 11000; top.Q.value = 0.7;
+  hp1.connect(hp2); hp2.connect(honk); honk.connect(pre); pre.connect(ws);
+  ws.connect(post); post.connect(top); top.connect(dest);
+  return hp1;
+}
+
+function audio() {
+  if (ctx) { if (ctx.state === 'suspended') ctx.resume(); return ctx; }
+  var AC = window.AudioContext || window.webkitAudioContext;
+  ctx = new AC();
+
+  tail = ctx.createGain();
+  tail.gain.value = Number(el('vol').value);
+
+  analyser = ctx.createAnalyser();
+  analyser.fftSize = 2048;
+  analyser.smoothingTimeConstant = 0.5;
+
+  // A limiter so that hammering the hotkey stacks voices without clipping --
+  // roadmap 0.8 explicitly tests for that and the shipped chain has none.
+  var lim = ctx.createDynamicsCompressor();
+  lim.threshold.value = -6; lim.knee.value = 2; lim.ratio.value = 12;
+  lim.attack.value = 0.002; lim.release.value = 0.12;
+
+  tail.connect(lim); lim.connect(analyser); analyser.connect(ctx.destination);
+
+  bus = ctx.createGain();
+  clean = ctx.createGain();
+  clean.connect(tail);
+  lap = laptopChain(ctx, tail);
+  bus.connect(clean);
+
+  return ctx;
+}
+
+function routeLaptop(on) {
+  if (!ctx) return;
+  try { bus.disconnect(); } catch (e) { /* not connected yet */ }
+  bus.connect(on ? lap : clean);
+}
+
+/* ================================================================== state */
+
+var laptopOn = false;
+var liveSlot = 'A';
+var slot = { A: 0, B: 3 };
+var lastCue = 'start';
+var timers = [];
+var fortyTimer = null, fortyN = 0;
+var metrics = {};
+var metricMode = 'loss';
+
+function el(id) { return document.getElementById(id); }
+function liveSet() { return SETS[slot[liveSlot]]; }
+function otherSet() { return SETS[slot[liveSlot === 'A' ? 'B' : 'A']]; }
+
+function clearTimers() {
+  timers.forEach(clearTimeout);
+  timers = [];
+  if (fortyTimer) { clearInterval(fortyTimer); fortyTimer = null; }
+  el('fortyInfo').textContent = '';
+  el('seqInfo').textContent = '';
+}
+
+function play(cueKey, set) {
+  var c = audio();
+  set = set || liveSet();
+  var voices = set.cues[cueKey] || [];
+  lastCue = cueKey;
+  flash(cueKey);
+  if (!voices.length) {
+    el('frozenInfo').textContent = set.name + ' · ' + cueKey + ' — silent';
+    drawFrozen(null, null);
+    return;
+  }
+  var g = c.createGain();
+  g.gain.value = set.master.gain;
+  var lp = c.createBiquadFilter();
+  lp.type = 'lowpass';
+  lp.frequency.value = set.master.cutoff;
+  lp.Q.value = set.master.q;
+  g.connect(lp); lp.connect(bus);
+  scheduleCue(c, g, voices, c.currentTime + 0.02);
+  setTimeout(function () { try { lp.disconnect(); } catch (e) {} }, (cueLength(voices) + 0.3) * 1000);
+  freeze(cueKey, set);
+}
+
+function flash(cueKey) {
+  var node = document.querySelector('.cue[data-cue="' + cueKey + '"]');
+  if (!node) return;
+  node.classList.add('lit');
+  setTimeout(function () { node.classList.remove('lit'); }, 190);
+}
+
+/* ============================================================= measuring ===
+   Offline renders. These need no user gesture and no speakers, which is why
+   the table is populated before anyone has pressed anything. */
+
+function renderCue(voices, set, highpass) {
+  var len = Math.max(0.08, cueLength(voices) + 0.06);
+  var OC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+  var c = new OC(1, Math.ceil(len * 48000), 48000);
+
+  var sink = c.destination;
+  if (highpass) {
+    // Same -3 as the audible simulation, and for the same reason. A measurement
+    // filter with a resonant peak measures the peak, not the speaker.
+    var h1 = c.createBiquadFilter(); h1.type = 'highpass'; h1.frequency.value = 520; h1.Q.value = -3;
+    var h2 = c.createBiquadFilter(); h2.type = 'highpass'; h2.frequency.value = 520; h2.Q.value = -3;
+    h1.connect(h2); h2.connect(c.destination);
+    sink = h1;
+  }
+  var g = c.createGain(); g.gain.value = set.master.gain;
+  var lp = c.createBiquadFilter();
+  lp.type = 'lowpass'; lp.frequency.value = set.master.cutoff; lp.Q.value = set.master.q;
+  g.connect(lp); lp.connect(sink);
+
+  scheduleCue(c, g, voices, 0.005);
+  return c.startRendering();
+}
+
+function stats(data) {
+  var peak = 0, sum = 0;
+  for (var i = 0; i < data.length; i++) {
+    var a = Math.abs(data[i]);
+    if (a > peak) peak = a;
+    sum += data[i] * data[i];
+  }
+  var rms = Math.sqrt(sum / data.length);
+  var thr = peak * 0.01;   // -40 dB relative to the peak
+  var last = 0;
+  for (var j = data.length - 1; j >= 0; j--) {
+    if (Math.abs(data[j]) > thr) { last = j; break; }
+  }
+  return { peak: peak, rms: rms, len: last / 48000 };
+}
+
+function measureAll() {
+  var jobs = [];
+  SETS.forEach(function (set) {
+    CUES.forEach(function (cue) {
+      var voices = set.cues[cue.key] || [];
+      if (!voices.length) {
+        metrics[set.id + ':' + cue.key] = null;
+        return;
+      }
+      jobs.push(Promise.all([renderCue(voices, set, false), renderCue(voices, set, true)])
+        .then(function (pair) {
+          var flat = stats(pair[0].getChannelData(0));
+          var hp = stats(pair[1].getChannelData(0));
+          metrics[set.id + ':' + cue.key] = {
+            peak: 20 * Math.log10(Math.max(1e-6, flat.peak)),
+            len: flat.len * 1000,
+            loss: 20 * Math.log10(Math.max(1e-6, hp.rms) / Math.max(1e-6, flat.rms))
+          };
+        })
+        .catch(function () { metrics[set.id + ':' + cue.key] = null; }));
+    });
+  });
+  return Promise.all(jobs).then(drawMetrics);
+}
+
+function drawMetrics() {
+  var head = '<thead><tr><th>Cue</th>' +
+    SETS.map(function (s) { return '<th>' + s.name + '</th>'; }).join('') +
+    '</tr></thead>';
+  var body = CUES.map(function (cue) {
+    var cells = SETS.map(function (s) {
+      var m = metrics[s.id + ':' + cue.key];
+      if (!m) return '<td style="color:var(--faint)">silent</td>';
+      if (metricMode === 'loss') {
+        var v = m.loss;
+        var cls = v > -3 ? 'ok' : (v > -8 ? 'mid' : 'no');
+        var word = v > -3 ? 'holds' : (v > -8 ? 'thins' : 'fails');
+        return '<td>' + v.toFixed(1) + ' dB<span class="chip ' + cls + '">' + word + '</span></td>';
+      }
+      if (metricMode === 'len') {
+        var L = m.len;
+        var lc = L < 90 ? 'ok' : (L < 150 ? 'mid' : 'no');
+        var lw = L < 90 ? 'brief' : (L < 150 ? 'held' : 'long');
+        return '<td>' + Math.round(L) + ' ms<span class="chip ' + lc + '">' + lw + '</span></td>';
+      }
+      return '<td>' + m.peak.toFixed(1) + ' dBFS</td>';
+    }).join('');
+    return '<tr><td>' + cue.label + '</td>' + cells + '</tr>';
+  }).join('');
+  el('metrics').innerHTML = head + '<tbody>' + body + '</tbody>';
+}
+
+/* ============================================================== drawings */
+
+function fit(c) {
+  var r = c.getBoundingClientRect();
+  var dpr = window.devicePixelRatio || 1;
+  if (!r.width) return null;
+  c.width = Math.round(r.width * dpr);
+  c.height = Math.round(r.height * dpr);
+  var g = c.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return g;
+}
+
+function ink() { return getComputedStyle(document.documentElement).getPropertyValue('--trace').trim() || '#14161B'; }
+function faint() { return getComputedStyle(document.documentElement).getPropertyValue('--line').trim(); }
+
+var timeBuf = null, freqBuf = null;
+
+function tick() {
+  requestAnimationFrame(tick);
+  if (!analyser) return;
+
+  if (!timeBuf || timeBuf.length !== analyser.fftSize) {
+    timeBuf = new Float32Array(analyser.fftSize);
+    freqBuf = new Float32Array(analyser.frequencyBinCount);
+  }
+
+  var sc = el('scope'), sp = el('spec');
+  var g1 = fit(sc), g2 = fit(sp);
+  if (!g1 || !g2) return;
+
+  analyser.getFloatTimeDomainData(timeBuf);
+  var w = sc.clientWidth, h = sc.clientHeight;
+  g1.clearRect(0, 0, w, h);
+  g1.strokeStyle = faint(); g1.lineWidth = 1;
+  g1.beginPath(); g1.moveTo(0, h / 2); g1.lineTo(w, h / 2); g1.stroke();
+  g1.strokeStyle = ink(); g1.lineWidth = 1.4;
+  g1.beginPath();
+  var peak = 0;
+  for (var i = 0; i < timeBuf.length; i++) {
+    var v = timeBuf[i];
+    if (Math.abs(v) > peak) peak = Math.abs(v);
+    var x = (i / (timeBuf.length - 1)) * w;
+    var y = h / 2 - v * (h / 2) * 3.2;
+    i ? g1.lineTo(x, y) : g1.moveTo(x, y);
+  }
+  g1.stroke();
+  el('scopeInfo').textContent = peak > 0.0005
+    ? 'peak ' + (20 * Math.log10(peak)).toFixed(1) + ' dBFS' : 'silent';
+
+  analyser.getFloatFrequencyData(freqBuf);
+  var w2 = sp.clientWidth, h2 = sp.clientHeight;
+  g2.clearRect(0, 0, w2, h2);
+  var sr = ctx ? ctx.sampleRate : 48000;
+  var fmin = 40, fmax = Math.min(20000, sr / 2);
+  var lx = function (f) { return (Math.log(f / fmin) / Math.log(fmax / fmin)) * w2; };
+
+  g2.strokeStyle = faint(); g2.lineWidth = 1;
+  [100, 200, 1000, 2000, 5000, 10000].forEach(function (f) {
+    if (f >= fmax) return;
+    g2.beginPath(); g2.moveTo(lx(f), 0); g2.lineTo(lx(f), h2); g2.stroke();
+  });
+
+  // The knee. Everything left of this line is what a laptop speaker throws away.
+  g2.save();
+  g2.setLineDash([3, 3]);
+  g2.strokeStyle = ink(); g2.globalAlpha = 0.45; g2.lineWidth = 1;
+  g2.beginPath(); g2.moveTo(lx(500), 0); g2.lineTo(lx(500), h2); g2.stroke();
+  g2.restore();
+
+  g2.strokeStyle = ink(); g2.lineWidth = 1.4;
+  g2.beginPath();
+  for (var b = 1; b < freqBuf.length; b++) {
+    var f = b * sr / analyser.fftSize;
+    if (f < fmin) continue;
+    if (f > fmax) break;
+    var db = Math.max(-100, Math.min(0, freqBuf[b]));
+    var y = h2 - ((db + 100) / 100) * h2;
+    var x2 = lx(f);
+    b === 1 ? g2.moveTo(x2, y) : g2.lineTo(x2, y);
+  }
+  g2.stroke();
+}
+
+function freeze(cueKey, set) {
+  var voices = set.cues[cueKey] || [];
+  if (!voices.length) return;
+  Promise.all([renderCue(voices, set, false), renderCue(voices, set, true)])
+    .then(function (pair) {
+      var a = pair[0].getChannelData(0), b = pair[1].getChannelData(0);
+      drawFrozen(a, b);
+      var m = metrics[set.id + ':' + cueKey];
+      el('frozenInfo').textContent = set.name + ' · ' + cueKey +
+        (m ? ' · ' + Math.round(m.len) + ' ms to −40 dB · ' + m.loss.toFixed(1) + ' dB on small speakers' : '');
+    })
+    .catch(function () { /* offline render unsupported; the live scope still works */ });
+}
+
+function drawFrozen(a, b) {
+  var c = el('frozen');
+  var g = fit(c);
+  if (!g) return;
+  var w = c.clientWidth, h = c.clientHeight;
+  g.clearRect(0, 0, w, h);
+  g.strokeStyle = faint(); g.lineWidth = 1;
+  g.beginPath(); g.moveTo(0, h / 2); g.lineTo(w, h / 2); g.stroke();
+  if (!a) return;
+
+  var scale = 0;
+  for (var i = 0; i < a.length; i++) scale = Math.max(scale, Math.abs(a[i]));
+  scale = Math.max(scale, 1e-4);
+
+  var trace = function (d, alpha, width) {
+    g.save();
+    g.globalAlpha = alpha; g.strokeStyle = ink(); g.lineWidth = width;
+    g.beginPath();
+    var step = Math.max(1, Math.floor(d.length / (w * 2)));
+    for (var j = 0; j < d.length; j += step) {
+      var x = (j / (d.length - 1)) * w;
+      var y = h / 2 - (d[j] / scale) * (h / 2 - 4);
+      j ? g.lineTo(x, y) : g.moveTo(x, y);
+    }
+    g.stroke();
+    g.restore();
+  };
+  if (b) trace(b, 0.22, 1);
+  trace(a, 1, 1.1);
+}
+
+/* ============================================================= sequences ===
+   Real timings, from the measured pipeline in the README: recognition around
+   350 ms, first token around 550 ms, plus the paste. A set can pass every cue
+   alone and still be wrong as a phrase. */
+
+var SEQ = {
+  dictate: [['start', 0], ['commit', 3400], ['done', 4550]],
+  revise:  [['start', 0], ['commit', 3000], ['reviseDone', 4420]],
+  cancel:  [['start', 0], ['cancel', 1800]],
+  error:   [['start', 0], ['commit', 2600], ['error', 3900]],
+  rapid:   [['start', 0], ['commit', 2200], ['done', 3200],
+            ['start', 4600], ['commit', 6600], ['done', 7600],
+            ['start', 9000], ['commit', 11400], ['done', 12500]]
+};
+
+function runSeq(name) {
+  clearTimers();
+  audio();
+  var steps = SEQ[name];
+  var end = steps[steps.length - 1][1];
+  steps.forEach(function (s) {
+    timers.push(setTimeout(function () {
+      play(s[0]);
+      el('seqInfo').textContent = name + ' · ' + s[0];
+    }, s[1]));
+  });
+  timers.push(setTimeout(function () { el('seqInfo').textContent = ''; }, end + 1200));
+}
+
+function runForty() {
+  clearTimers();
+  audio();
+  var key = el('fortyCue').value;
+  var gap = Number(el('fortyGap').value) * 1000;
+  fortyN = 0;
+  var fire = function () {
+    fortyN++;
+    play(key);
+    el('fortyInfo').textContent = fortyN + ' / 40';
+    if (fortyN >= 40) { clearInterval(fortyTimer); fortyTimer = null; }
+  };
+  fire();
+  fortyTimer = setInterval(fire, gap);
+}
+
+/* ================================================================ the UI */
+
+function buildKeys() {
+  el('keys').innerHTML = CUES.map(function (c) {
+    return '<button class="cue" data-cue="' + c.key + '">' +
+      '<div class="cue-top"><span class="cue-name">' + c.label + '</span>' +
+      '<span class="cue-hot">' + c.hot + '</span></div>' +
+      '<span class="cue-note">' + c.note + '</span>' +
+      '<span class="cue-flag" data-flag="' + c.key + '" hidden></span>' +
+      '</button>';
+  }).join('');
+  el('keys').addEventListener('click', function (e) {
+    var b = e.target.closest('.cue');
+    if (b) play(b.dataset.cue);
+  });
+
+  el('fortyCue').innerHTML = CUES.map(function (c) {
+    return '<option value="' + c.key + '">' + c.label + '</option>';
+  }).join('');
+}
+
+function refreshFlags() {
+  var set = liveSet();
+  CUES.forEach(function (c) {
+    var f = document.querySelector('[data-flag="' + c.key + '"]');
+    var note = set.notes && set.notes[c.key];
+    var silent = !(set.cues[c.key] || []).length;
+    if (silent) { f.hidden = false; f.textContent = 'silent'; f.title = note || ''; }
+    else if (note) { f.hidden = false; f.textContent = 'same as done'; f.title = note; }
+    else f.hidden = true;
+  });
+}
+
+function buildSelects() {
+  var opts = SETS.map(function (s, i) {
+    return '<option value="' + i + '">' + s.name + ' — ' + s.tag + '</option>';
+  }).join('');
+  el('setA').innerHTML = opts;
+  el('setB').innerHTML = opts;
+  el('setA').value = String(slot.A);
+  el('setB').value = String(slot.B);
+}
+
+function refreshLiveNote() {
+  var s = liveSet();
+  el('liveNote').innerHTML = '<strong style="color:var(--ink)">' + s.name + '</strong> — ' + s.blurb +
+    '  ·  slot ' + liveSlot + ' is live; <kbd>x</kbd> plays the last cue through both.';
+  el('editSetName').textContent = s.name;
+  el('setGain').value = s.master.gain;
+  el('setGainOut').textContent = s.master.gain.toFixed(3);
+  el('setCut').value = s.master.cutoff;
+  el('setCutOut').textContent = String(s.master.cutoff);
+  el('liveA').setAttribute('aria-pressed', liveSlot === 'A');
+  el('liveB').setAttribute('aria-pressed', liveSlot === 'B');
+  refreshFlags();
+  buildEditor();
+}
+
+function buildEditor() {
+  var set = liveSet();
+  var open = {};
+  el('editor').querySelectorAll('details').forEach(function (d) { open[d.dataset.cue] = d.open; });
+
+  el('editor').innerHTML = CUES.map(function (cue) {
+    var voices = set.cues[cue.key] || [];
+    var head = '<summary><b>' + cue.label + '</b>' +
+      '<span class="mono">' + (voices.length ? voices.length + (voices.length > 1 ? ' voices' : ' voice') : 'silent') + '</span>' +
+      '<em>' + cue.note + '</em></summary>';
+
+    var body = voices.map(function (v, vi) {
+      var groups = ['tone', 'noise', 'env'].map(function (grp) {
+        var rows = PARAMS.filter(function (p) { return p.grp === grp; }).map(function (p) {
+          var val = v[p.k] != null ? v[p.k] : DEFAULTS[p.k];
+          if (p.opts) {
+            return '<div class="row"><label>' + p.lbl + '</label>' +
+              '<select data-cue="' + cue.key + '" data-v="' + vi + '" data-k="' + p.k + '">' +
+              p.opts.map(function (o) {
+                return '<option value="' + o + '"' + (o === val ? ' selected' : '') + '>' + o + '</option>';
+              }).join('') + '</select><output></output></div>';
+          }
+          return '<div class="row"><label>' + p.lbl + '</label>' +
+            '<input type="range" min="' + p.min + '" max="' + p.max + '" step="' + p.step + '" value="' + val + '" ' +
+            'data-cue="' + cue.key + '" data-v="' + vi + '" data-k="' + p.k + '" />' +
+            '<output>' + fmt(val, p) + '</output></div>';
+        }).join('');
+        return '<div class="rows">' + rows + '</div>';
+      }).join('');
+      return '<div class="voice"><h4>voice ' + (vi + 1) + '</h4>' + groups + '</div>';
+    }).join('');
+
+    return '<details class="card" data-cue="' + cue.key + '"' + (open[cue.key] ? ' open' : '') + '>' +
+      head + (voices.length ? body : '<div class="voice"><h4>no voices — this cue plays nothing</h4></div>') +
+      '</details>';
+  }).join('');
+}
+
+function fmt(v, p) {
+  var n = Number(v);
+  if (p.unit === 's') return (n * 1000).toFixed(n < 0.02 ? 1 : 0) + ' ms';
+  if (p.unit === 'Hz') return n === 0 ? 'off' : Math.round(n) + '';
+  if (p.k === 'partial') return n === 0 ? 'off' : n.toFixed(3);
+  return n.toFixed(2);
+}
+
+el('editor').addEventListener('input', function (e) {
+  var t = e.target;
+  if (!t.dataset || !t.dataset.k) return;
+  var set = liveSet();
+  var v = set.cues[t.dataset.cue][Number(t.dataset.v)];
+  var p = PARAMS.filter(function (x) { return x.k === t.dataset.k; })[0];
+  v[t.dataset.k] = p.opts ? t.value : Number(t.value);
+  var out = t.parentNode.querySelector('output');
+  if (out && !p.opts) out.textContent = fmt(t.value, p);
+});
+
+el('editor').addEventListener('change', function (e) {
+  if (e.target.dataset && e.target.dataset.k) {
+    play(e.target.closest('details').dataset.cue);
+    measureAll();
+  }
+});
+
+/* ================================================================ export */
+
+function num(n) {
+  if (Number.isInteger(n)) return String(n);
+  return String(Math.round(n * 100000) / 100000);
+}
+
+function voiceLiteral(raw) {
+  var parts = [];
+  Object.keys(DEFAULTS).forEach(function (k) {
+    var v = raw[k] != null ? raw[k] : DEFAULTS[k];
+    if (v === DEFAULTS[k]) return;
+    parts.push(k + ': ' + (typeof v === 'string' ? "'" + v + "'" : num(v)));
+  });
+  return '{ ' + parts.join(', ') + ' }';
+}
+
+var PRIMITIVE = [
+  '  /**',
+  '   * One struck body: a tonal part with an optional inharmonic partial, plus an',
+  '   * optional band-passed noise transient for the strike itself. Every cue below',
+  '   * is this function with different numbers, which is what makes them',
+  '   * comparable -- no cue gets a nicer synthesiser than its neighbours.',
+  '   */',
+  '  function strike(o) {',
+  '    var c = ready();',
+  '    if (!c) return;',
+  '',
+  '    var t     = c.currentTime + (o.delay || 0);',
+  '    var dur   = o.dur == null ? 0.12 : o.dur;',
+  '    var atk   = o.attack || 0.004;',
+  '    var level = o.level == null ? 0.8 : o.level;',
+  '    var tone  = o.tone == null ? 1 : o.tone;',
+  '    var span  = Math.max(dur, o.noise ? (o.noiseDur || 0.02) * 2.2 : 0);',
+  '    var end   = t + span + 0.03;',
+  '',
+  '    var lp = c.createBiquadFilter();',
+  '    lp.type = \'lowpass\';',
+  '    lp.frequency.setValueAtTime(o.cutoff || 9000, t);',
+  '    lp.Q.setValueAtTime(o.q || 0.7, t);',
+  '',
+  '    var out = c.createGain();',
+  '    out.gain.setValueAtTime(level, t);',
+  '',
+  '    // Guarantees silence at the end. The envelope decays asymptotically and',
+  '    // never truly reaches zero; a node torn down mid-signal is a click.',
+  '    var kill = c.createGain();',
+  '    kill.gain.setValueAtTime(1, t);',
+  '    kill.gain.setValueAtTime(1, end - 0.005);',
+  '    kill.gain.linearRampToValueAtTime(0, end);',
+  '',
+  '    lp.connect(out); out.connect(kill); kill.connect(master);',
+  '',
+  '    function osc(f, to, lvl, a, d) {',
+  '      if (lvl <= 0) return;',
+  '      var s = c.createOscillator();',
+  '      s.type = o.type || \'sine\';',
+  '      s.frequency.setValueAtTime(f, t);',
+  '      // Exponential: pitch is heard logarithmically, and a linear sweep',
+  '      // audibly decelerates at the top.',
+  '      if (to > 0) s.frequency.exponentialRampToValueAtTime(to, t + d * (o.glideTime || 0.6));',
+  '      var g = c.createGain();',
+  '      g.gain.setValueAtTime(0, t);',
+  '      g.gain.linearRampToValueAtTime(lvl, t + a);',
+  '      // setTargetAtTime is the shape a struck object has -- steep, then a long',
+  '      // approach. A single exponentialRamp is near-linear in decibels, which',
+  '      // reads as a fade rather than a ring.',
+  '      g.gain.setTargetAtTime(0, t + a, Math.max(d / 6, 0.004));',
+  '      s.connect(g); g.connect(lp);',
+  '      s.start(t); s.stop(t + d + 0.06);',
+  '    }',
+  '',
+  '    if (tone > 0) {',
+  '      osc(o.freq, o.glide || 0, tone, atk, dur);',
+  '      // 2.756 is the first bar mode of a free-free bar. That inharmonicity,',
+  '      // dying faster than the fundamental, is what reads as "struck" rather',
+  '      // than "switched on".',
+  '      if (o.partial) {',
+  '        osc(o.freq * o.partial, o.glide ? o.glide * o.partial : 0,',
+  '            tone * (o.partialLevel || 0.2), Math.min(atk, 0.003),',
+  '            dur * (o.partialDecay || 0.35));',
+  '      }',
+  '    }',
+  '',
+  '    if (o.noise) {',
+  '      var nd = o.noiseDur || 0.02;',
+  '      var nq = o.noiseQ || 3;',
+  '      var nf = o.noiseFreq || 2000;',
+  '      // A narrow band passes less of the noise, so without this the level',
+  '      // slider would also be a Q slider and neither would be tunable.',
+  '      var comp = Math.min(24, 1 / Math.sqrt((nf / nq) * 1.571 / (c.sampleRate / 2))) * 0.35;',
+  '      var src = c.createBufferSource();',
+  '      src.buffer = noise(c);',
+  '      src.loop = true;',
+  '      var bp = c.createBiquadFilter();',
+  '      bp.type = \'bandpass\';',
+  '      bp.frequency.setValueAtTime(nf, t);',
+  '      if (o.noiseGlide) bp.frequency.exponentialRampToValueAtTime(o.noiseGlide, t + nd * 0.9);',
+  '      bp.Q.setValueAtTime(nq, t);',
+  '      var ng = c.createGain();',
+  '      var na = Math.min(atk, 0.0025);',
+  '      ng.gain.setValueAtTime(0, t);',
+  '      ng.gain.linearRampToValueAtTime(o.noise * comp, t + na);',
+  '      ng.gain.setTargetAtTime(0, t + na, Math.max(nd / 5, 0.002));',
+  '      src.connect(bp); bp.connect(ng); ng.connect(lp);',
+  '      src.start(t, 0.137);',
+  '      src.stop(t + nd * 3 + 0.05);',
+  '    }',
+  '  }'
+].join('\n');
+
+var NOISE_FN = [
+  '  // Generated, not loaded. The CSP forbids fetching anything, and a PRNG is',
+  '  // smaller than a WAV besides.',
+  '  //',
+  '  // Seeded, and always read from the same offset. An unseeded buffer makes',
+  '  // every press a different realisation of the noise, which through a narrow',
+  '  // band is a swing of more than a decibel -- a cue that is not quite the same',
+  '  // sound twice, which is a cue you start noticing.',
+  '  var noiseBuf = null;',
+  '  function noise(c) {',
+  '    if (noiseBuf) return noiseBuf;',
+  '    noiseBuf = c.createBuffer(1, Math.floor(c.sampleRate), c.sampleRate);',
+  '    var d = noiseBuf.getChannelData(0);',
+  '    var s = 22699;',
+  '    for (var i = 0; i < d.length; i++) {',
+  '      s = (s * 1103515245 + 12345) & 0x7fffffff;',
+  '      d[i] = (s / 0x40000000) - 1;',
+  '    }',
+  '    return noiseBuf;',
+  '  }'
+].join('\n');
+
+function generate() {
+  var set = liveSet();
+  var L = [];
+
+  L.push('/* ===========================================================================');
+  L.push(' * Generated by design/sound-lab.html — set: ' + set.name + ' (' + set.tag + ')');
+  L.push(' * ' + set.blurb);
+  L.push(' *');
+  L.push(' * Drop-in for src/renderer/sound.js: replaces everything from');
+  L.push(' * `master.gain.value` down to the closing brace of `sounds`. The IIFE');
+  L.push(' * wrapper, ready(), and the window.typdSound block below it are unchanged.');
+  L.push(' * =========================================================================== */');
+  L.push('');
+  L.push('      master.gain.value = ' + num(set.master.gain) + ';');
+  L.push('');
+  L.push('      // Takes the fizz off the noise transients without touching the strike.');
+  L.push('      // The old 2400 Hz value did nothing at all: every voice was a sine, and');
+  L.push('      // a sine has no partials for a lowpass to remove.');
+  L.push('      var tame = ctx.createBiquadFilter();');
+  L.push('      tame.type = \'lowpass\';');
+  L.push('      tame.frequency.value = ' + num(set.master.cutoff) + ';');
+  L.push('      tame.Q.value = ' + num(set.master.q) + ';');
+  L.push('');
+  L.push('      // Hammering the hotkey stacks voices; roadmap 0.8 tests exactly that.');
+  L.push('      var lim = ctx.createDynamicsCompressor();');
+  L.push('      lim.threshold.value = -6; lim.knee.value = 2; lim.ratio.value = 12;');
+  L.push('      lim.attack.value = 0.002; lim.release.value = 0.12;');
+  L.push('');
+  L.push('      master.connect(tame);');
+  L.push('      tame.connect(lim);');
+  L.push('      lim.connect(ctx.destination);');
+  L.push('');
+  L.push(NOISE_FN);
+  L.push('');
+  L.push(PRIMITIVE);
+  L.push('');
+  L.push('  var sounds = {');
+
+  var order = ['start', 'commit', 'done', 'reviseDone', 'cancel', 'error', 'learned'];
+  var lines = order.map(function (k) {
+    var meta = CUES.filter(function (c) { return c.key === k; })[0];
+    var voices = set.cues[k] || [];
+    var body = voices.length
+      ? voices.map(function (v) { return '      strike(' + voiceLiteral(v) + ');'; }).join('\n')
+      : '      /* intentionally silent */';
+    return '    // ' + meta.note + '\n' +
+           '    ' + k + ': function () {\n' + body + '\n    }';
+  });
+  L.push(lines.join(',\n\n'));
+  L.push('  };');
+  L.push('');
+  L.push('/* ---------------------------------------------------------------------------');
+  L.push(' * Wiring still to do in src/renderer/overlay.js:');
+  L.push(' *   session:error  ->  typdSound.play(\'error\')      (currently silent)');
+  L.push(' *   session:done   ->  typdSound.play(mode === \'revise\' ? \'reviseDone\' : \'done\')');
+  L.push(' * --------------------------------------------------------------------------- */');
+
+  return L.join('\n');
+}
+
+/* ============================================================== bindings */
+
+buildKeys();
+buildSelects();
+refreshLiveNote();
+drawMetrics();
+measureAll();
+requestAnimationFrame(tick);
+
+el('setA').addEventListener('change', function () { slot.A = Number(this.value); refreshLiveNote(); });
+el('setB').addEventListener('change', function () { slot.B = Number(this.value); refreshLiveNote(); });
+el('liveA').addEventListener('click', function () { liveSlot = 'A'; refreshLiveNote(); });
+el('liveB').addEventListener('click', function () { liveSlot = 'B'; refreshLiveNote(); });
+
+el('abBtn').addEventListener('click', function () {
+  clearTimers();
+  var a = SETS[slot.A], b = SETS[slot.B];
+  play(lastCue, a);
+  el('seqInfo').textContent = 'A · ' + a.name;
+  timers.push(setTimeout(function () {
+    play(lastCue, b);
+    el('seqInfo').textContent = 'B · ' + b.name;
+  }, 750));
+  timers.push(setTimeout(function () { el('seqInfo').textContent = ''; }, 2000));
+});
+
+el('lapBtn').addEventListener('click', function () {
+  laptopOn = !laptopOn;
+  this.setAttribute('aria-pressed', String(laptopOn));
+  audio();
+  routeLaptop(laptopOn);
+});
+
+el('vol').addEventListener('input', function () {
+  el('volOut').textContent = Number(this.value).toFixed(2) + '×';
+  if (tail) tail.gain.value = Number(this.value);
+});
+
+el('stopBtn').addEventListener('click', clearTimers);
+
+el('themeBtn').addEventListener('click', function () {
+  var dark = document.documentElement.getAttribute('data-theme') === 'dark';
+  document.documentElement.setAttribute('data-theme', dark ? 'light' : 'dark');
+  this.textContent = dark ? 'Dark' : 'Light';
+});
+
+document.querySelectorAll('[data-metric]').forEach(function (b) {
+  b.addEventListener('click', function () {
+    metricMode = this.dataset.metric;
+    document.querySelectorAll('[data-metric]').forEach(function (o) {
+      o.setAttribute('aria-pressed', String(o.dataset.metric === metricMode));
+    });
+    drawMetrics();
+  });
+});
+el('remeasure').addEventListener('click', measureAll);
+
+document.querySelectorAll('[data-seq]').forEach(function (b) {
+  b.addEventListener('click', function () { runSeq(this.dataset.seq); });
+});
+
+el('fortyGap').addEventListener('input', function () {
+  el('fortyGapOut').textContent = Number(this.value).toFixed(1) + ' s';
+});
+el('fortyBtn').addEventListener('click', runForty);
+
+el('setGain').addEventListener('input', function () {
+  liveSet().master.gain = Number(this.value);
+  el('setGainOut').textContent = Number(this.value).toFixed(3);
+});
+el('setGain').addEventListener('change', measureAll);
+el('setCut').addEventListener('input', function () {
+  liveSet().master.cutoff = Number(this.value);
+  el('setCutOut').textContent = this.value;
+});
+el('setCut').addEventListener('change', measureAll);
+
+el('resetSet').addEventListener('click', function () {
+  var i = slot[liveSlot];
+  SETS[i] = JSON.parse(JSON.stringify(PRISTINE[i]));
+  refreshLiveNote();
+  measureAll();
+});
+
+el('exportBtn').addEventListener('click', function () {
+  el('export').textContent = generate();
+  el('exportInfo').textContent = liveSet().name + ' · ' + el('export').textContent.split('\n').length + ' lines';
+});
+
+el('copyBtn').addEventListener('click', function () {
+  var text = el('export').textContent;
+  if (text.indexOf('Press Generate') === 0) text = generate();
+  el('export').textContent = text;
+
+  // These studies are opened as local files, and file:// is not a secure
+  // origin, so navigator.clipboard does not exist here at all. Select the
+  // block and fall back to execCommand -- deprecated, but it is the only one
+  // of the two that works where this page actually gets used.
+  var range = document.createRange();
+  range.selectNodeContents(el('export'));
+  var sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+
+  var done = function (ok) { el('exportInfo').textContent = ok ? 'copied' : 'selected — press Ctrl+C'; };
+
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(false); });
+    return;
+  }
+  try { done(document.execCommand('copy')); } catch (e) { done(false); }
+});
+
+document.addEventListener('keydown', function (e) {
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  var tag = (e.target.tagName || '').toLowerCase();
+  if (tag === 'input' || tag === 'select' || tag === 'textarea') return;
+
+  var cue = CUES.filter(function (c) { return c.hot === e.key; })[0];
+  if (cue) { e.preventDefault(); play(cue.key); return; }
+
+  var k = e.key.toLowerCase();
+  if (k === 'a') { liveSlot = 'A'; refreshLiveNote(); }
+  else if (k === 'b') { liveSlot = 'B'; refreshLiveNote(); }
+  else if (k === 'x') { el('abBtn').click(); }
+  else if (k === 'l') { el('lapBtn').click(); }
+  else if (k === 'f') { runForty(); }
+  else if (k === ' ') { e.preventDefault(); runSeq('dictate'); }
+  else if (e.key === 'Escape') { clearTimers(); }
+});
+
+})();
+</script>

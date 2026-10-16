@@ -1,0 +1,247 @@
+/* Overlay chrome. One pill, four states, nothing else.
+ *
+ * Tuned in design/pill-lab.html, 2026-08-19 19:56. The values below are that
+ * session's settings; the reasoning behind the shapes they describe is in
+ * design/pill-refined.html, which this stylesheet is a tuning of.
+ *
+ * Four states, not six. Streaming and result are gone: streaming showed the
+ * tail of text that was about to appear in the document anyway, and result
+ * announced "Pasted into Notepad" about something already visible. Both were
+ * the pill asking to be looked at, which is the one thing it must never do.
+ * What they were really carrying was progress, and a fill behind the working
+ * state carries that without the pill ever growing to 246px. Error survives
+ * because failure is the one moment attention has already moved on. */
+
+:root {
+  --pill-bg:    rgba(253, 253, 254, 0.97);
+  --pill-line:  rgba(16, 18, 23, 0.13);
+  --edge-top:   rgba(255, 255, 255, 0.95);
+  --edge-bot:   rgba(16, 18, 23, 0.07);
+  --pill-shadow:
+    0px 1px 1px 0px rgba(16, 18, 23, 0.06),
+    0px 4px 10px 0px rgba(16, 18, 23, 0.085),
+    0px 12px 26px 0px rgba(16, 18, 23, 0.07);
+
+  --text:   #14161B;
+  --dim:    #5A6068;
+  --meter:  #1C1F25;
+
+  --chip:       rgba(16, 18, 23, 0.065);
+  --chip-hover: rgba(16, 18, 23, 0.14);
+  --commit:     #16181D;
+  --commit-ink: #FFFFFF;
+  --danger:     #AF2C21;
+
+  /* The fill is the pill's own ink at a low alpha rather than a colour of its
+     own. Progress is not an event; it should read as the pill shading itself. */
+  --fill:   rgba(16, 18, 23, 0.085);
+
+  --font-ui: "Segoe UI Variable Text", "Segoe UI Variable Small", "Segoe UI", -apple-system, sans-serif;
+
+  --ease-spring: cubic-bezier(0.16, 1.02, 0.3, 1);
+  --ease-exit:   cubic-bezier(0.4, 0, 0.9, 0.35);
+  --dur-enter: 200ms;
+  --dur-morph: 260ms;
+  --dur-exit:  140ms;
+
+  --hair: 0.25px;
+}
+
+/* The pill's dark palette, pinned: overlay.html sets data-scheme="dark", so the pill looks
+   the same whatever the system theme -- the Typd window follows the system, the pill does
+   not. It used to follow `prefers-color-scheme` while main forced the whole app dark; the
+   app now follows the system, and this is what keeps the pill exactly as it was.
+   TYPD_PREVIEW_THEME=light (index.js, --preview) switches it to inspect the light one. */
+:root[data-scheme="dark"] {
+  --pill-bg:    rgba(17, 18, 22, 0.95);
+  --pill-line:  rgba(255, 255, 255, 0.145);
+  --edge-top:   rgba(255, 255, 255, 0.16);
+  --edge-bot:   rgba(0, 0, 0, 0.3);
+  --pill-shadow:
+    0px 1px 2px 0px rgba(0, 0, 0, 0.45),
+    0px 6px 16px 0px rgba(0, 0, 0, 0.4),
+    0px 14px 32px 20px rgba(0, 0, 0, 0.54);
+
+  --text:   #F4F5F7;
+  --dim:    #DADDE4;
+  --meter:  #F4F5F7;
+
+  --chip:       rgba(244, 245, 247, 0.17);
+  --chip-hover: rgba(244, 245, 247, 0.2);
+  --commit:     #F4F5F7;
+  --commit-ink: #14161B;
+  --danger:     #E8695C;
+
+  --fill:   rgba(244, 245, 247, 0.11);
+}
+
+/* One device pixel, whatever the scaling factor. 1 CSS px at 1.5dppx is
+   1.5 device px, which lands on a half pixel and composites as a smear. */
+@media (min-resolution: 1.25dppx) { :root { --hair: 0.2px; } }
+@media (min-resolution: 1.5dppx)  { :root { --hair: 0.1667px; } }
+@media (min-resolution: 2dppx)    { :root { --hair: 0.125px; } }
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0; height: 100%; background: transparent; overflow: hidden;
+  font-family: var(--font-ui); user-select: none; cursor: default;
+}
+body {
+  display: flex; flex-direction: column; justify-content: flex-end; align-items: center;
+  padding-bottom: 12px;
+  /* The window is click-through; only the two controls opt back in. */
+  pointer-events: none;
+}
+
+.overlay { display: flex; flex-direction: column; align-items: center; }
+
+.pill {
+  position: relative;
+  display: flex; align-items: center;
+  width: 116px; height: 34px; padding: 0 6px;
+  border-radius: 17px;
+  background: var(--pill-bg);
+  border: var(--hair) solid var(--pill-line);
+  box-shadow: var(--pill-shadow);
+  backdrop-filter: blur(12px);
+  /* Clips the fill to the end caps, so progress runs into the curve rather
+     than stopping at a rectangle inside it. */
+  overflow: hidden;
+
+  opacity: 0; transform: translateY(6px) scale(0.96);
+  transition:
+    opacity   var(--dur-exit) var(--ease-exit),
+    transform var(--dur-exit) var(--ease-exit),
+    width     var(--dur-morph) var(--ease-spring);
+}
+
+/* A full-perimeter ring one device pixel thick: lit at the top, shaded at
+   the bottom, one gradient doing both jobs. */
+.pill::before {
+  content: ""; position: absolute; inset: 0; border-radius: inherit;
+  padding: var(--hair);
+  background: linear-gradient(var(--edge-top), transparent 46%, transparent 56%, var(--edge-bot));
+  -webkit-mask: linear-gradient(#000,#000) content-box, linear-gradient(#000,#000);
+  -webkit-mask-composite: xor; mask-composite: exclude;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.overlay[data-visible="true"] .pill {
+  opacity: 1; transform: translateY(0) scale(1);
+  transition:
+    opacity   var(--dur-enter) var(--ease-spring),
+    transform var(--dur-enter) var(--ease-spring),
+    width     var(--dur-morph) var(--ease-spring);
+}
+
+/* 116 − 92 = 24 = one control plus its gap. The meter keeps its width through
+   the morph, so the only thing that moves is the pill's trailing edge. */
+.overlay[data-state="working"] .pill { width: 92px; }
+.overlay[data-state="error"]   .pill { width: 246px; }
+/* A word learned from a correction (learn.js): said once, between sessions,
+   in the ordinary text colour -- news, not a failure. */
+.overlay[data-state="note"]    .pill { width: 246px; }
+.overlay[data-state="note"]    .result-text { color: var(--text); font-weight: 500; }
+
+/* -------------------------------------------------------------- progress */
+
+/* Behind the content, in front of the pill's own fill. Width is set from
+   script; the transition is what stops a stream's arrival pattern reading as
+   stutter. It never animates backwards because the script never sends a
+   smaller number. */
+.progress {
+  position: absolute; left: 0; top: 0; bottom: 0;
+  width: 0;
+  background: var(--fill);
+  transition: width 240ms cubic-bezier(.33, 1, .68, 1), opacity 200ms var(--ease-exit);
+  pointer-events: none;
+  z-index: 0;
+}
+.overlay:not([data-state="working"]) .progress { opacity: 0; }
+
+/* --------------------------------------------------------------- controls */
+
+/* Explicit margins rather than `gap`: a collapsed zero-width flex item still
+   gets its gap, and the meter would jump the 6px. */
+.control {
+  position: relative;   /* the anchor the glyph centres against */
+  z-index: 1;
+  flex: 0 0 24px; width: 24px; height: 24px;
+  padding: 0; border: 0; border-radius: 50%; background: transparent;
+  display: grid; place-items: center; cursor: pointer; overflow: hidden;
+  pointer-events: auto;
+  transition:
+    background 150ms ease,
+    flex-basis var(--dur-morph) var(--ease-spring),
+    width      var(--dur-morph) var(--ease-spring),
+    margin     var(--dur-morph) var(--ease-spring),
+    opacity    160ms var(--ease-exit),
+    transform  180ms var(--ease-spring);
+}
+.control.cancel  { margin-right: 6px; }
+.control.confirm { margin-left: 6px; }
+
+/* Leaving, rather than vanishing. display:none removes a control in one frame
+   while the pill takes 260ms to travel -- two clocks, and the morph then reads
+   as objects swapping rather than one object changing. */
+.control[data-off="true"] {
+  flex-basis: 0; width: 0; margin-left: 0; margin-right: 0;
+  opacity: 0; transform: scale(.55); pointer-events: none;
+}
+
+/* 33 CSS px of SVG on a 24-unit viewBox: one unit is 1.375 px, so the
+   stroke widths in the markup are the widths on screen.
+
+   Absolutely centred rather than grid-centred: `overflow: hidden` above is
+   what makes the fold collapse cleanly, but a grid item wider than its button
+   has its leading overflow clipped instead of shared, and the glyph drifts. */
+.control svg {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: 33px; height: 33px;
+  fill: none; stroke-linecap: round; stroke-linejoin: round; display: block;
+}
+.control .x    { stroke-width: 1.2; }
+.control .tick { stroke-width: 1.05; }
+
+.control.cancel { background: var(--chip); }
+.control.cancel svg { stroke: var(--dim); transition: stroke 130ms ease; }
+.control.cancel:hover { background: var(--chip-hover); }
+.control.cancel:hover svg { stroke: var(--danger); }
+.control.cancel:active { transform: scale(.92); }
+.control.confirm { background: var(--commit); box-shadow: 0 1px 2px rgba(0,0,0,.18); }
+.control.confirm svg { stroke: var(--commit-ink); }
+.control.confirm:hover { transform: scale(1.07); }
+.control.confirm:active { transform: scale(.94); }
+
+/* ----------------------------------------------------------------- middle */
+
+/* Meter and message are stacked, not swapped: both hold the slot at all times
+   and cross-fade in place, so the width morph is the only thing moving. */
+.mid { position: relative; z-index: 1; flex: 1 1 auto; min-width: 0; height: 18px; }
+.layer {
+  position: absolute; inset: 0;
+  opacity: 0; transform: translateY(2px); pointer-events: none;
+  transition: opacity 100ms var(--ease-exit), transform 100ms var(--ease-exit);
+}
+.layer[data-on="true"] {
+  opacity: 1; transform: translateY(0);
+  transition: opacity 180ms var(--ease-spring) 80ms, transform 180ms var(--ease-spring) 80ms;
+}
+.meter-slot canvas { width: 100%; height: 100%; display: block; }
+
+/* Only failure puts words in the pill now. It is the one moment worth
+   interrupting for: the user has already looked away, and nothing happened. */
+.result-text {
+  display: flex; align-items: center; overflow: hidden;
+  padding: 0 6px 0 9px;
+  font-size: 12.5px; font-weight: 550; color: var(--danger);
+  white-space: nowrap;
+  -webkit-mask-image: linear-gradient(270deg, transparent 0, #000 22px);
+  mask-image: linear-gradient(270deg, transparent 0, #000 22px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition-duration: 1ms !important; }
+}

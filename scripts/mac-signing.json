@@ -1,0 +1,9 @@
+{
+  "//": "Typd's macOS code-signing certificate: public facts only (docs/MAC.md \"Code signing\"). A self-signed code-signing certificate made once by dictation-research/scripts/make_mac_codesign_cert.sh; the Mac CI imports it from the MAC_CODESIGN_P12 secrets (scripts/mac-signing-import.sh) and checks it is this one. Every build signed with it has the designated requirement below (codesign words the certificate clause; the hash is what macOS's privacy settings compare), so Accessibility, Microphone and Input Monitoring stay on across updates. Not an Apple Developer ID: Gatekeeper's first open is as for an ad-hoc app.",
+  "name": "Typd Code Signing",
+  "subject": "CN=Typd Code Signing, O=Mehmet Dedeler",
+  "sha1": "b5868f3cb9b142b08c34550a64f12569d1ce1cb5",
+  "sha256": "7d4becb4860c4b8a681165dc92d81f722f0f201efb1b3a3cbc0c231d07090142",
+  "notAfter": "2046-10-11T20:31:35Z",
+  "identifier": "ai.typd.app"
+}

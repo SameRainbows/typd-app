@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:" />
+  <title>Typd</title>
+  <link rel="stylesheet" href="home.css" />
+</head>
+<body>
+  <aside class="side">
+    <div class="brand">
+      <svg class="mark" id="mark" viewBox="0 0 16 16" aria-hidden="true"></svg>
+      <span class="name">Typd</span>
+    </div>
+
+    <nav class="nav" aria-label="Sections">
+      <button class="nav-item" type="button" data-section="home">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3.5 9 10 3.8 16.5 9v7.2h-4.7v-4.4H8.2v4.4H3.5Z"/></svg>
+        Home
+      </button>
+      <button class="nav-item" type="button" data-section="history">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="6.7"/><path d="M10 6.4V10l2.6 1.7"/></svg>
+        History
+      </button>
+      <button class="nav-item" type="button" data-section="dictionary">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4.5 4.2h8.3a2.7 2.7 0 0 1 2.7 2.7v9H7.2a2.7 2.7 0 0 1-2.7-2.7Z"/><path d="M7.5 8h5M7.5 11h3.5"/></svg>
+        Dictionary
+      </button>
+      <button class="nav-item" type="button" data-section="settings">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 6.5h7M14.5 6.5H16M4 13.5h1.5M9 13.5h7"/><circle cx="12.7" cy="6.5" r="1.8"/><circle cx="7.2" cy="13.5" r="1.8"/></svg>
+        Settings
+      </button>
+    </nav>
+
+    <div class="side-foot">
+      <button class="nav-item small" type="button" data-section="news">What's new</button>
+      <p class="fact" id="fact">Runs on this PC</p>
+    </div>
+  </aside>
+
+  <div class="drag" aria-hidden="true"></div>
+
+  <main class="main">
+    <!-- ================================================================ Home -->
+    <section class="section" data-section="home" aria-labelledby="h-home">
+      <h1 id="h-home">Home</h1>
+
+      <div class="card status" id="statusCard" data-state="loading">
+        <span class="status-dot" aria-hidden="true"></span>
+        <div class="status-text">
+          <p class="status-line" id="statusLine">Getting ready…</p>
+          <p class="dim" id="modelLine"></p>
+        </div>
+        <button class="btn" type="button" id="statusAction" hidden></button>
+      </div>
+
+      <!-- macOS: switches that are off, each with the pane that turns it on -->
+      <div class="card perms" id="perms" hidden>
+        <p class="perms-head" id="permsHead"></p>
+        <div id="permsRows"></div>
+        <p class="dim small" id="permsNote"></p>
+      </div>
+
+      <div class="counts">
+        <div class="count">
+          <span class="count-n" id="cDictations">0</span>
+          <span class="count-l">dictations so far</span>
+        </div>
+        <div class="count">
+          <span class="count-n" id="cWords">0</span>
+          <span class="count-l">words this week</span>
+        </div>
+        <div class="count">
+          <span class="count-n" id="cSaved">0 min</span>
+          <span class="count-l" id="cSavedL">saved so far</span>
+        </div>
+      </div>
+      <p class="dim small" id="countsNote" hidden>Your first dictation will show up here.</p>
+
+      <p class="tip" id="tip"></p>
+    </section>
+
+    <!-- ============================================================= History -->
+    <section class="section" data-section="history" aria-labelledby="h-history" hidden>
+      <header class="sec-head">
+        <h1 id="h-history">History</h1>
+        <label class="keep">Keep
+          <select id="keep">
+            <option value="30d">30 days</option>
+            <option value="forever">Forever</option>
+            <option value="off">Off</option>
+          </select>
+        </label>
+      </header>
+
+      <input class="search" id="q" type="search" placeholder="Search your dictations" autocomplete="off" spellcheck="false" aria-label="Search your dictations" />
+
+      <div class="confirm" id="historyConfirm" hidden>
+        <p id="historyConfirmText"></p>
+        <div class="confirm-actions">
+          <button class="btn danger" type="button" id="historyConfirmYes"></button>
+          <button class="btn ghost" type="button" id="historyConfirmNo">Cancel</button>
+        </div>
+      </div>
+
+      <div class="entries" id="entries"></div>
+      <button class="btn ghost more" type="button" id="more" hidden>Show more</button>
+
+      <div class="sec-foot">
+        <button class="text danger" type="button" id="clearAll" hidden>Delete all…</button>
+      </div>
+    </section>
+
+    <!-- ========================================================== Dictionary -->
+    <section class="section" data-section="dictionary" aria-labelledby="h-dictionary" hidden>
+      <header class="sec-head">
+        <h1 id="h-dictionary">Dictionary</h1>
+      </header>
+      <p class="lede">Words Typd should spell your way. Learned words come from your corrections.</p>
+
+      <form class="add" id="addForm">
+        <input id="newWord" type="text" maxlength="64" placeholder="Add a word…" autocomplete="off" spellcheck="false" aria-label="Add a word" />
+        <button class="btn solid" type="submit">Add</button>
+      </form>
+      <p class="error" id="addError" hidden></p>
+
+      <input class="search" id="dq" type="search" placeholder="Search your words" autocomplete="off" spellcheck="false" aria-label="Search your words" hidden />
+
+      <div class="words" id="words"></div>
+
+      <div class="sec-foot">
+        <button class="text" type="button" id="reveal">Open the file</button>
+      </div>
+    </section>
+
+    <!-- ============================================================ Settings -->
+    <section class="section" data-section="settings" aria-labelledby="h-settings" hidden>
+      <h1 id="h-settings">Settings</h1>
+
+      <div class="rows">
+        <div class="row col">
+          <div class="label">
+            <h2>Microphone</h2>
+            <p>Typd listens to this one.</p>
+          </div>
+          <div class="mic">
+            <select id="mic" aria-label="Microphone"><option value="">Windows default</option></select>
+            <div class="meter" aria-hidden="true"><i id="level"></i></div>
+          </div>
+          <p class="error" id="micError" hidden></p>
+        </div>
+
+        <div class="row hotkey" id="hotkeyRow" data-mode="idle">
+          <div class="label">
+            <h2>Hotkey</h2>
+            <p id="hotkeyHelp">Tap to start, tap again to finish.</p>
+            <p class="error" id="hotkeyError" hidden></p>
+          </div>
+          <div class="hotkey-side">
+            <span class="keys" id="hotkeyKeys"></span>
+            <button class="btn" type="button" id="hotkeyChange">Change</button>
+            <button class="btn ghost" type="button" id="hotkeyCancel" hidden>Cancel</button>
+          </div>
+          <button class="text default" type="button" id="hotkeyDefault" hidden></button>
+        </div>
+
+        <div class="row">
+          <div class="label">
+            <h2>Sounds</h2>
+            <p>Soft tones when Typd starts, finishes or fails.</p>
+          </div>
+          <label class="switch"><input type="checkbox" id="sounds" aria-label="Sounds" /><span></span></label>
+        </div>
+
+        <div class="row">
+          <div class="label">
+            <h2 id="loginTitle">Start with Windows</h2>
+            <p id="loginHelp">Ready as soon as you sign in.</p>
+          </div>
+          <label class="switch"><input type="checkbox" id="startAtLogin" aria-labelledby="loginTitle" /><span></span></label>
+        </div>
+
+        <!-- macOS only: off, Typd lives in the menu bar and its Dock icon shows only while this window is open -->
+        <div class="row" id="dockRow" hidden>
+          <div class="label">
+            <h2 id="dockTitle">Show Typd in the Dock</h2>
+            <p>Keep its icon in the Dock while Typd runs; click it to open this window. Off, Typd lives in the menu bar.</p>
+          </div>
+          <label class="switch"><input type="checkbox" id="showInDock" aria-labelledby="dockTitle" /><span></span></label>
+        </div>
+
+        <div class="row">
+          <div class="label">
+            <h2 id="recTitle">Keep recordings</h2>
+            <p id="recInfo">Saved on this PC to make the model better at your voice.</p>
+            <button class="text" type="button" id="openRec">Open folder</button>
+            <!-- Tester builds only (sharing.js): the sharing line and its pause, inside this row. -->
+            <p class="share" id="shareLine" hidden>
+              <span id="shareText"></span>
+              <button class="text" type="button" id="sharePause"></button>
+            </p>
+          </div>
+          <label class="switch"><input type="checkbox" id="keepRecordings" aria-labelledby="recTitle" /><span></span></label>
+        </div>
+
+        <!-- The public beta (sharing.js): off until the person picks share on the consent screen.
+             Turning it on opens that screen again; off is immediate. -->
+        <div class="row" id="betaRow" hidden>
+          <div class="label">
+            <h2 id="betaTitle">Share dictations</h2>
+            <p id="betaHelp">Off: everything stays on this PC.</p>
+            <p class="minor" id="betaMinor">Under 18? Ask a parent before you share.</p>
+            <p class="links">
+              <button class="text" type="button" id="betaAbout">What’s shared</button>
+              <button class="text danger" type="button" id="betaDelete" hidden>Delete what I’ve shared…</button>
+            </p>
+            <p class="flag-line" id="betaFlag" hidden></p>
+            <p class="id-line" id="betaId" hidden></p>
+          </div>
+          <label class="switch"><input type="checkbox" id="betaShare" aria-labelledby="betaTitle" /><span></span></label>
+        </div>
+      </div>
+
+      <div class="confirm" id="betaConfirm" hidden>
+        <p id="betaConfirmText">Delete every dictation this PC has shared, on the server and still waiting here, and turn sharing off?</p>
+        <div class="confirm-actions">
+          <button class="btn danger" type="button" id="betaConfirmYes">Delete</button>
+          <button class="btn ghost" type="button" id="betaConfirmNo">Cancel</button>
+        </div>
+      </div>
+
+      <p class="error" id="settingsError" hidden></p>
+
+      <footer class="about">
+        <p id="privacy"><strong id="privacyHead">Dictation runs on this PC.</strong> <span id="privacyRest">Your voice is never sent anywhere.</span></p>
+        <p class="dim" id="aboutLine"></p>
+        <p><button class="text" type="button" id="feedback">Send feedback</button> · <button class="text" type="button" id="modelLicense">Model licence</button></p>
+      </footer>
+    </section>
+
+    <!-- ========================================================== What's new -->
+    <section class="section" data-section="news" aria-labelledby="h-news" hidden>
+      <h1 id="h-news">What's new</h1>
+      <div class="prose" id="notes"></div>
+      <p class="dim small version" id="newsVersion"></p>
+    </section>
+  </main>
+
+  <div class="toast" id="toast" role="status" hidden>
+    <span id="toastText"></span>
+    <button class="text" type="button" id="toastUndo">Undo</button>
+  </div>
+
+  <script src="search.js"></script>
+  <script src="markdown.js"></script>
+  <script src="home.js"></script>
+</body>
+</html>

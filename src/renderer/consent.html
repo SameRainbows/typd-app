@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:" />
+  <title>Typd</title>
+  <link rel="stylesheet" href="ask.css" />
+</head>
+<body>
+  <!-- The public beta's one consent screen (main/ask-window.js, main/sharing.js). Its words
+       follow docs/TESTER_KIT.md "What's shared, in plain words". -->
+  <h1>Help make Typd better?</h1>
+  <p class="lede" id="lede">Typd turns your voice into text on this PC. Nothing you say leaves it unless you choose to share.</p>
+
+  <div class="facts">
+    <div>
+      <h2>If you share</h2>
+      <p>For each dictation, Typd sends the developer the audio and the text it typed, which app you were typing into (e.g. “Discord”), how long it took, and your OS and app version.</p>
+    </div>
+    <div>
+      <h2>Never shared</h2>
+      <p>What’s on your screen, text you had selected, window titles, or anything when you’re not dictating.</p>
+    </div>
+    <div>
+      <h2>What happens to it</h2>
+      <p>It’s used to test new versions of the model and, if the quality is good, to train it. It’s stored privately, never published, and never sold or given to anyone. Only the developer (and the AI tools on the developer’s computer) work with it.</p>
+    </div>
+    <div>
+      <h2>Stopping</h2>
+      <p>Turn sharing off in Settings any time. “Delete what I’ve shared”, also in Settings, deletes it from the server too.</p>
+    </div>
+  </div>
+
+  <div class="notes">
+    <p class="dim">Avoid dictating passwords, bank details or anything you wouldn’t want stored.</p>
+    <p class="dim" id="updates">Update checks send the app and model version with an anonymous install ID, so the developer can count versions in use.</p>
+    <p class="minor">Under 18? Ask a parent before you choose to share.</p>
+  </div>
+
+  <div class="choices">
+    <button class="choice" type="button" id="share">Share my dictations to improve Typd</button>
+    <button class="choice" type="button" id="keep">Keep everything on my computer</button>
+  </div>
+  <p class="error" id="error" hidden></p>
+  <p class="foot" id="foot">Typd works the same either way. You can change this in Settings.</p>
+
+  <script src="consent.js"></script>
+</body>
+</html>

@@ -1,0 +1,168 @@
+{
+  "name": "typd",
+  "version": "0.2.2",
+  "private": true,
+  "description": "Voice dictation you can talk back to.",
+  "license": "GPL-3.0-only",
+  "main": "src/main/index.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "stub": "electron . --stub",
+    "bench": "node bench/wiring.js && node bench/hotkeys.js && node bench/home.js && node bench/revise.js && node bench/formatting.js && node bench/learn.js && node bench/updates.js && node bench/lora.js --no-model && node bench/sharing.js && node bench/versions.js && node bench/app-update.js && node bench/public-build.js",
+    "bench:revise": "node bench/revise.js",
+    "bench:format": "node bench/formatting.js",
+    "bench:selection": "node bench/selection.js 90 --copy",
+    "bench:wiring": "node bench/wiring.js",
+    "bench:learn": "node bench/learn.js",
+    "bench:hotkeys": "node bench/hotkeys.js",
+    "bench:home": "node bench/home.js",
+    "bench:updates": "node bench/updates.js",
+    "bench:app-update": "node bench/app-update.js",
+    "package:update:win": "node scripts/app-update-package.js win",
+    "bench:lora": "node bench/lora.js",
+    "bench:sharing": "node bench/sharing.js",
+    "bench:versions": "node bench/versions.js",
+    "bench:public": "node bench/public-build.js",
+    "fetch:llama-mac": "node scripts/fetch-llama-mac.js",
+    "build:uiohook-mac": "node scripts/build-uiohook-mac.js arm64 x64",
+    "smoke": "node scripts/smoke-llama.js",
+    "dist:win": "electron-builder --win --x64",
+    "dist:win:public": "node scripts/public-build.js win",
+    "dist:mac": "node scripts/fetch-llama-mac.js && node scripts/build-uiohook-mac.js arm64 x64 && electron-builder --mac",
+    "build:icons": "electron scripts/build-icons.js && python scripts/build-icons.py",
+    "fetch:model": "node scripts/fetch-model.js"
+  },
+  "devDependencies": {
+    "electron": "^44.5.1",
+    "electron-builder": "^26.15.3"
+  },
+  "dependencies": {
+    "sherpa-onnx-node": "^1.13.4",
+    "uiohook-napi": "^1.5.5"
+  },
+  "//build": [
+    "Notes on build (electron-builder rejects unknown keys inside it, so they live here).",
+    "asarUnpack: inject.ps1 is spawned as a child process by path. Inside an asar archive",
+    "there is no real path to spawn, so PowerShell cannot find it and every paste fails",
+    "silently on the packaged build while working in development. Any helper spawned by",
+    "path (a script, a binary) needs the same treatment.",
+    "files: sherpa-onnx-node (Parakeet, TYPD_ENGINE=cascade) is parked. Only asr.js",
+    "requires it, lazily, for the cascade engine, whose models (bench/models) are never",
+    "packaged anyway; so it and its 22 MB native platform package stay out of the app.",
+    "files: CHANGELOG.md is the one Markdown file shipped -- the window's What's new reads it.",
+    "files: test/fixtures/dictation-3s.wav (116 KB) is the model's self-test clip: every warm start",
+    "transcribes it and falls back to the CPU on wrong text (src/main/pipeline/local.js).",
+    "extraResources: the dictation model and llama-server live outside app.asar in",
+    "<resources>/models/typd-dictate and <resources>/llama (see src/main/pipeline/local.js).",
+    "extraResources: MODEL_LICENSE.txt, the model's licence, at <resources>/MODEL_LICENSE.txt; Settings",
+    "opens it (home-window.js app:license), and app-update packages carry it like the rest of the app.",
+    "The model is staged by scripts/before-pack.js from model.json, so only the model in",
+    "use ships. win: the CUDA build in vendor/llama minus the other tools' *-impl.dll.",
+    "mac: vendor/llama-mac/<arch>, fetched by scripts/fetch-llama-mac.js (b11351).",
+    "npmRebuild false: the only native module, uiohook-napi, ships N-API prebuilds for every",
+    "platform, which Electron loads as-is; a rebuild would need a compiler for nothing.",
+    "mac: identity null means electron-builder signs nothing; scripts/after-pack.js signs ad",
+    "hoc on a Mac. minimumSystemVersion is llama.cpp b11351's deployment target.",
+    "App updates (src/main/appUpdate.js): the helper scripts in src/main/app-update/ are read out of",
+    "app.asar and written to <userData>/app-update/ before they run (a script inside the app it is",
+    "replacing could not move that app), so they need no asarUnpack. The update packages themselves",
+    "are made after packaging by scripts/app-update-package.js (README.md \"App updates\")."
+  ],
+  "build": {
+    "appId": "ai.typd.app",
+    "productName": "Typd",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "!**/*.md",
+      "CHANGELOG.md",
+      "test/fixtures/dictation-3s.wav",
+      "!node_modules/sherpa-onnx-node{,/**/*}",
+      "!node_modules/sherpa-onnx-*{,/**/*}"
+    ],
+    "asarUnpack": [
+      "src/main/inject.ps1"
+    ],
+    "npmRebuild": false,
+    "beforePack": "scripts/before-pack.js",
+    "afterPack": "scripts/after-pack.js",
+    "extraResources": [
+      {
+        "from": "dist/.stage/models/typd-dictate",
+        "to": "models/typd-dictate"
+      },
+      {
+        "from": "MODEL_LICENSE.txt",
+        "to": "MODEL_LICENSE.txt"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/typd.ico",
+      "extraResources": [
+        {
+          "from": "vendor/llama",
+          "to": "llama",
+          "filter": [
+            "llama-server.exe",
+            "*.dll",
+            "!llama-*-impl.dll",
+            "llama-server-impl.dll"
+          ]
+        }
+      ]
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "category": "public.app-category.productivity",
+      "identity": null,
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "minimumSystemVersion": "13.3",
+      "artifactName": "${productName}-${version}-mac-${arch}.${ext}",
+      "extendInfo": {
+        "LSUIElement": true,
+        "NSMicrophoneUsageDescription": "Typd listens only while you are dictating, after you press its key. Your voice is turned into text on this Mac, and leaves it only if you choose to share your dictations.",
+        "NSAppleEventsUsageDescription": "Typd pastes the text you dictated into the app you were typing in, and reads the text you highlighted when you ask it to change it."
+      },
+      "extraResources": [
+        {
+          "from": "vendor/llama-mac/${arch}",
+          "to": "llama"
+        }
+      ],
+      "icon": "assets/typd.png"
+    },
+    "icon": "assets/typd.png"
+  },
+  "allowScripts": {
+    "uiohook-napi@1.5.5": true,
+    "electron@44.5.1": true
+  }
+}

@@ -1,0 +1,1753 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Typd — the meter, studied</title>
+
+<!--
+  Which live meter belongs in the pill: the scrolling peak history Typd ships,
+  or the fixed bouncing bars nearly every rival ships?
+
+  Four meters, one input. Every pill on this page reads the same numbers each
+  frame: the microphone through one AnalyserNode, or a generated demo signal
+  read through the same window maths. Every pill wears chrome copied from
+  src/renderer/overlay.css. Meter A is a line-for-line port of the meter in
+  src/renderer/overlay.js, quirks included; B, C and D are candidates.
+
+  The bench at the bottom renders every meter offline at exactly 60 fps over a
+  scripted signal and measures the ink each one moves, so "it feels calmer" can
+  be checked against a number (Law 5).
+
+  Self-contained: no fonts, scripts or images fetched. Nothing here changes the
+  app. Open it in Chrome or Edge; the microphone needs a click to start.
+-->
+
+<style>
+/* ===================================================================== page */
+
+:root {
+  --page:   #F4F5F6;
+  --panel:  #FFFFFF;
+  --sunken: #ECEDEF;
+  --line:   rgba(16, 18, 23, 0.11);
+  --line-2: rgba(16, 18, 23, 0.20);
+  --ink:    #14161B;
+  --muted:  #575D66;
+  --faint:  #8B919B;
+  --desk-a: #E6E8EB;
+  --desk-b: #D5D9DF;
+  --doc:    #FFFFFF;
+  --doc-ink:#2A2E35;
+  --font-ui: "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-hd: "Segoe UI Variable Display", "Segoe UI", -apple-system, system-ui, sans-serif;
+  --font-mono: "Cascadia Mono", ui-monospace, "SF Mono", Consolas, monospace;
+  --z: 2;
+}
+:root[data-theme="dark"] {
+  --page:   #0C0D10;
+  --panel:  #14161A;
+  --sunken: #0A0B0E;
+  --line:   rgba(255, 255, 255, 0.11);
+  --line-2: rgba(255, 255, 255, 0.20);
+  --ink:    #F4F5F7;
+  --muted:  #9DA3AC;
+  --faint:  #6C727B;
+  --desk-a: #1A1C21;
+  --desk-b: #111216;
+  --doc:    #16171B;
+  --doc-ink:#C9CED6;
+}
+
+* { box-sizing: border-box; }
+html { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
+body {
+  margin: 0; background: var(--page); color: var(--ink);
+  font-family: var(--font-ui); font-size: 14px; line-height: 1.55;
+}
+.wrap { max-width: 1240px; margin: 0 auto; padding: 36px 16px 90px; display: flex; flex-direction: column; gap: 30px; }
+
+.masthead { display: flex; flex-direction: column; gap: 9px; }
+.eyebrow, h2.sec {
+  margin: 0; font-size: 10.5px; letter-spacing: .18em; text-transform: uppercase;
+  color: var(--faint); font-weight: 650;
+}
+.masthead h1 {
+  margin: 0; font-family: var(--font-hd);
+  font-size: clamp(26px, 4vw, 38px); font-weight: 640; letter-spacing: -.028em; text-wrap: balance;
+}
+.masthead p, .lede { margin: 0; max-width: 76ch; color: var(--muted); }
+.section { display: flex; flex-direction: column; gap: 12px; }
+code, .mono { font-family: var(--font-mono); font-size: .92em; }
+
+/* ------------------------------------------------------------- controls */
+
+.bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  padding: 10px; border: 1px solid var(--line); border-radius: 11px; background: var(--panel);
+  position: sticky; top: 10px; z-index: 40;
+  box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 8px 24px rgba(0,0,0,.05);
+}
+:root[data-theme="dark"] .bar { box-shadow: 0 1px 2px rgba(0,0,0,.5), 0 8px 24px rgba(0,0,0,.4); }
+.grp {
+  display: flex; flex-wrap: wrap; gap: 2px; padding: 3px;
+  border: 1px solid var(--line); border-radius: 9px; background: var(--sunken);
+}
+.grp > span {
+  align-self: center; font-size: 10px; letter-spacing: .14em; text-transform: uppercase;
+  color: var(--faint); font-weight: 650; padding: 0 7px 0 6px;
+}
+.grp button, .btn {
+  appearance: none; border: 0; background: transparent; color: var(--muted);
+  font-family: inherit; font-size: 12.5px; font-weight: 550;
+  padding: 5px 10px; border-radius: 6px; cursor: pointer; white-space: nowrap;
+  transition: background 130ms ease, color 130ms ease;
+}
+.grp button:hover, .btn:hover { color: var(--ink); }
+.grp button[aria-pressed="true"] { background: var(--ink); color: var(--page); }
+.grp button:focus-visible, .btn:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
+.btn { border: 1px solid var(--line-2); background: var(--panel); color: var(--ink); font-weight: 600; padding: 7px 13px; border-radius: 9px; }
+.btn:active { transform: translateY(1px); }
+.status {
+  flex: 1 1 260px; min-width: 0; font-family: var(--font-mono); font-size: 11.5px; color: var(--muted);
+  display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 0 4px;
+}
+.status b { color: var(--ink); font-weight: 600; }
+.vu { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--line-2); vertical-align: 0; margin-right: 4px; }
+.vu[data-on="true"] { background: var(--ink); }
+
+/* ---------------------------------------------------------------- cards */
+
+.cards {
+  display: grid; gap: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, calc(116px * var(--z) + 48px)), 1fr));
+}
+.card {
+  display: flex; flex-direction: column; gap: 9px; min-width: 0;
+  border: 1px solid var(--line); border-radius: 12px; background: var(--panel); padding: 12px;
+}
+.card header { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.card header b {
+  font-size: 11px; letter-spacing: .12em; font-weight: 750;
+  border: 1px solid var(--line-2); border-radius: 5px; padding: 0 6px;
+}
+.card header .nm { font-weight: 650; }
+.card header i { flex-basis: 100%; font-style: normal; font-size: 11.5px; color: var(--faint); font-family: var(--font-mono); }
+.verdict {
+  border: 1px solid var(--line-2); border-radius: 12px; background: var(--panel); padding: 14px 16px;
+  display: flex; flex-direction: column; gap: 6px; max-width: 900px;
+}
+.verdict b.k { font-size: 10.5px; letter-spacing: .16em; text-transform: uppercase; color: var(--faint); font-weight: 700; }
+.verdict p { margin: 0; color: var(--muted); }
+.verdict p strong { color: var(--ink); }
+.survey td { font-size: 12.5px; }
+.survey td:first-child { font-weight: 600; white-space: nowrap; }
+.survey .grp-row td { background: var(--sunken); font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--faint); font-weight: 650; }
+a { color: inherit; text-underline-offset: 2px; }
+.card p { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
+.readout { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+.readout b { color: var(--ink); font-weight: 600; }
+.readout .wide { grid-column: 1 / -1; }
+
+/* The stage stands in for whatever the user was typing into. */
+.stage {
+  position: relative; overflow: hidden;
+  height: calc(34px * var(--z) + 46px);
+  border: 1px solid var(--line); border-radius: 10px;
+  background: linear-gradient(180deg, var(--desk-a), var(--desk-b));
+  display: flex; flex-direction: column; justify-content: flex-end; align-items: center;
+  padding-bottom: 12px;
+}
+.zoomer { transform: scale(var(--z)); transform-origin: 50% 100%; }
+:root[data-blur="true"] .stage .zoomer { filter: blur(calc(0.9px * var(--z))); }
+
+.mini { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 11.5px; color: var(--muted); }
+.mini .grp button { font-size: 11.5px; padding: 3px 8px; }
+
+/* ----------------------------------------------------------------- tune */
+
+details.tune { border-top: 1px solid var(--line); padding-top: 8px; }
+details.tune summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--ink); }
+.sliders { display: grid; grid-template-columns: 1fr; gap: 6px; margin-top: 8px; }
+.sl { display: grid; grid-template-columns: 96px 1fr 58px; gap: 8px; align-items: center; font-size: 11.5px; color: var(--muted); }
+.sl input[type=range] { width: 100%; accent-color: var(--ink); }
+.sl output { font-family: var(--font-mono); color: var(--ink); text-align: right; }
+.sl label.ck { grid-column: 1 / -1; display: flex; gap: 6px; align-items: center; }
+pre.consts {
+  margin: 8px 0 0; padding: 9px 10px; border-radius: 8px; background: var(--sunken); border: 1px solid var(--line);
+  font-family: var(--font-mono); font-size: 10.5px; line-height: 1.5; color: var(--ink); white-space: pre-wrap; overflow-wrap: anywhere;
+}
+
+/* ---------------------------------------------------------- reading test */
+
+.reading {
+  position: relative; height: 520px; overflow: hidden;
+  border: 1px solid var(--line); border-radius: 12px; background: var(--doc);
+  display: flex; flex-direction: column;
+}
+.reading .chrome { height: 30px; flex: 0 0 30px; border-bottom: 1px solid var(--line); background: var(--sunken); }
+.reading .text {
+  padding: 26px clamp(16px, 6vw, 70px); font-size: 17px; line-height: 1.75; color: var(--doc-ink);
+  max-width: 760px; font-family: Georgia, "Iowan Old Style", "Times New Roman", serif;
+}
+.reading .text p { margin: 0 0 14px; }
+.reading .dock {
+  position: absolute; left: 0; right: 0; bottom: 0; display: flex; justify-content: center; padding-bottom: 12px;
+}
+:root[data-blur="true"] .reading .dock .overlay { filter: blur(0.9px); }
+.rt-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.rt-label { font-family: var(--font-mono); font-size: 12px; color: var(--muted); }
+
+/* ---------------------------------------------------------------- bench */
+
+h3.sub { margin: 10px 0 0; font-size: 13.5px; font-weight: 650; }
+.traces { display: flex; flex-direction: column; gap: 4px; border: 1px solid var(--line); border-radius: 11px; background: var(--panel); padding: 12px; }
+.trace { display: grid; grid-template-columns: 220px 1fr; gap: 12px; align-items: center; }
+.trace .lab { font-size: 12px; font-weight: 600; min-width: 0; }
+.trace .lab i { display: block; font-style: normal; font-family: var(--font-mono); font-size: 10.5px; color: var(--faint); font-weight: 400; }
+.trace canvas { width: 100%; height: 42px; display: block; cursor: crosshair; }
+.taxis { position: relative; height: 16px; margin-left: 232px; font-family: var(--font-mono); font-size: 10.5px; color: var(--faint); }
+.taxis span { position: absolute; transform: translateX(-50%); }
+@media (max-width: 640px) { .trace { grid-template-columns: 1fr; } .taxis { margin-left: 0; } }
+.film { overflow-x: auto; border: 1px solid var(--line); border-radius: 11px; background: var(--panel); }
+.film table { min-width: 0; width: auto; }
+.film td, .film th { border-bottom: 1px solid var(--line); padding: 6px 8px; text-align: center; }
+.film th:first-child, .film td:first-child { text-align: left; white-space: nowrap; font-size: 12px; }
+.film .tile { display: inline-block; padding: 4px 6px; border-radius: 9px; background: var(--tilebg); line-height: 0; }
+.film canvas { width: 87px; height: 36px; display: block; }
+:root { --tilebg: rgba(253, 253, 254, 0.97); --tileink: #1C1F25; }
+:root[data-theme="dark"] { --tilebg: rgba(17, 18, 22, 0.95); --tileink: #F4F5F7; }
+
+.tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 11px; background: var(--panel); }
+table { border-collapse: collapse; width: 100%; font-size: 12.5px; min-width: 760px; }
+th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); font-weight: 650; }
+td.n { font-family: var(--font-mono); text-align: right; white-space: nowrap; }
+tr:last-child td { border-bottom: 0; }
+.notes { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 12px; }
+.note { border: 1px solid var(--line); border-radius: 11px; background: var(--panel); padding: 12px 14px; }
+.note h3 { margin: 0 0 6px; font-size: 13.5px; }
+.note p, .note li { margin: 0 0 6px; color: var(--muted); font-size: 12.5px; }
+.note ul { margin: 0; padding-left: 18px; }
+
+/* ===================================================== overlay chrome
+   Copied from src/renderer/overlay.css (2026-10-09). The custom properties
+   live on .overlay instead of :root so the page theme can flip them, and the
+   pill is always data-visible. Nothing else is changed. */
+
+.overlay {
+  --pill-bg:    rgba(253, 253, 254, 0.97);
+  --pill-line:  rgba(16, 18, 23, 0.13);
+  --edge-top:   rgba(255, 255, 255, 0.95);
+  --edge-bot:   rgba(16, 18, 23, 0.07);
+  --pill-shadow:
+    0px 1px 1px 0px rgba(16, 18, 23, 0.06),
+    0px 4px 10px 0px rgba(16, 18, 23, 0.085),
+    0px 12px 26px 0px rgba(16, 18, 23, 0.07);
+  --text:   #14161B;
+  --dim:    #5A6068;
+  --meter:  #1C1F25;
+  --chip:       rgba(16, 18, 23, 0.065);
+  --chip-hover: rgba(16, 18, 23, 0.14);
+  --commit:     #16181D;
+  --commit-ink: #FFFFFF;
+  --danger:     #AF2C21;
+  --fill:   rgba(16, 18, 23, 0.085);
+  --font-ui: "Segoe UI Variable Text", "Segoe UI Variable Small", "Segoe UI", -apple-system, sans-serif;
+  --ease-spring: cubic-bezier(0.16, 1.02, 0.3, 1);
+  --ease-exit:   cubic-bezier(0.4, 0, 0.9, 0.35);
+  --dur-enter: 200ms;
+  --dur-morph: 260ms;
+  --dur-exit:  140ms;
+  --hair: 0.25px;
+}
+:root[data-theme="dark"] .overlay {
+  --pill-bg:    rgba(17, 18, 22, 0.95);
+  --pill-line:  rgba(255, 255, 255, 0.145);
+  --edge-top:   rgba(255, 255, 255, 0.16);
+  --edge-bot:   rgba(0, 0, 0, 0.3);
+  --pill-shadow:
+    0px 1px 2px 0px rgba(0, 0, 0, 0.45),
+    0px 6px 16px 0px rgba(0, 0, 0, 0.4),
+    0px 14px 32px 20px rgba(0, 0, 0, 0.54);
+  --text:   #F4F5F7;
+  --dim:    #DADDE4;
+  --meter:  #F4F5F7;
+  --chip:       rgba(244, 245, 247, 0.17);
+  --chip-hover: rgba(244, 245, 247, 0.2);
+  --commit:     #F4F5F7;
+  --commit-ink: #14161B;
+  --danger:     #E8695C;
+  --fill:   rgba(244, 245, 247, 0.11);
+}
+@media (min-resolution: 1.25dppx) { .overlay { --hair: 0.2px; } }
+@media (min-resolution: 1.5dppx)  { .overlay { --hair: 0.1667px; } }
+@media (min-resolution: 2dppx)    { .overlay { --hair: 0.125px; } }
+
+.overlay { display: flex; flex-direction: column; align-items: center; font-family: var(--font-ui); user-select: none; }
+.pill {
+  position: relative; display: flex; align-items: center;
+  width: 116px; height: 34px; padding: 0 6px; border-radius: 17px;
+  background: var(--pill-bg); border: var(--hair) solid var(--pill-line);
+  box-shadow: var(--pill-shadow); backdrop-filter: blur(12px); overflow: hidden;
+  opacity: 0; transform: translateY(6px) scale(0.96);
+  transition: opacity var(--dur-exit) var(--ease-exit), transform var(--dur-exit) var(--ease-exit), width var(--dur-morph) var(--ease-spring);
+}
+.pill::before {
+  content: ""; position: absolute; inset: 0; border-radius: inherit; padding: var(--hair);
+  background: linear-gradient(var(--edge-top), transparent 46%, transparent 56%, var(--edge-bot));
+  -webkit-mask: linear-gradient(#000,#000) content-box, linear-gradient(#000,#000);
+  -webkit-mask-composite: xor; mask-composite: exclude; pointer-events: none; z-index: 2;
+}
+.overlay[data-visible="true"] .pill {
+  opacity: 1; transform: translateY(0) scale(1);
+  transition: opacity var(--dur-enter) var(--ease-spring), transform var(--dur-enter) var(--ease-spring), width var(--dur-morph) var(--ease-spring);
+}
+.overlay[data-state="working"] .pill { width: 92px; }
+.overlay[data-state="error"]   .pill { width: 246px; }
+.progress {
+  position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: var(--fill);
+  transition: width 240ms cubic-bezier(.33, 1, .68, 1), opacity 200ms var(--ease-exit);
+  pointer-events: none; z-index: 0;
+}
+.overlay:not([data-state="working"]) .progress { opacity: 0; }
+.control {
+  position: relative; z-index: 1; flex: 0 0 24px; width: 24px; height: 24px;
+  padding: 0; border: 0; border-radius: 50%; background: transparent;
+  display: grid; place-items: center; cursor: pointer; overflow: hidden;
+  transition: background 150ms ease, flex-basis var(--dur-morph) var(--ease-spring), width var(--dur-morph) var(--ease-spring),
+              margin var(--dur-morph) var(--ease-spring), opacity 160ms var(--ease-exit), transform 180ms var(--ease-spring);
+}
+.control.cancel  { margin-right: 6px; }
+.control.confirm { margin-left: 6px; }
+.control[data-off="true"] { flex-basis: 0; width: 0; margin-left: 0; margin-right: 0; opacity: 0; transform: scale(.55); pointer-events: none; }
+.control svg {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: 33px; height: 33px; fill: none; stroke-linecap: round; stroke-linejoin: round; display: block;
+}
+.control .x    { stroke-width: 1.2; }
+.control .tick { stroke-width: 1.05; }
+.control.cancel { background: var(--chip); }
+.control.cancel svg { stroke: var(--dim); transition: stroke 130ms ease; }
+.control.cancel:hover { background: var(--chip-hover); }
+.control.cancel:hover svg { stroke: var(--danger); }
+.control.cancel:active { transform: scale(.92); }
+.control.confirm { background: var(--commit); box-shadow: 0 1px 2px rgba(0,0,0,.18); }
+.control.confirm svg { stroke: var(--commit-ink); }
+.control.confirm:hover { transform: scale(1.07); }
+.control.confirm:active { transform: scale(.94); }
+.mid { position: relative; z-index: 1; flex: 1 1 auto; min-width: 0; height: 18px; }
+.layer {
+  position: absolute; inset: 0; opacity: 0; transform: translateY(2px); pointer-events: none;
+  transition: opacity 100ms var(--ease-exit), transform 100ms var(--ease-exit);
+}
+.layer[data-on="true"] {
+  opacity: 1; transform: translateY(0);
+  transition: opacity 180ms var(--ease-spring) 80ms, transform 180ms var(--ease-spring) 80ms;
+}
+.meter-slot canvas { width: 100%; height: 100%; display: block; }
+.result-text {
+  display: flex; align-items: center; overflow: hidden; padding: 0 6px 0 9px;
+  font-size: 12.5px; font-weight: 550; color: var(--danger); white-space: nowrap;
+  -webkit-mask-image: linear-gradient(270deg, transparent 0, #000 22px);
+  mask-image: linear-gradient(270deg, transparent 0, #000 22px);
+}
+@media (prefers-reduced-motion: reduce) {
+  .overlay * { transition-duration: 1ms !important; }
+}
+</style>
+
+<body>
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="eyebrow">Typd · design study · meter</div>
+    <h1>Scrolling history or bouncing bars?</h1>
+    <p>
+      Five meters reading the same input. <b>A</b> is the meter Typd ships, ported line for line.
+      <b>B</b> keeps A's signal and changes only the layout, to the fixed bouncing bars most rivals use.
+      <b>C</b> is the candidate: fixed bars on a dB scale measured from the room's noise floor, a fast rise and a slow fall,
+      and an optional faint peak-hold. <b>D</b> is the smallest honest meter there is: one line.
+      <b>E</b> is Typeless-style: ten bars that each move on their own.
+      Speak, or run the demo signal, then try Silence and the two Dead mic inputs.
+    </p>
+  </header>
+
+  <div class="verdict">
+    <b class="k">Verdict, 2026-10-09</b>
+    <p>
+      <strong>For a pill that is never looked at, the fixed meter is better, not just different.</strong> The scrolling row moves
+      whether or not anyone speaks: in silence it moves a third as much ink as it does during speech, and more than the fixed layout
+      moves while you talk. Its first visible response comes one push later (67 ms against 17 ms), and it keeps gliding over a dead
+      microphone. Travelling motion is also the most distracting kind in peripheral-vision studies. Keep C, without the peak-hold.
+      Scrolling still suits screens people actually watch, like Voice Memos, Recorder, or a composer field.
+    </p>
+    <p>
+      <strong>Typeless-style independent bars (E) are a fair alternative if you want more life, in their frequency-band form only.</strong>
+      They keep everything that matters: stillness in silence, 17 ms response, dimming on a dead mic. The price is about 40% more motion
+      than C while you talk, and a level that is read from the overall mass rather than from any one bar. Random per-bar factors
+      look the same but keep moving on a held vowel, where nothing in the sound changes. That is decoration.
+    </p>
+  </div>
+
+  <div class="bar" role="toolbar" aria-label="Lab controls">
+    <div class="grp" data-opt="source"><span>Source</span>
+      <button data-v="demo" aria-pressed="true">Demo signal</button>
+      <button data-v="mic" aria-pressed="false">Microphone</button>
+    </div>
+    <div class="grp" data-opt="input"><span>Input</span>
+      <button data-v="normal" aria-pressed="true" title="As captured">Normal</button>
+      <button data-v="far" aria-pressed="false" title="Speech 18 dB quieter, room noise unchanged (demo). With the microphone: whole input −18 dB.">Far</button>
+      <button data-v="lowgain" aria-pressed="false" title="Everything −24 dB: a low-gain audio interface">Low gain</button>
+      <button data-v="loud" aria-pressed="false" title="+12 dB, clipped at full scale">Loud</button>
+      <button data-v="silence" aria-pressed="false" title="Room noise only, −58 dBFS">Silence</button>
+      <button data-v="deadstart" aria-pressed="false" title="Exact zeros from the start of a session: what Typd's silent-mic check catches">Dead at start</button>
+      <button data-v="deadmid" aria-pressed="false" title="Exact zeros after the session has heard sound: Typd's check is latched off by then">Dead mid-session</button>
+    </div>
+    <div class="grp" data-opt="state"><span>State</span>
+      <button data-v="listening" aria-pressed="true">Listening</button>
+      <button data-v="working" aria-pressed="false">Working</button>
+    </div>
+    <div class="grp" data-opt="motion"><span>Motion</span>
+      <button data-v="system" aria-pressed="true">System</button>
+      <button data-v="full" aria-pressed="false">Full</button>
+      <button data-v="reduced" aria-pressed="false">Reduced</button>
+    </div>
+    <div class="grp" data-opt="theme"><span>Theme</span>
+      <button data-v="light" aria-pressed="false">Light</button>
+      <button data-v="dark" aria-pressed="false">Dark</button>
+    </div>
+    <div class="grp" data-opt="zoom"><span>Zoom</span>
+      <button data-v="1" aria-pressed="false">1×</button>
+      <button data-v="2" aria-pressed="true">2×</button>
+      <button data-v="3" aria-pressed="false">3×</button>
+    </div>
+    <div class="grp" data-opt="blur"><span>Periphery</span>
+      <button data-v="off" aria-pressed="true">Sharp</button>
+      <button data-v="on" aria-pressed="false" title="A rough stand-in for low acuity off-axis. Motion survives blur; detail does not.">Blurred</button>
+    </div>
+    <button class="btn" id="restart" title="Start a new session (resets every meter)">Restart session</button>
+    <div class="status" aria-live="off">
+      <span id="stSource">demo signal</span>
+      <span><span class="vu" id="stVu"></span>input <b id="stDb">—</b></span>
+      <span>noise floor <b id="stNoise">—</b></span>
+      <span>SNR <b id="stSnr">—</b></span>
+      <span id="stRm"></span>
+    </div>
+  </div>
+
+  <section class="section">
+    <h2 class="sec">Side by side</h2>
+    <div class="cards" id="cards"></div>
+    <p class="lede" style="font-size:12.5px">
+      <b>Motion</b> is the ink each meter changes per second, in CSS px², measured from its own canvas every frame and split by whether
+      the input currently holds voice. A meter whose motion means something should read near zero in silence.
+    </p>
+  </section>
+
+  <section class="section">
+    <h2 class="sec">Reading test</h2>
+    <p class="lede">
+      The real situation: one pill at true size near the bottom, your eyes on the text. Switch to the microphone, read the passage aloud
+      without looking down, and notice which meter pulls your eye. <b>Blind</b> picks one at random and hides which;
+      <b>Reveal</b> tells you.
+    </p>
+    <div class="rt-row">
+      <div class="grp" id="rtPick"><span>Meter</span>
+        <button data-v="A" aria-pressed="true">A</button>
+        <button data-v="B" aria-pressed="false">B</button>
+        <button data-v="C" aria-pressed="false">C</button>
+        <button data-v="D" aria-pressed="false">D</button>
+        <button data-v="E" aria-pressed="false">E</button>
+      </div>
+      <button class="btn" id="rtBlind">Blind</button>
+      <button class="btn" id="rtReveal">Reveal</button>
+      <span class="rt-label" id="rtLabel">showing A</span>
+    </div>
+    <div class="reading">
+      <div class="chrome"></div>
+      <div class="text">
+        <p>Hi Sam, thanks for sending the draft over so quickly. I read it on the train this morning and the structure works:
+        the opening makes the case in two sentences, and the middle section finally explains why the numbers moved in March.</p>
+        <p>Two small things. The chart on page four needs its axis labelled, because without it the drop looks far bigger than it was.
+        And the last paragraph promises a follow-up that nobody has agreed to yet, so I would cut that line or soften it.</p>
+        <p>Otherwise this is ready. If you can turn it around by Thursday, we can send it to the whole team before the long weekend.</p>
+      </div>
+      <div class="dock" id="rtDock"></div>
+    </div>
+  </section>
+
+  <section class="section">
+    <h2 class="sec" id="bench">Bench</h2>
+    <p class="lede">
+      Every meter rendered offline at exactly 60 fps and 2 device px per CSS px, over a scripted signal: 2 s of room noise at −58 dBFS,
+      2.5 s of speech-like syllables at −26 dBFS RMS, then 2 s of room noise. Two more runs swap in far speech (−44 dBFS, same room)
+      and a dead microphone (exact zeros). Onset is the first frame where the meter's ink rises one device pixel above anything
+      it showed in silence. Deterministic: the same numbers every run.
+    </p>
+    <div class="rt-row"><button class="btn" id="benchRun">Run bench</button><span class="rt-label" id="benchNote"></span></div>
+    <div class="tablewrap">
+      <table id="benchTable">
+        <thead><tr>
+          <th>Meter</th><th>Motion in silence<br>px²/s</th><th>Motion in speech<br>px²/s</th><th>Motion on a<br>held tone px²/s</th><th>Silence ÷ speech</th>
+          <th>First visible<br>response</th><th>Whole meter<br>at 50%</th><th>Back to rest after<br>last syllable</th>
+          <th>Far ÷ normal<br>height</th><th>Ink follows<br>loudness (r)</th><th>Dead mic vs quiet room<br>(ink, motion px²/s)</th>
+        </tr></thead>
+        <tbody><tr><td colspan="11" style="color:var(--faint)">Not run yet.</td></tr></tbody>
+      </table>
+    </div>
+    <h3 class="sub">Motion over time</h3>
+    <p class="lede" style="font-size:12.5px">Ink changed per second, averaged over 4 frames, each row on its own scale (its peak is printed),
+      so the shape is what to read: does the meter move when nobody is speaking? The shaded band is the speech. Hover a row to read values.</p>
+    <div class="traces" id="traces"><p class="lede" style="font-size:12.5px">Run the bench.</p></div>
+    <h3 class="sub">Filmstrip</h3>
+    <p class="lede" style="font-size:12.5px">The same runs, frame by frame at 2×, at fixed moments: silence, the first frames of the first syllable, mid-speech, and after the last syllable.</p>
+    <div class="film" id="film"></div>
+  </section>
+
+  <section class="section">
+    <h2 class="sec">What each meter is</h2>
+    <div class="notes">
+      <div class="note">
+        <h3>A · Typd today</h3>
+        <ul>
+          <li>RMS of the last 64 ms, divided by a peak that decays ×0.995 per frame with a 0.015 floor (linear auto-gain), then smoothed ×0.4 per frame.</li>
+          <li>The peak of each 52 ms window is pushed in on the right; 9 visible slots glide left continuously.</li>
+          <li>Quirks kept: <code>lastPush = now</code> makes a push land on the first frame ≥ 52 ms, which is every 4th frame (66.7 ms) at 60 Hz. Three frames glide a third of a slot each, the fourth barely moves: a 15 Hz hitch. The glide runs in silence, so the dotted rule drifts at about one slot per push. The canvas ignores reduced motion.</li>
+        </ul>
+      </div>
+      <div class="note">
+        <h3>B · Rival layout, Typd's signal</h3>
+        <ul>
+          <li>The same level as A, frame for frame, drawn as 9 fixed bars × a centre-weighted profile (0.46 at the edges, 1.0 in the middle).</li>
+          <li>The only variable that changes from A is layout, so A vs B isolates "scroll vs bounce".</li>
+          <li>Working: a swell travels across fixed bars, capped at 0.55, as in <code>pill-refined.html</code>.</li>
+        </ul>
+      </div>
+      <div class="note">
+        <h3>C · Candidate</h3>
+        <ul>
+          <li>Level is the RMS of the last 32 ms in dBFS. Zero height is the room's noise floor (the minimum over the last 2 s, ignoring digital zeros) + 6 dB, and never below −70 dBFS. Full height is 36 dB above that.</li>
+          <li>One-pole ballistics: 15 ms attack, 160 ms release; outer bars up to 2.5× slower to rise, so an onset blooms from the centre.</li>
+          <li>Peak-hold (optional): a faint copy of each bar holds 600 ms, then falls at 1.6 full-scale/s.</li>
+          <li>Exact zeros for 600 ms dim the dots to 35%: a dead mic looks different from a quiet room, even mid-session.</li>
+          <li>Reduced motion: no geometry changes; the dots brighten while you speak (400 ms hold) and dim in pauses.</li>
+        </ul>
+      </div>
+      <div class="note">
+        <h3>D · One line</h3>
+        <ul>
+          <li>C's level and ballistics, drawn as one centred 3 px line that grows from a 6 px dash.</li>
+          <li>The least ink and motion per bit of information; also the least like a "voice" glyph.</li>
+          <li>Reduced motion: opacity only, as C.</li>
+        </ul>
+      </div>
+      <div class="note">
+        <h3>E · Independent bars (Typeless-style)</h3>
+        <ul>
+          <li>Ten 2.25 px bars, no mirror, no centre weighting. C's level, noise floor, gate, 15/160 ms ballistics, dead-mic dimming and reduced-motion handling.</li>
+          <li><b>Bands</b> (default): each bar is one of ten log-spaced bands from 120 Hz to 6 kHz (32 ms Hann FFT), measured in dB above that band's own floor, shown in a fixed shuffled order, and silenced while the whole input sits at room level.</li>
+          <li><b>Random</b>: the level × a per-bar factor (0.15–1, skewed short) re-drawn every 70–150 ms and eased over 45 ms.</li>
+        </ul>
+      </div>
+      <div class="note">
+        <h3>How E compares with C, honestly</h3>
+        <ul>
+          <li><b>Liveliness:</b> clearly more. About 40% more motion while speaking (644 or 649 px²/s against 455), and neighbouring bars disagree, which reads as a voice rather than a gauge.</li>
+          <li><b>Distraction:</b> more motion means more pull while you talk, but none in silence: the property that separates every fixed meter from A survives.</li>
+          <li><b>Honesty:</b> random factors keep moving on a held tone (475 px²/s, against 18 for C), so a share of the motion is invented. Bands hold still (28), because a held vowel's spectrum does not change.</li>
+          <li><b>Level:</b> total ink follows loudness about as well as C (r 0.59–0.65 against 0.63), but no single bar shows it. In band form a far voice looks less far: 0.49 of normal height, against 0.33.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <h2 class="sec">What others ship</h2>
+    <p class="lede">
+      Surveyed 2026-10-09. Open-source rows were read from the code. Closed-source rows come from docs, the vendors' own graphics,
+      changelogs and press, and are marked where the motion type could not be confirmed.
+    </p>
+    <div class="tablewrap">
+      <table class="survey">
+        <thead><tr><th>Product</th><th>Meter</th><th>Silence</th><th>Source</th></tr></thead>
+        <tbody>
+          <tr class="grp-row"><td colspan="4">Dictation overlays</td></tr>
+          <tr><td>Wispr Flow</td><td>Fixed level bars, 10, peak near the centre</td><td>dots</td><td><a href="https://cdn.prod.website-files.com/682f84b3838c89f8ff7667db/6a4f5ff3f6da81ba30f2416b_Flowbar.svg">Flow Bar SVG</a>, <a href="https://docs.wisprflow.ai/articles/4351452717-troubleshooting-mic-issues">docs</a></td></tr>
+          <tr><td>Typeless</td><td>Fixed bars, about 10, centre-weighted</td><td>dots</td><td>help-centre video</td></tr>
+          <tr><td>Aqua Voice</td><td>Fixed per-frequency bars, 5 (glass) or 12; orb halo grows with volume</td><td>—</td><td>site code, <a href="https://aquavoice.com/changelog">changelog</a></td></tr>
+          <tr><td>Willow</td><td>About 16 thin bars in a 116×40 pill; motion type unconfirmed</td><td>—</td><td><a href="https://willowvoice.com/features/dictation">site</a></td></tr>
+          <tr><td>Superwhisper</td><td>Scrolling mirrored waveform (many thin bars), in a window</td><td>dotted line</td><td><a href="https://superwhisper.com/docs/get-started/interface-rec-window">docs</a></td></tr>
+          <tr><td>Handy</td><td>Fixed spectrum bars, 9 (FFT 400–4000 Hz), τ ≈ 100 ms</td><td>3 px stubs</td><td><a href="https://github.com/cjpais/Handy/blob/f6b3f8297061acaa763a48c4cdefbbf342c814ac/src/overlay/RecordingOverlay.tsx#L121-L131">code</a></td></tr>
+          <tr><td>OpenWhispr</td><td>Scrolling history, 11 bars × 80 ms</td><td>4 px bars</td><td><a href="https://github.com/OpenWhispr/openwhispr/blob/f79a24e226d991507558e92b09cecb99aaa1ccd7/src/components/dictation/PillWaveform.tsx">code</a></td></tr>
+          <tr><td>VoiceInk</td><td>One level × a travelling sine, 15 bars (decorative)</td><td>noise ripple</td><td><a href="https://github.com/Beingpax/VoiceInk/blob/c09cc1f677f40f2ee665843a61f07670210f012e/VoiceInk/Features/Recording/Components/AudioVisualizerView.swift">code</a></td></tr>
+          <tr><td>FreeFlow</td><td>One level × waves, 9 bars; moves at zero input</td><td>never still</td><td><a href="https://github.com/zachlatta/freeflow/issues/313">issue #313</a></td></tr>
+          <tr><td>Whispering</td><td>Fixed bars, 11, one level × fixed envelope</td><td>dots</td><td><a href="https://github.com/epicenter-so/epicenter/blob/5b4bb69a956c56b95fa5ec2dae64b73c5cb4fdbd/apps/whispering/src/lib/recording-pill/LevelMeter.svelte">code</a></td></tr>
+          <tr class="grp-row"><td colspan="4">Operating systems and assistants</td></tr>
+          <tr><td>macOS Dictation</td><td>12–13: mic with a loudness indicator · 14–15: mic icon · 26: pulsing cursor</td><td>still</td><td><a href="https://support.apple.com/guide/mac-help/use-dictation-mh40584/26/mac/26">Apple guides</a></td></tr>
+          <tr><td>Windows voice typing</td><td>State only: mic button turns blue, "Listening…"</td><td>still</td><td><a href="https://mcmw.abilitynet.org.uk/how-to-use-voice-typing-in-windows-11">AbilityNet</a></td></tr>
+          <tr><td>Siri</td><td>iOS 18+: screen-edge glow that reacts to your voice; iOS 27: orb with a live waveform</td><td>idle pulse</td><td><a href="https://9to5mac.com/2024/11/03/new-apple-intelligence-siri-looks-different-works-the-same/">9to5Mac</a></td></tr>
+          <tr><td>ChatGPT voice</td><td>Orb that pulses while listening</td><td>—</td><td>press</td></tr>
+          <tr><td>ChatGPT, Claude dictation</td><td>Scrolling history in the composer, newest on the right</td><td>dots</td><td><a href="https://community.openai.com/t/dictation-in-chatgpt-web-post-submit-processing-slower-than-before-and-visualizer-state-is-misleading-during-load/1381026">forum</a>, clones [inferred]</td></tr>
+          <tr><td>Gemini, Google</td><td>Assistant dots / arc / glow pulse with speech; 2026 voice input: waveform in the field</td><td>—</td><td><a href="https://9to5google.com/2026/03/19/gemini-voice-input-redesign/">9to5Google</a></td></tr>
+          <tr class="grp-row"><td colspan="4">Recorders (the waveform is the thing you look at)</td></tr>
+          <tr><td>Google Recorder</td><td>Scrolling waveform, one bar per 50 ms</td><td>flat</td><td><a href="https://research.google/blog/the-on-device-machine-learning-behind-recorder/">Google Research</a></td></tr>
+          <tr><td>Apple Voice Memos</td><td>Scrolling waveform past a playhead</td><td>flat</td><td><a href="https://support.apple.com/en-kg/guide/iphone/make-a-recording-iph4d2a39a3b/13.0/ios">Apple</a></td></tr>
+          <tr><td>Otter</td><td>No meter documented; live transcript</td><td>—</td><td>—</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="notes">
+      <div class="note">
+        <h3>Why motion in silence costs something</h3>
+        <ul>
+          <li>Travelling motion was rated by far the most distracting peripheral cue; slow in-place motion the least (<a href="https://www.interruptions.net/literature/Bartram-IJHCS03-BW.pdf">Bartram, Ware &amp; Calvert 2003</a>).</li>
+          <li>A continuously scrolling ticker cut editing performance by 43%, against 26% for one that moved in steps (<a href="https://www.interruptions.net/literature/Maglio-CHI00-p241-maglio.pdf">Maglio &amp; Campbell 2000</a>).</li>
+          <li>A change captures attention when it breaks a calm (von Mühlenen et al. 2005). Still dots make the first syllable that change; a moving row masks it.</li>
+          <li>Jerky motion (8–17 Hz refresh) captures attention and smooth motion does not (Sunny &amp; von Mühlenen 2011). A's push lands on every 4th frame at 60 Hz, a 15 Hz hitch.</li>
+          <li>Unlooked-at banners still raised workload (<a href="https://thoughtcrumbs.com/publications/ToCHI04.pdf">Burke et al. 2005</a>). Not noticing a cost is not the same as it being free.</li>
+        </ul>
+      </div>
+      <div class="note">
+        <h3>Why the meter must follow input, and only input</h3>
+        <ul>
+          <li>An OpenWhispr user talked for about seven minutes into a dead mic because the bars animated regardless of input (<a href="https://github.com/OpenWhispr/openwhispr/issues/846">#846</a>). FreeFlow has the same report (<a href="https://github.com/zachlatta/freeflow/issues/313">#313</a>).</li>
+          <li>An OpenAI forum user says ChatGPT's scrolling visualiser keeps moving after you stop, which reads as a live mic.</li>
+          <li>Handy moved its window to −68…−30 dB; −70 was rejected because a noisy room made idle bars twitch (<a href="https://github.com/cjpais/Handy/pull/1813">PR #1813</a>). Hence C's gate sits above the measured floor.</li>
+          <li>Willow removed its quiet-mic warnings as "more noise than help" (Mac v2.3.10). Let the meter say "too quiet" instead.</li>
+          <li>Visual lag behind your own voice is detectable from about 40–45 ms and unacceptable past about 90 ms (<a href="https://itu.int/dms_pubrec/itu-r/rec/bt/R-REC-BT.1359-0-199802-S!!PDF-E.pdf">ITU-R BT.1359</a>; Levitin et al.).</li>
+          <li>A scrolling volume plot ranked last of the live speech-feedback displays tested (<a href="https://www.hoques.com/Publications/2015/2015-Rhema-IUI-Tanveer-Lin-Hoque.pdf">Rhema, Tanveer et al. 2015</a>).</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+</div>
+
+<template id="pillTpl">
+  <div class="overlay" data-visible="true" data-state="listening" data-mode="dictate">
+    <div class="pill">
+      <span class="progress" aria-hidden="true"></span>
+      <button class="control cancel" type="button" title="Restart session" tabindex="-1">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path class="x" d="M8 8 L16 16 M16 8 L8 16" /></svg>
+      </button>
+      <span class="mid">
+        <span class="layer meter-slot" data-on="true"><canvas class="meter"></canvas></span>
+        <span class="layer result-text" data-on="false"></span>
+      </span>
+      <button class="control confirm" type="button" title="Done (switch to Working)" tabindex="-1">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path class="tick" d="M7.5 12.4 L10.6 15.6 L16.8 9" /></svg>
+      </button>
+    </div>
+  </div>
+</template>
+
+<script>
+'use strict';
+(function () {
+  var root = document.documentElement;
+  var $ = function (s, r) { return (r || document).querySelector(s); };
+  var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
+
+  var opt = { source: 'demo', input: 'normal', state: 'listening', motion: 'system', zoom: 2, blur: false };
+  var reduceQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+  var darkQuery = window.matchMedia('(prefers-color-scheme: dark)');
+  function reduced() { return opt.motion === 'reduced' || (opt.motion === 'system' && reduceQuery.matches); }
+
+  /* =============================================================== helpers */
+
+  function rng(seed) {
+    return function () {
+      seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+      var t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+      return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+  }
+  function dbAmp(db) { return Math.pow(10, db / 20); }
+  function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+  function ease(dt, tau) { return 1 - Math.exp(-dt / Math.max(0.001, tau)); }
+
+  function rr(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(x, y, w, h, r);
+    else {
+      ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+    }
+    ctx.fill();
+  }
+
+  /* ================================================================ signals */
+
+  // Room noise: white noise through a one-pole low-pass, set to an RMS in dBFS.
+  function makeRoom(len, sr, db, seed) {
+    var r = rng(seed), y = 0, a = Math.exp(-2 * Math.PI * 1800 / sr), out = new Float32Array(len), sum = 0;
+    for (var i = 0; i < len; i++) { y = a * y + (1 - a) * (r() * 2 - 1); out[i] = y; sum += y * y; }
+    var g = dbAmp(db) / Math.sqrt(sum / len);
+    for (var j = 0; j < len; j++) out[j] *= g;
+    return out;
+  }
+
+  // Speech-like: syllables of 120-260 ms with 30-90 ms gaps, a harmonic buzz
+  // (some syllables mostly noise, like fricatives), grouped into phrases. Not
+  // speech, but it has speech's envelope, which is all a meter ever sees.
+  function makeSpeech(len, sr, spans, db, seed) {
+    var r = rng(seed), out = new Float32Array(len), phase = 0, first = Infinity, last = 0;
+    for (var s = 0; s < spans.length; s++) {
+      var t = spans[s][0], end = spans[s][1];
+      while (t < end - 0.08) {
+        var dur = Math.min(0.12 + r() * 0.14, end - t), gap = 0.03 + r() * 0.06;
+        var amp = 0.45 + r() * 0.55, f0 = 105 + r() * 45, fric = r() < 0.22;
+        var i0 = Math.floor(t * sr), n = Math.floor(dur * sr);
+        first = Math.min(first, t); last = Math.max(last, t + dur);
+        for (var k = 0; k < n && i0 + k < len; k++) {
+          var x = k / sr;
+          var env = Math.min(1, x / 0.012) * Math.min(1, (dur - x) / 0.04) * (0.75 + 0.25 * Math.sin(Math.PI * x / dur));
+          phase += 2 * Math.PI * f0 * (1 + 0.03 * Math.sin(2 * Math.PI * 5 * x)) / sr;
+          var v = 0;
+          for (var h = 1; h <= 9; h++) v += Math.sin(phase * h) / h;
+          if (fric) v = v * 0.35 + (r() * 2 - 1) * 0.9;
+          out[i0 + k] += v * env * amp;
+        }
+        t += dur + gap;
+      }
+    }
+    var sum = 0, cnt = 0;
+    for (var s2 = 0; s2 < spans.length; s2++) {
+      for (var i = Math.floor(spans[s2][0] * sr); i < Math.min(len, Math.floor(spans[s2][1] * sr)); i++) { sum += out[i] * out[i]; cnt++; }
+    }
+    var g = dbAmp(db) / Math.sqrt(sum / Math.max(1, cnt));
+    for (var j = 0; j < len; j++) out[j] *= g;
+    return { x: out, first: first, last: last };
+  }
+
+  // The demo: a 16 s loop at 16 kHz, speech and room kept apart so "Far" can
+  // move the voice away without moving the room.
+  var DEMO_SR = 16000, DEMO_LEN = DEMO_SR * 16;
+  var demoSpeech = makeSpeech(DEMO_LEN, DEMO_SR, [[0.7, 3.1], [4.0, 5.7], [7.0, 10.2], [10.9, 12.3], [13.7, 15.5]], -26, 3).x;
+  var demoRoom = makeRoom(DEMO_LEN, DEMO_SR, -58, 5);
+  var demoStart = performance.now();
+
+  /* One set of numbers per frame, whatever the source. A reads the 64 ms
+     window (overlay.js: fftSize 1024 at 16 kHz); C and D read 32 ms. */
+  function windowStats(get, end, sr, out) {
+    var nL = Math.round(sr * 0.064), nS = Math.round(sr * 0.032);
+    var sL = 0, sS = 0, nzL = false, nzS = false;
+    for (var k = 0; k < nL; k++) {
+      var v = get(end - 1 - k), q = v * v;
+      sL += q;
+      if (v !== 0) { nzL = true; if (k < nS) nzS = true; }
+      if (k < nS) sS += q;
+    }
+    out.rmsLong = Math.sqrt(sL / nL); out.rmsShort = Math.sqrt(sS / nS);
+    out.zeroLong = !nzL; out.zeroShort = !nzS;
+    return out;
+  }
+
+  /* The raw last ~32 ms (a power of two of samples), for E's band mode. */
+  function fillWin(get, end, sr, out) {
+    var n = 1 << Math.round(Math.log2(sr * 0.032));
+    if (!out.win || out.win.length !== n) out.win = new Float32Array(n);
+    for (var i = 0; i < n; i++) out.win[i] = get(end - n + i);
+    out.sr = sr;
+    return out;
+  }
+
+  /* Hann-windowed radix-2 FFT, summed into log-spaced bands from 120 Hz to
+     6 kHz. Each band is a mean square in the same units as the RMS above, so
+     a band's dB and the overall dB live on one scale. */
+  var fftCache = {};
+  function fftSetup(n) {
+    if (fftCache[n]) return fftCache[n];
+    var w = new Float64Array(n), sw2 = 0, rev = new Uint32Array(n), bits = Math.round(Math.log2(n));
+    for (var i = 0; i < n; i++) { w[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (n - 1)); sw2 += w[i] * w[i]; }
+    for (var j = 0; j < n; j++) { var x = j, y = 0; for (var b = 0; b < bits; b++) { y = (y << 1) | (x & 1); x >>= 1; } rev[j] = y; }
+    return (fftCache[n] = { w: w, sw2: sw2, rev: rev, re: new Float64Array(n), im: new Float64Array(n) });
+  }
+  function bandPowers(win, sr, nb, out) {
+    var n = win.length, S = fftSetup(n), re = S.re, im = S.im;
+    for (var i = 0; i < n; i++) { re[S.rev[i]] = win[i] * S.w[i]; im[S.rev[i]] = 0; }
+    for (var size = 2; size <= n; size <<= 1) {
+      var half = size >> 1, step = -2 * Math.PI / size;
+      for (var s = 0; s < n; s += size) {
+        for (var k = 0; k < half; k++) {
+          var a = step * k, c = Math.cos(a), si = Math.sin(a), p = s + k, q = p + half;
+          var tr = re[q] * c - im[q] * si, ti = re[q] * si + im[q] * c;
+          re[q] = re[p] - tr; im[q] = im[p] - ti; re[p] += tr; im[p] += ti;
+        }
+      }
+    }
+    var lo = 120, hi = Math.min(6000, sr * 0.45), binHz = sr / n;
+    for (var bnd = 0; bnd < nb; bnd++) {
+      var f0 = lo * Math.pow(hi / lo, bnd / nb), f1 = lo * Math.pow(hi / lo, (bnd + 1) / nb);
+      var k0 = Math.max(1, Math.floor(f0 / binHz)), k1 = Math.max(k0 + 1, Math.ceil(f1 / binHz)), sum = 0;
+      for (var kk = k0; kk < k1 && kk < n / 2; kk++) sum += re[kk] * re[kk] + im[kk] * im[kk];
+      out[bnd] = 2 * sum / (n * S.sw2);
+    }
+    return out;
+  }
+
+  /* ======================================================== shared level */
+
+  /* C and D measure level in dB above the room. The floor is the minimum
+     32 ms level over the last two seconds (twenty 100 ms buckets), digital
+     zeros ignored, so a quiet room, a boosted laptop mic and a studio
+     interface all rest at the same still row of dots. Zero height is that
+     floor plus a gate; full height is RANGE dB above zero height. */
+  var CP = { bars: 7, attack: 15, release: 160, gate: 6, range: 36, absFloor: -70, rise: 10, ghost: false, hold: 600, fall: 1.6, stagger: 1, edge: 0.42 };
+
+  /* The floor starts from a prior (−60 dBFS, then whatever the previous
+     session ended on) rather than from the first frames: people start
+     talking the instant they press the key, and a floor measured on speech
+     would flatten the meter for the whole first phrase. Lower readings pull
+     the floor down at once; higher ones raise it by at most RISE dB/s. */
+  function SnrLevel(P) { this.P = P; this.ring = new Float32Array(20); this.prior = -60; this.reset(); }
+  SnrLevel.prototype.reset = function () {
+    this.ring.fill(Infinity); this.ri = 0; this.cur = Infinity; this.acc = 0;
+    this.noise = this.prior; this.db = -140; this.x = 0; this.floor = -70;
+  };
+  SnrLevel.prototype.step = function (dt, rms, zero) {
+    var P = this.P;
+    var db = rms > 0 ? 20 * Math.log10(rms) : -140;
+    this.db = db;
+    if (!zero) this.cur = Math.min(this.cur, db);
+    this.acc += dt;
+    if (this.acc >= 100) { this.ring[this.ri] = this.cur; this.ri = (this.ri + 1) % 20; this.cur = Infinity; this.acc -= 100; }
+    var m = this.cur;
+    for (var i = 0; i < 20; i++) if (this.ring[i] < m) m = this.ring[i];
+    if (m !== Infinity) {
+      m = clamp(m, -90, -30);
+      this.noise = m < this.noise ? m : Math.min(m, this.noise + P.rise * dt / 1000);
+      this.prior = this.noise;
+    }
+    this.floor = Math.max(this.noise + P.gate, P.absFloor);
+    this.x = clamp((db - this.floor) / P.range, 0, 1);
+    return this.x;
+  };
+
+  /* ================================================================ meters */
+
+  /* A — Typd today. src/renderer/overlay.js, readLevel() and draw(), ported
+     with its constants and its order of operations. Per-frame smoothing, not
+     per-millisecond, as shipped. */
+  function makeA() {
+    var BARS = 9, KEEP = 12, INTERVAL = 52, FLOOR = 0.02, MIN_HALF = 1.35, BAR_W = 3, BAR_R = 1.5;
+    var DISSOLVE = 1.3, HEADROOM = 1.5, PULSE_H = 0.55, PULSE_RATE = 1.28, PULSE_SM = 0.3;
+    var history = new Float32Array(KEEP), windowPeak = 0, lastPush = 0, t0 = 0, peak = 0.02, level = 0;
+    var m = {
+      key: 'A', glide: 1, pushes: [],
+      reset: function (now) { history.fill(0); windowPeak = 0; lastPush = now; t0 = now; peak = 0.02; level = 0; m.pushes.length = 0; },
+      step: function (now, dt, inp, state) {
+        var t = (now - t0) / 1000;
+        var live = state === 'listening' || state === 'working';
+        if (state === 'listening') {
+          var rms = inp.rmsLong;
+          peak = Math.max(peak * 0.995, rms);
+          var lv = Math.min(1, rms / Math.max(peak, 0.015));
+          level += (lv - level) * 0.4;
+          windowPeak = Math.max(windowPeak, level);
+        } else if (state === 'working') {
+          var pulse = PULSE_H * (0.5 + 0.5 * Math.sin(t * PULSE_RATE * Math.PI));
+          level += (pulse - level) * PULSE_SM;
+          windowPeak = Math.max(windowPeak, level);
+        }
+        if (live && now - lastPush >= INTERVAL) {
+          for (var i = 0; i < KEEP - 1; i++) history[i] = history[i + 1];
+          history[KEEP - 1] = Math.max(FLOOR, windowPeak);
+          windowPeak = 0;
+          m.pushes.push(now - lastPush); if (m.pushes.length > 40) m.pushes.shift();
+          lastPush = now;
+        }
+      },
+      paint: function (ctx, w, h, dpr, now, state, ink) {
+        ctx.clearRect(0, 0, w, h);
+        if (state !== 'listening' && state !== 'working') return;
+        var snap = function (v) { return Math.round(v * dpr) / dpr; };
+        var slot = w / BARS;
+        var barW = snap(Math.min(BAR_W, slot * 0.62));
+        var mid = h / 2, maxHalf = h / 2 - HEADROOM;
+        var frac = m.glide * Math.min(1, (now - lastPush) / INTERVAL);
+        ctx.fillStyle = ink;
+        for (var i = 0; i < KEEP; i++) {
+          var fromRight = (KEEP - 1 - i) + frac;
+          var cx = w - (fromRight + 0.5) * slot;
+          if (cx < -slot || cx > w + slot) continue;
+          var a = 1;
+          if (cx < DISSOLVE * slot) a = Math.max(0, cx / (DISSOLVE * slot));
+          if (a <= 0.01) continue;
+          var half = MIN_HALF + history[i] * (maxHalf - MIN_HALF);
+          ctx.globalAlpha = a;
+          rr(ctx, snap(cx - barW / 2), snap(mid - half), barW, Math.max(barW, snap(half * 2)), Math.min(BAR_R, barW / 2));
+        }
+        ctx.globalAlpha = 1;
+      }
+    };
+    return m;
+  }
+
+  /* B — the rival layout fed by A's exact signal: same RMS window, same
+     auto-gain, same ×0.4 smoothing. Fixed bars, centre-weighted. */
+  function makeB() {
+    var N = 9, FLOOR = 0.02, MIN_HALF = 1.35, BAR_W = 3, BAR_R = 1.5, HEADROOM = 1.5;
+    var W = []; for (var i = 0; i < N; i++) W.push(0.4 + 0.6 * Math.sin(Math.PI * (i + 0.5) / N));
+    var bars = new Float32Array(N), peak = 0.02, level = 0, t0 = 0;
+    return {
+      key: 'B',
+      reset: function (now) { bars.fill(FLOOR); peak = 0.02; level = 0; t0 = now; },
+      step: function (now, dt, inp, state) {
+        var t = (now - t0) / 1000;
+        if (state === 'listening') {
+          var rms = inp.rmsLong;
+          peak = Math.max(peak * 0.995, rms);
+          level += (Math.min(1, rms / Math.max(peak, 0.015)) - level) * 0.4;
+          for (var i = 0; i < N; i++) bars[i] = Math.max(FLOOR, level * W[i]);
+        } else if (state === 'working') {
+          var pos = ((t * 1.5) % 1.7) * (N + 4) - 2.0;
+          for (var j = 0; j < N; j++) { var d = j - pos; bars[j] += (FLOOR + 0.55 * Math.exp(-(d * d) / 2.1) - bars[j]) * 0.3; }
+        }
+      },
+      paint: function (ctx, w, h, dpr, now, state, ink) {
+        ctx.clearRect(0, 0, w, h);
+        if (state !== 'listening' && state !== 'working') return;
+        var snap = function (v) { return Math.round(v * dpr) / dpr; };
+        var slot = w / N, barW = snap(Math.min(BAR_W, slot * 0.62)), mid = h / 2, maxHalf = h / 2 - HEADROOM;
+        ctx.fillStyle = ink;
+        for (var i = 0; i < N; i++) {
+          var half = MIN_HALF + bars[i] * (maxHalf - MIN_HALF);
+          rr(ctx, snap(slot * (i + 0.5) - barW / 2), snap(mid - half), barW, Math.max(barW, snap(half * 2)), Math.min(BAR_R, barW / 2));
+        }
+      }
+    };
+  }
+
+  /* C — the candidate. */
+  function makeC(P, force) {
+    force = force || {};
+    var MAXN = 15, MIN_HALF = 1.35, BAR_W = 3, BAR_R = 1.5, HEADROOM = 1.5;
+    var lvl = new SnrLevel(P);
+    var vals = new Float32Array(MAXN), ghosts = new Float32Array(MAXN), holds = new Float64Array(MAXN), work = new Float32Array(MAXN);
+    var zeroMs = 0, dimA = 1, onA = 0.42, voiceUntil = -1, t0 = 0;
+    function count() { return clamp(Math.round(P.bars), 3, MAXN); }
+    function prof(i, N) { var c = (N - 1) / 2, d = c ? Math.abs(i - c) / c : 0; return P.edge + (1 - P.edge) * Math.cos(d * Math.PI / 2); }
+    function ghostOn() { return force.ghost === undefined ? P.ghost : force.ghost; }
+    return {
+      key: 'C', level: lvl,
+      reset: function (now) { lvl.reset(); vals.fill(0); ghosts.fill(0); holds.fill(0); work.fill(0); zeroMs = 0; dimA = 1; onA = 0.42; voiceUntil = -1; t0 = now; },
+      step: function (now, dt, inp, state) {
+        var x = lvl.step(dt, inp.rmsShort, inp.zeroShort);
+        zeroMs = inp.zeroShort ? zeroMs + dt : 0;
+        dimA += ((zeroMs > 600 ? 0.35 : 1) - dimA) * ease(dt, 120);
+        var N = count(), c = (N - 1) / 2, t = (now - t0) / 1000;
+        if (state === 'listening') {
+          for (var i = 0; i < N; i++) {
+            var d = c ? Math.abs(i - c) / c : 0;
+            var tau = x > vals[i] ? P.attack * (1 + 1.5 * P.stagger * d) : P.release * (1 + 0.5 * P.stagger * d);
+            vals[i] += (x - vals[i]) * ease(dt, tau);
+            var hgt = vals[i] * prof(i, N);
+            if (hgt >= ghosts[i]) { ghosts[i] = hgt; holds[i] = now + P.hold; }
+            else if (now > holds[i]) ghosts[i] = Math.max(hgt, ghosts[i] - P.fall * dt / 1000);
+          }
+          if (x > 0.12) voiceUntil = now + 400;
+          onA += ((now < voiceUntil ? 1 : 0.42) - onA) * ease(dt, 90);
+        } else if (state === 'working') {
+          var pos = ((t * 1.5) % 1.7) * (N + 4) - 2.0;
+          for (var j = 0; j < N; j++) {
+            var dd = j - pos;
+            work[j] += (0.55 * Math.exp(-(dd * dd) / 2.1) - work[j]) * ease(dt, 50);
+            vals[j] *= Math.exp(-dt / 80); ghosts[j] = vals[j];
+          }
+        }
+      },
+      paint: function (ctx, w, h, dpr, now, state, ink, red) {
+        ctx.clearRect(0, 0, w, h);
+        if (state !== 'listening' && state !== 'working') return;
+        var rm = force.reduced === undefined ? red : force.reduced;
+        var N = count(), snap = function (v) { return Math.round(v * dpr) / dpr; };
+        var slot = w / N, barW = snap(Math.min(BAR_W, slot * 0.62)), r = Math.min(BAR_R, barW / 2);
+        var mid = h / 2, maxHalf = h / 2 - HEADROOM, t = (now - t0) / 1000;
+        ctx.fillStyle = ink;
+        for (var i = 0; i < N; i++) {
+          var x = snap(slot * (i + 0.5) - barW / 2);
+          if (rm) {
+            ctx.globalAlpha = (state === 'working' ? 0.5 + 0.35 * (0.5 + 0.5 * Math.sin(t * 1.6 * Math.PI)) : onA) * dimA;
+            rr(ctx, x, snap(mid - barW / 2), barW, barW, r);
+            continue;
+          }
+          var v = state === 'working' ? work[i] : vals[i] * prof(i, N);
+          if (state === 'listening' && ghostOn() && ghosts[i] > v + 0.02) {
+            var gh = MIN_HALF + ghosts[i] * (maxHalf - MIN_HALF);
+            ctx.globalAlpha = 0.22 * dimA;
+            rr(ctx, x, snap(mid - gh), barW, Math.max(barW, snap(gh * 2)), r);
+          }
+          var half = MIN_HALF + v * (maxHalf - MIN_HALF);
+          ctx.globalAlpha = dimA;
+          rr(ctx, x, snap(mid - half), barW, Math.max(barW, snap(half * 2)), r);
+        }
+        ctx.globalAlpha = 1;
+      }
+    };
+  }
+
+  /* D — one line: C's level and ballistics, one mark. */
+  function makeD(P, force) {
+    force = force || {};
+    var lvl = new SnrLevel(P), v = 0, wv = 0, zeroMs = 0, dimA = 1, onA = 0.42, voiceUntil = -1, t0 = 0;
+    return {
+      key: 'D', level: lvl,
+      reset: function (now) { lvl.reset(); v = 0; wv = 0; zeroMs = 0; dimA = 1; onA = 0.42; voiceUntil = -1; t0 = now; },
+      step: function (now, dt, inp, state) {
+        var x = lvl.step(dt, inp.rmsShort, inp.zeroShort), t = (now - t0) / 1000;
+        zeroMs = inp.zeroShort ? zeroMs + dt : 0;
+        dimA += ((zeroMs > 600 ? 0.35 : 1) - dimA) * ease(dt, 120);
+        if (state === 'listening') {
+          v += (x - v) * ease(dt, x > v ? P.attack : P.release);
+          if (x > 0.12) voiceUntil = now + 400;
+          onA += ((now < voiceUntil ? 1 : 0.42) - onA) * ease(dt, 90);
+        } else if (state === 'working') {
+          v *= Math.exp(-dt / 80);
+          wv = 0.12 + 0.3 * (0.5 + 0.5 * Math.sin(t * 1.28 * Math.PI));
+        }
+      },
+      paint: function (ctx, w, h, dpr, now, state, ink, red) {
+        ctx.clearRect(0, 0, w, h);
+        if (state !== 'listening' && state !== 'working') return;
+        var rm = force.reduced === undefined ? red : force.reduced;
+        var snap = function (q) { return Math.round(q * dpr) / dpr; };
+        var H = 3, minW = 6, maxW = w * 0.82;
+        var val = rm ? 0 : (state === 'working' ? wv : v);
+        var len = minW + val * (maxW - minW);
+        ctx.fillStyle = ink;
+        ctx.globalAlpha = (rm ? (state === 'working' ? 0.7 : onA) : 1) * dimA;
+        rr(ctx, snap(w / 2 - len / 2), snap(h / 2 - H / 2), snap(len), H, H / 2);
+        ctx.globalAlpha = 1;
+      }
+    };
+  }
+
+  /* E — independent bars, after Typeless: ten thin bars, each moving on its
+     own, no mirror and no centre weighting. Same level, floor, gate,
+     ballistics, dimming and reduced-motion handling as C. Two sources for
+     what makes one bar differ from its neighbour:
+       random  the level × a per-bar factor (0.15-1, skewed short) re-drawn every 70-150 ms
+               and eased over 45 ms. Lively, but the differences mean nothing.
+       bands   each bar is one frequency band's level above that band's own
+               noise floor; bands sit in a fixed shuffled order so the row
+               reads as uneven rather than as a sloping spectrum. Real data. */
+  var E_PERM = [3, 7, 1, 5, 9, 0, 6, 2, 8, 4];
+  function makeE(P, opts) {
+    opts = opts || {};
+    var N = 10, BAR_W = 2.25, HEADROOM = 1.5, seed = opts.seed || 9301;
+    var lvl = new SnrLevel(P), bandLv = [], bandBuf = new Float64Array(N), r = rng(seed);
+    for (var b = 0; b < N; b++) bandLv.push(new SnrLevel(P));
+    var vals = new Float32Array(N), fac = new Float32Array(N), tgt = new Float32Array(N), next = new Float64Array(N), work = new Float32Array(N);
+    var zeroMs = 0, dimA = 1, onA = 0.42, voiceUntil = -1, t0 = 0;
+    var m = {
+      key: 'E', mode: opts.mode || 'random', level: lvl,
+      reset: function (now) {
+        lvl.reset(); bandLv.forEach(function (l) { l.reset(); });
+        vals.fill(0); work.fill(0); r = rng(seed);
+        for (var i = 0; i < N; i++) { fac[i] = tgt[i] = 0.15 + 0.85 * Math.pow(r(), 1.5); next[i] = now + 70 + 80 * r(); }
+        zeroMs = 0; dimA = 1; onA = 0.42; voiceUntil = -1; t0 = now;
+      },
+      step: function (now, dt, inp, state) {
+        var x = lvl.step(dt, inp.rmsShort, inp.zeroShort), t = (now - t0) / 1000;
+        zeroMs = inp.zeroShort ? zeroMs + dt : 0;
+        dimA += ((zeroMs > 600 ? 0.35 : 1) - dimA) * ease(dt, 120);
+        if (state === 'listening') {
+          var bands = m.mode === 'bands' && inp.win;
+          if (bands) {
+            bandPowers(inp.win, inp.sr, N, bandBuf);
+            for (var bb = 0; bb < N; bb++) bandBuf[bb] = bandLv[bb].step(dt, Math.sqrt(bandBuf[bb]), inp.zeroShort);
+          }
+          for (var i = 0; i < N; i++) {
+            if (now >= next[i]) { tgt[i] = 0.15 + 0.85 * Math.pow(r(), 1.5); next[i] = now + 70 + 80 * r(); }
+            fac[i] += (tgt[i] - fac[i]) * ease(dt, 45);
+            // Bands only speak when the whole input is above the room: a narrow
+            // band's noise wanders across its gate on its own.
+            var y = bands ? bandBuf[E_PERM[i]] * clamp(x / 0.08, 0, 1) : x * fac[i];
+            vals[i] += (y - vals[i]) * ease(dt, y > vals[i] ? P.attack : P.release);
+          }
+          if (x > 0.12) voiceUntil = now + 400;
+          onA += ((now < voiceUntil ? 1 : 0.42) - onA) * ease(dt, 90);
+        } else if (state === 'working') {
+          var pos = ((t * 1.5) % 1.7) * (N + 4) - 2.0;
+          for (var j = 0; j < N; j++) {
+            var dd = j - pos;
+            work[j] += (0.55 * Math.exp(-(dd * dd) / 2.1) - work[j]) * ease(dt, 50);
+            vals[j] *= Math.exp(-dt / 80);
+          }
+        }
+      },
+      paint: function (ctx, w, h, dpr, now, state, ink, red) {
+        ctx.clearRect(0, 0, w, h);
+        if (state !== 'listening' && state !== 'working') return;
+        var rm = opts.reduced === undefined ? red : opts.reduced;
+        var snap = function (v) { return Math.round(v * dpr) / dpr; };
+        var slot = w / N, barW = Math.max(1 / dpr, snap(Math.min(BAR_W, slot * 0.6))), rad = barW / 2;
+        var mid = h / 2, maxHalf = h / 2 - HEADROOM, rest = barW / 2, t = (now - t0) / 1000;
+        ctx.fillStyle = ink;
+        for (var i = 0; i < N; i++) {
+          var x = snap(slot * (i + 0.5) - barW / 2);
+          if (rm) {
+            ctx.globalAlpha = (state === 'working' ? 0.5 + 0.35 * (0.5 + 0.5 * Math.sin(t * 1.6 * Math.PI)) : onA) * dimA;
+            rr(ctx, x, snap(mid - barW / 2), barW, barW, rad);
+            continue;
+          }
+          var v = state === 'working' ? work[i] : vals[i];
+          var half = rest + v * (maxHalf - rest);
+          ctx.globalAlpha = dimA;
+          rr(ctx, x, snap(mid - half), barW, Math.max(barW, snap(half * 2)), rad);
+        }
+        ctx.globalAlpha = 1;
+      }
+    };
+    return m;
+  }
+
+  /* ================================================================ pills */
+
+  var tpl = $('#pillTpl');
+  function makePill(host) {
+    var node = tpl.content.firstElementChild.cloneNode(true);
+    host.appendChild(node);
+    var p = {
+      el: node, canvas: $('canvas', node), result: $('.result-text', node), meterLayer: $('.meter-slot', node),
+      progress: $('.progress', node), cancel: $('.cancel', node), confirm: $('.confirm', node),
+      prev: null, mot: { sil: 0, sp: 0 }, shown: 0
+    };
+    p.ctx = p.canvas.getContext('2d', { willReadFrequently: true });
+    p.cancel.addEventListener('click', function () { restart(); });
+    p.confirm.addEventListener('click', function () { setOpt('state', 'working'); });
+    return p;
+  }
+
+  function setPillState(p, s, message) {
+    p.el.setAttribute('data-state', s);
+    var on = s === 'listening';
+    p.cancel.setAttribute('data-off', on ? 'false' : 'true');
+    p.confirm.setAttribute('data-off', on ? 'false' : 'true');
+    var words = s === 'error';
+    p.meterLayer.setAttribute('data-on', words ? 'false' : 'true');
+    p.result.setAttribute('data-on', words ? 'true' : 'false');
+    if (words) p.result.textContent = message || '';
+    if (s !== 'working') { p.shown = 0; p.progress.style.width = '0%'; }
+  }
+
+  var CARDS = [
+    { key: 'A', name: 'Typd today', tag: 'scrolling peak history', make: makeA,
+      desc: '9 slots of 52 ms peaks; new on the right, the row glides left. As shipped, quirks included.' },
+    { key: 'B', name: 'Rival layout', tag: 'fixed bars · A’s signal', make: makeB,
+      desc: 'A’s level, frame for frame, on 9 fixed centre-weighted bars. Only the layout differs from A.' },
+    { key: 'C', name: 'Candidate', tag: 'fixed bars · dB over the room', make: function () { return makeC(CP); },
+      desc: '7 fixed bars. dB above the noise floor, 15 ms rise, 160 ms fall. Still in silence; dims on digital zeros. Peak-hold is the hybrid.' },
+    { key: 'D', name: 'One line', tag: 'single level mark', make: function () { return makeD(CP); },
+      desc: 'C’s level as one 3 px line growing from a dash. The minimal pulse.' },
+    { key: 'E', name: 'Independent bars', tag: 'Typeless-style · each bar on its own', make: function () { return makeE(CP, { mode: eMode }); },
+      desc: '10 thin bars, no mirror, no centre weighting, each on its own. Bands: each bar is one frequency band (the demo voice has no energy above ~1.4 kHz, so some bars only wake on noisy syllables; a real voice moves them all). Random: the level × re-drawn factors.' }
+  ];
+  var eMode = 'bands';
+
+  var refreshConsts = function () {};   // set by buildTune()
+  var live = [];   // { key, meter, pill, readout els }
+  var cardsHost = $('#cards');
+  CARDS.forEach(function (c) {
+    var card = document.createElement('article');
+    card.className = 'card';
+    card.innerHTML =
+      '<header><b>' + c.key + '</b><span class="nm">' + c.name + '</span><i>' + c.tag + '</i></header>' +
+      '<div class="stage"><div class="zoomer"></div></div>' +
+      '<p>' + c.desc + '</p>' +
+      '<div class="readout"><span>silence <b data-r="sil">—</b></span><span>speech <b data-r="sp">—</b></span>' +
+      '<span class="wide" data-r="extra"></span></div>';
+    cardsHost.appendChild(card);
+    var meter = c.make();
+    var pill = makePill($('.zoomer', card));
+    var entry = { key: c.key, meter: meter, pill: pill, card: card, sil: $('[data-r=sil]', card), sp: $('[data-r=sp]', card), extra: $('[data-r=extra]', card) };
+    live.push(entry);
+
+    if (c.key === 'A') {
+      var mini = document.createElement('div');
+      mini.className = 'mini';
+      mini.innerHTML = '<div class="grp" data-glide><span>Glide</span><button data-v="1" aria-pressed="true">1 · shipped</button><button data-v="0" aria-pressed="false">0 · step</button></div>';
+      card.appendChild(mini);
+      $$('button', mini).forEach(function (b) {
+        b.addEventListener('click', function () {
+          meter.glide = +b.getAttribute('data-v');
+          $$('button', mini).forEach(function (x) { x.setAttribute('aria-pressed', x === b ? 'true' : 'false'); });
+        });
+      });
+    }
+    if (c.key === 'E') {
+      var em = document.createElement('div');
+      em.className = 'mini';
+      em.innerHTML = '<div class="grp"><span>Per-bar</span><button data-v="random" aria-pressed="' + (eMode === 'random') + '">random factors</button><button data-v="bands" aria-pressed="' + (eMode === 'bands') + '">frequency bands</button></div>';
+      card.appendChild(em);
+      $$('button', em).forEach(function (b) {
+        b.addEventListener('click', function () {
+          eMode = b.getAttribute('data-v');
+          meter.mode = eMode; rt.meters.E.mode = eMode;
+          $$('button', em).forEach(function (x) { x.setAttribute('aria-pressed', x === b ? 'true' : 'false'); });
+        });
+      });
+    }
+    if (c.key === 'C') {
+      var gm = document.createElement('div');
+      gm.className = 'mini';
+      gm.innerHTML = '<div class="grp"><span>Peak-hold</span><button data-v="0" aria-pressed="true" title="Recommended">off</button><button data-v="1" aria-pressed="false" title="The hybrid: a faint copy of each bar holds 600 ms">on</button></div>';
+      card.appendChild(gm);
+      $$('button', gm).forEach(function (b) {
+        b.addEventListener('click', function () {
+          CP.ghost = b.getAttribute('data-v') === '1';
+          $$('button', gm).forEach(function (x) { x.setAttribute('aria-pressed', x === b ? 'true' : 'false'); });
+          refreshConsts();
+        });
+      });
+      card.appendChild(buildTune());
+    }
+  });
+
+  /* ------------------------------------------------------------- tuning */
+
+  function buildTune() {
+    var d = document.createElement('details');
+    d.className = 'tune';
+    d.innerHTML = '<summary>Tune C and D</summary><div class="sliders"></div><pre class="consts"></pre>';
+    var host = $('.sliders', d), out = $('.consts', d);
+    var spec = [
+      ['bars', 'Bars', 3, 13, 1, ''], ['attack', 'Attack τ', 3, 80, 1, ' ms'], ['release', 'Release τ', 30, 500, 5, ' ms'],
+      ['stagger', 'Edge lag', 0, 2, 0.1, '×'], ['edge', 'Edge height', 0.2, 1, 0.02, ''],
+      ['gate', 'Gate', 0, 15, 0.5, ' dB'], ['range', 'Range', 18, 54, 1, ' dB'], ['absFloor', 'Lowest floor', -90, -45, 1, ' dBFS'],
+      ['hold', 'Peak hold', 0, 1500, 50, ' ms'], ['fall', 'Peak fall', 0.4, 6, 0.1, '/s']
+    ];
+    spec.forEach(function (s) {
+      var row = document.createElement('div');
+      row.className = 'sl';
+      row.innerHTML = '<span>' + s[1] + '</span><input type="range" min="' + s[2] + '" max="' + s[3] + '" step="' + s[4] + '" value="' + CP[s[0]] + '" aria-label="' + s[1] + '"><output></output>';
+      var input = $('input', row), o = $('output', row);
+      function upd() { CP[s[0]] = +input.value; o.textContent = (+input.value) + s[5]; consts(); }
+      input.addEventListener('input', upd);
+      host.appendChild(row);
+      o.textContent = CP[s[0]] + s[5];
+    });
+    refreshConsts = function () { consts(); };
+    function consts() {
+      out.textContent =
+        'BARS ' + CP.bars + ' · ATTACK_MS ' + CP.attack + ' · RELEASE_MS ' + CP.release + ' · EDGE_LAG ' + CP.stagger + '\n' +
+        'EDGE ' + CP.edge + ' · GATE_DB ' + CP.gate + ' · RANGE_DB ' + CP.range + ' · ABS_FLOOR_DB ' + CP.absFloor + '\n' +
+        'PEAK_HOLD ' + (CP.ghost ? CP.hold + ' ms, fall ' + CP.fall + '/s' : 'off') + ' · RMS window 32 ms\n' +
+        'NOISE = min of the last 2 s, prior −60 dBFS, falls at once, rises ≤ ' + CP.rise + ' dB/s';
+    }
+    consts();
+    return d;
+  }
+
+  /* ------------------------------------------------------- reading test */
+
+  var rt = { pick: 'A', blind: false, meters: {}, pill: makePill($('#rtDock')) };
+  CARDS.forEach(function (c) { rt.meters[c.key] = c.make(); });
+  // A's glide toggle applies to the card only; the reading test always runs A as shipped.
+  function rtShow(key, blind) {
+    rt.pick = key; rt.blind = !!blind;
+    $$('#rtPick button').forEach(function (b) { b.setAttribute('aria-pressed', !blind && b.getAttribute('data-v') === key ? 'true' : 'false'); });
+    $('#rtLabel').textContent = blind ? 'blind: one of A–E' : 'showing ' + key;
+  }
+  $$('#rtPick button').forEach(function (b) { b.addEventListener('click', function () { rtShow(b.getAttribute('data-v'), false); }); });
+  $('#rtBlind').addEventListener('click', function () { rtShow('ABCDE'[Math.floor(Math.random() * 5)], true); });
+  $('#rtReveal').addEventListener('click', function () { $('#rtLabel').textContent = (rt.blind ? 'it was ' : 'showing ') + rt.pick; });
+
+  /* ============================================================ audio in */
+
+  var ac = null, analyser = null, tbuf = null, micStream = null, micLabel = '';
+
+  async function startMic() {
+    $('#stSource').textContent = 'microphone: asking…';
+    try {
+      var raw = { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
+      micStream = await navigator.mediaDevices.getUserMedia({ audio: raw });
+      var track = micStream.getAudioTracks()[0];
+      micLabel = track && track.label ? track.label : 'default';
+      var src;
+      try {
+        ac = new AudioContext({ sampleRate: 16000 });   // as overlay.js
+        src = ac.createMediaStreamSource(micStream);
+      } catch (e) {
+        // Firefox will not resample a stream into a 16 kHz context.
+        if (ac) ac.close();
+        ac = new AudioContext();
+        src = ac.createMediaStreamSource(micStream);
+      }
+      if (ac.state === 'suspended') await ac.resume();
+      analyser = ac.createAnalyser();
+      var need = Math.ceil(ac.sampleRate * 0.064), fft = 32;
+      while (fft < need) fft *= 2;
+      analyser.fftSize = fft;
+      tbuf = new Float32Array(fft);
+      src.connect(analyser);
+      $('#stSource').textContent = 'mic: ' + micLabel + ' · ' + ac.sampleRate + ' Hz';
+      restart();
+    } catch (err) {
+      $('#stSource').textContent = 'microphone unavailable (' + (err && err.name || 'error') + ') · demo signal';
+      setOpt('source', 'demo');
+    }
+  }
+  function stopMic() {
+    if (micStream) micStream.getTracks().forEach(function (t) { t.stop(); });
+    micStream = null; analyser = null;
+    if (ac) { ac.close(); ac = null; }
+  }
+
+  var inp = { rmsLong: 0, rmsShort: 0, zeroLong: true, zeroShort: true };
+
+  function gains() {
+    switch (opt.input) {
+      case 'far':      return { sp: dbAmp(-18), room: 1, all: dbAmp(-18) };
+      case 'lowgain':  return { sp: dbAmp(-24), room: dbAmp(-24), all: dbAmp(-24) };
+      case 'loud':     return { sp: dbAmp(12), room: dbAmp(12), all: dbAmp(12) };
+      default:         return { sp: 1, room: 1, all: 1 };
+    }
+  }
+
+  function inputSource(now) {
+    var zero = function () { return 0; };
+    if (opt.input === 'deadstart' || opt.input === 'deadmid') return [zero, 0, 16000];
+    var g = gains(), clip = function (v) { return v > 1 ? 1 : v < -1 ? -1 : v; };
+    var demoIdx = Math.floor((now - demoStart) / 1000 * DEMO_SR);
+    var wrap = function (i) { return ((i % DEMO_LEN) + DEMO_LEN) % DEMO_LEN; };
+    if (opt.input === 'silence') return [function (i) { return demoRoom[wrap(i)]; }, demoIdx, DEMO_SR];
+    if (opt.source === 'mic' && analyser) {
+      analyser.getFloatTimeDomainData(tbuf);
+      return [function (i) { return i < 0 ? 0 : clip(tbuf[i] * g.all); }, tbuf.length, ac.sampleRate];
+    }
+    if (opt.source === 'mic') return [zero, 0, 16000];
+    return [function (i) { var k = wrap(i); return clip(demoSpeech[k] * g.sp + demoRoom[k] * g.room); }, demoIdx, DEMO_SR];
+  }
+
+  function readInput(now) {
+    var s = inputSource(now);
+    windowStats(s[0], s[1], s[2], inp);
+    fillWin(s[0], s[1], s[2], inp);
+    return inp;
+  }
+
+  /* ============================================================== session */
+
+  /* Mirrors overlay.js: a session that has seen only exact zeros for 24
+     blocks of 64 ms says "Mic silent" and ends. Once anything non-zero has
+     arrived, the check is latched off for the rest of the session. */
+  var session = { start: 0, heard: false, error: false };
+  var vad = new SnrLevel(CP), vadUntil = -1, voice = false;
+
+  function restart() {
+    var now = performance.now();
+    session.start = now; session.heard = false; session.error = false;
+    live.forEach(function (e) { e.meter.reset(now); e.pill.prev = null; });
+    Object.keys(rt.meters).forEach(function (k) { rt.meters[k].reset(now); });
+    rt.pill.prev = null;
+    vad.reset();
+    applyState();
+  }
+
+  function applyState() {
+    var s = session.error ? 'error' : opt.state;
+    live.forEach(function (e) { setPillState(e.pill, s, 'Mic silent — check mute/privacy'); });
+    setPillState(rt.pill, s, 'Mic silent — check mute/privacy');
+    workFrom = performance.now();
+  }
+
+  /* ============================================================ the loop */
+
+  var last = 0, workFrom = 0, lastText = 0;
+
+  function devScale(canvas) {
+    var cw = canvas.clientWidth, rect = canvas.getBoundingClientRect();
+    var k = cw ? rect.width / cw : 1;
+    return (window.devicePixelRatio || 1) * (k || 1);
+  }
+
+  function drawInto(p, meter, now, state, ink, red, track) {
+    var c = p.canvas, w = c.clientWidth, h = c.clientHeight;
+    if (!w || !h) return;
+    var ds = devScale(c), W = Math.round(w * ds), H = Math.round(h * ds);
+    if (c.width !== W || c.height !== H) { c.width = W; c.height = H; p.prev = null; }
+    p.ctx.setTransform(ds, 0, 0, ds, 0, 0);
+    meter.paint(p.ctx, w, h, ds, now, state, ink, red);
+    if (!track) return;
+    var data = p.ctx.getImageData(0, 0, W, H).data, diff = 0;
+    if (p.prev && p.prev.length === data.length) {
+      for (var i = 3; i < data.length; i += 4) diff += Math.abs(data[i] - p.prev[i]);
+    }
+    p.prev = data;
+    return diff / 255 / (ds * ds);   // CSS px² of ink changed this frame
+  }
+
+  function creep(p, now) {
+    var secs = (now - workFrom) / 1000;
+    var next = Math.max(p.shown, 0.25 * (1 - Math.exp(-secs / 1.1)));
+    if (next - p.shown > 0.002) { p.shown = next; p.progress.style.width = (next * 100).toFixed(1) + '%'; }
+  }
+
+  function frame(now) {
+    requestAnimationFrame(frame);
+    var dt = last ? Math.min(100, now - last) : 16.7;
+    last = now;
+
+    readInput(now);
+    var state = session.error ? 'error' : opt.state;
+
+    if (state === 'listening' && !session.heard) {
+      if (!inp.zeroLong) session.heard = true;
+      else if (now - session.start >= 24 * 64) { session.error = true; applyState(); state = 'error'; }
+    }
+
+    var x = vad.step(dt, inp.rmsShort, inp.zeroShort);
+    if (x > 0.08) vadUntil = now + 250;
+    voice = now < vadUntil;
+
+    var ink = getComputedStyle(live[0].pill.el).getPropertyValue('--meter').trim() || '#1C1F25';
+    var red = reduced();
+
+    live.forEach(function (e) {
+      e.meter.step(now, dt, inp, state);
+      if (state === 'working') creep(e.pill, now);
+      var d = drawInto(e.pill, e.meter, now, state, ink, red, true);
+      if (d !== undefined && state === 'listening') {
+        var per = d / (dt / 1000), k = ease(dt, 1500);
+        if (voice) e.pill.mot.sp += (per - e.pill.mot.sp) * k;
+        else e.pill.mot.sil += (per - e.pill.mot.sil) * k;
+      }
+    });
+
+    Object.keys(rt.meters).forEach(function (key) { rt.meters[key].step(now, dt, inp, state); });
+    if (state === 'working') creep(rt.pill, now);
+    drawInto(rt.pill, rt.meters[rt.pick], now, state, ink, red, false);
+
+    if (now - lastText > 250) {
+      lastText = now;
+      live.forEach(function (e) {
+        e.sil.textContent = Math.round(e.pill.mot.sil) + ' px²/s';
+        e.sp.textContent = Math.round(e.pill.mot.sp) + ' px²/s';
+        if (e.key === 'A' && e.meter.pushes.length > 4) {
+          var arr = e.meter.pushes.slice(-30), sum = 0;
+          arr.forEach(function (v) { sum += v; });
+          e.extra.textContent = 'push every ' + (sum / arr.length).toFixed(1) + ' ms here (nominal 52)';
+        }
+        if (e.key === 'C' || e.key === 'D') e.extra.textContent = red ? 'reduced motion: opacity only' : '';
+        if (e.key === 'A' || e.key === 'B') { if (red && e.key === 'B') e.extra.textContent = 'ignores reduced motion'; }
+      });
+      $('#stDb').textContent = vad.db < -120 ? 'digital zero' : vad.db.toFixed(1) + ' dBFS';
+      $('#stNoise').textContent = vad.noise === null ? '—' : vad.noise.toFixed(1) + ' dBFS';
+      $('#stSnr').textContent = vad.noise === null || vad.db < -120 ? '—' : (vad.db - vad.noise).toFixed(0) + ' dB';
+      $('#stVu').setAttribute('data-on', voice ? 'true' : 'false');
+      $('#stRm').textContent = red ? 'reduced motion on' : '';
+    }
+  }
+
+  /* ============================================================== options */
+
+  function press(group, v) {
+    $$('[data-opt="' + group + '"] button').forEach(function (b) { b.setAttribute('aria-pressed', b.getAttribute('data-v') === String(v) ? 'true' : 'false'); });
+  }
+
+  function setOpt(group, v) {
+    press(group, v);
+    if (group === 'source') {
+      opt.source = v;
+      if (v === 'mic' && !analyser) { startMic(); return; }
+      if (v === 'demo') { stopMic(); $('#stSource').textContent = 'demo signal'; }
+      restart();
+    } else if (group === 'input') {
+      var was = opt.input;
+      opt.input = v;
+      // A dead mic at the start is a new session; anything else changes the input under the running one.
+      if (v === 'deadstart' || was === 'deadstart' || session.error) restart();
+    } else if (group === 'state') {
+      opt.state = v;
+      if (!session.error) applyState();
+    } else if (group === 'motion') {
+      opt.motion = v;
+    } else if (group === 'theme') {
+      root.setAttribute('data-theme', v);
+      if (lastBench) { renderTraces(); renderFilm(); }
+    } else if (group === 'zoom') {
+      opt.zoom = +v; root.style.setProperty('--z', v);
+    } else if (group === 'blur') {
+      root.setAttribute('data-blur', v === 'on' ? 'true' : 'false');
+    }
+  }
+
+  $$('.bar .grp[data-opt]').forEach(function (g) {
+    var group = g.getAttribute('data-opt');
+    $$('button', g).forEach(function (b) { b.addEventListener('click', function () { setOpt(group, b.getAttribute('data-v')); }); });
+  });
+  $('#restart').addEventListener('click', restart);
+
+  var theme = darkQuery.matches ? 'dark' : 'light';
+  root.setAttribute('data-theme', theme); press('theme', theme);
+
+  /* ================================================================ bench */
+
+  function benchSignals() {
+    var sr = 16000, len = Math.round(sr * 6.5);
+    var room = makeRoom(len, sr, -58, 11);
+    var near = makeSpeech(len, sr, [[2.0, 4.5]], -26, 7);
+    var far = makeSpeech(len, sr, [[2.0, 4.5]], -44, 7);
+    function mix(sp) { var x = new Float32Array(len); for (var i = 0; i < len; i++) x[i] = room[i] + sp[i]; return x; }
+    // A held vowel: one harmonic tone at a constant level, 2.0-4.5 s. Nothing
+    // about the sound changes after its onset, so neither should the meter.
+    var tone = new Float32Array(len), ph = 0, ts = 0, tn = 0;
+    for (var i = Math.floor(2.0 * sr); i < Math.floor(4.5 * sr); i++) {
+      var tt = i / sr - 2.0, env = Math.min(1, tt / 0.01, (2.5 - tt) / 0.01);
+      ph += 2 * Math.PI * 130 / sr;
+      var v = 0;
+      for (var h = 1; h <= 9; h++) v += Math.sin(ph * h) / h;
+      tone[i] = v * env; ts += v * v; tn++;
+    }
+    var tg = dbAmp(-26) / Math.sqrt(ts / tn);
+    for (var j = 0; j < len; j++) tone[j] *= tg;
+    return {
+      sr: sr, len: len, on: near.first, off: near.last,
+      normal: mix(near.x), far: mix(far.x), steady: mix(tone), dead: new Float32Array(len), room: room
+    };
+  }
+
+  function simulate(meter, x, sig, red) {
+    var D = 2, W = 43.5, H = 18;
+    var cv = document.createElement('canvas');
+    cv.width = Math.round(W * D); cv.height = Math.round(H * D);
+    var ctx = cv.getContext('2d', { willReadFrequently: true });
+    var dt = 1000 / 60, frames = Math.floor(sig.len / sig.sr * 60);
+    var ink = new Float64Array(frames), diff = new Float64Array(frames), prev = null, s = {}, imgs = [];
+    meter.reset(0);
+    for (var f = 0; f < frames; f++) {
+      var now = f * dt, end = Math.floor(now / 1000 * sig.sr);
+      var getx = function (i) { return i >= 0 && i < sig.len ? x[i] : 0; };
+      windowStats(getx, end, sig.sr, s);
+      fillWin(getx, end, sig.sr, s);
+      meter.step(now, dt, s, 'listening');
+      ctx.setTransform(D, 0, 0, D, 0, 0);
+      meter.paint(ctx, W, H, D, now, 'listening', '#000', red);
+      var data = ctx.getImageData(0, 0, cv.width, cv.height).data, a = 0, d = 0;
+      var alpha = new Uint8Array(data.length / 4);
+      for (var p = 3, q = 0; p < data.length; p += 4, q++) { alpha[q] = data[p]; a += data[p]; if (prev) d += Math.abs(data[p] - prev[q]); }
+      ink[f] = a / 255 / (D * D); diff[f] = d / 255 / (D * D);
+      prev = alpha; imgs.push(alpha);
+    }
+    return { ink: ink, diff: diff, frames: frames, imgs: imgs, D: D };
+  }
+
+  // First frame at or after `from` where two renders of the same meter differ
+  // by more than half a device-pixel row across a 3 px bar.
+  function firstDivergence(a, b, from) {
+    for (var f = Math.floor(from * 60); f < a.frames; f++) {
+      var A = a.imgs[f], B = b.imgs[f], d = 0;
+      for (var i = 0; i < A.length; i++) d += Math.abs(A[i] - B[i]);
+      if (d / 255 / (a.D * a.D) > 0.75) return f / 60 - from;
+    }
+    return null;
+  }
+
+  function stats(run, sig) {
+    var fps = 60, F = function (t) { return Math.floor(t * fps); };
+    function meanRange(arr, a, b) { var s = 0, n = 0; for (var i = F(a); i < F(b); i++) { s += arr[i]; n++; } return n ? s / n : 0; }
+    function maxRange(arr, a, b) { var m = -Infinity; for (var i = F(a); i < F(b); i++) m = Math.max(m, arr[i]); return m; }
+    function minRange(arr, a, b) { var m = Infinity; for (var i = F(a); i < F(b); i++) m = Math.min(m, arr[i]); return m; }
+    var thr = 0.5;   // CSS px² — one device pixel row across a 3 px bar is 1.5 px² at 2×; half of that and a little
+    var silMot = meanRange(run.diff, 0.6, 1.95) * fps;
+    var spMot = meanRange(run.diff, sig.on, sig.off) * fps;
+    var baseMax = maxRange(run.ink, 0.6, 1.95), baseMin = minRange(run.ink, 0.6, 1.95), baseMean = meanRange(run.ink, 0.6, 1.95);
+    var spMean = meanRange(run.ink, sig.on + 0.3, sig.off);
+    var half = null;
+    for (var i = F(sig.on); i < run.frames; i++) {
+      if (run.ink[i] - baseMean >= 0.5 * (spMean - baseMean)) { half = i / fps - sig.on; break; }
+    }
+    // Back at rest: the last frame after the final syllable that carries more
+    // ink than the meter shows in its last half second (its resting band).
+    var restMax = maxRange(run.ink, 6.0, 6.49), settle = 0;
+    for (var j = F(sig.off); j < F(6.0); j++) if (run.ink[j] > restMax + thr) settle = (j + 1) / fps - sig.off;
+    var postMot = meanRange(run.diff, 6.0, 6.49) * fps;
+    return { silMot: silMot, spMot: spMot, half: half, settle: settle, postMot: postMot, baseMean: baseMean, spMean: spMean };
+  }
+
+  /* How loud the input is, frame by frame, in C's terms (dB above the room,
+     0..1) with no ballistics: the yardstick for "does the ink follow me". */
+  function loudnessTrace(x, sig) {
+    var lv = new SnrLevel(CP), s = {}, frames = Math.floor(sig.len / sig.sr * 60), out = new Float64Array(frames);
+    var get = function (i) { return i >= 0 && i < sig.len ? x[i] : 0; };
+    for (var f = 0; f < frames; f++) {
+      windowStats(get, Math.floor(f / 60 * sig.sr), sig.sr, s);
+      out[f] = lv.step(1000 / 60, s.rmsShort, s.zeroShort);
+    }
+    return out;
+  }
+  function pearson(a, b, f0, f1) {
+    var n = 0, ma = 0, mb = 0;
+    for (var i = f0; i < f1; i++) { ma += a[i]; mb += b[i]; n++; }
+    ma /= n; mb /= n;
+    var sab = 0, saa = 0, sbb = 0;
+    for (var j = f0; j < f1; j++) { var da = a[j] - ma, db = b[j] - mb; sab += da * db; saa += da * da; sbb += db * db; }
+    return saa > 0 && sbb > 0 ? sab / Math.sqrt(saa * sbb) : 0;
+  }
+
+  function runBench() {
+    var note = $('#benchNote');
+    note.textContent = 'running…';
+    setTimeout(function () {
+      var t0 = performance.now();
+      var sig = benchSignals();
+      var xref = loudnessTrace(sig.normal, sig);
+      var rows = [
+        { name: 'A · Typd today (glide 1)', make: function () { return makeA(); } },
+        { name: 'A′ · Typd, glide 0', make: function () { var m = makeA(); m.glide = 0; return m; } },
+        { name: 'B · Rival layout, A’s signal', make: makeB },
+        { name: 'C · Candidate, peak-hold on', make: function () { return makeC(CP, { ghost: true }); } },
+        { name: 'C · Candidate, peak-hold off', make: function () { return makeC(CP, { ghost: false }); } },
+        { name: 'C · reduced motion', make: function () { return makeC(CP, { reduced: true }); }, red: true },
+        { name: 'D · One line', make: function () { return makeD(CP); } },
+        { name: 'E · Independent bars, random', make: function () { return makeE(CP, { mode: 'random' }); } },
+        { name: 'E · Independent bars, bands', make: function () { return makeE(CP, { mode: 'bands' }); } },
+        { name: 'E · reduced motion', make: function () { return makeE(CP, { mode: 'random', reduced: true }); }, red: true }
+      ];
+      var out = [];
+      rows.forEach(function (r) {
+        var nRun = simulate(r.make(), sig.normal, sig, !!r.red);
+        var n = stats(nRun, sig);
+        var f = stats(simulate(r.make(), sig.far, sig, !!r.red), sig);
+        var dead = simulate(r.make(), sig.dead, sig, !!r.red);
+        var room = simulate(r.make(), sig.room, sig, !!r.red);
+        n.onset = firstDivergence(nRun, room, sig.on);
+        n.r = pearson(nRun.ink, xref, Math.floor(sig.on * 60), Math.floor(sig.off * 60) + 12);
+        var st = simulate(r.make(), sig.steady, sig, !!r.red), sm = 0;
+        for (var si = 156; si < 264; si++) sm += st.diff[si];
+        n.steady = sm * 60 / (264 - 156);
+        var dm = 0, rmn = 0, dmot = 0, rmot = 0, a = 36, b = 117;
+        for (var i = a; i < b; i++) { dm += dead.ink[i]; rmn += room.ink[i]; dmot += dead.diff[i]; rmot += room.diff[i]; }
+        dm /= (b - a); rmn /= (b - a); dmot *= 60 / (b - a); rmot *= 60 / (b - a);
+        var inkDiff = (dm - rmn) / Math.max(1e-6, rmn);
+        var distinct = Math.abs(inkDiff) > 0.25 ? 'yes: ink ' + Math.round(inkDiff * 100) + '%'
+                     : 'no: ink ' + (inkDiff >= 0 ? '+' : '') + Math.round(inkDiff * 100) + '%';
+        distinct += ', motion ' + Math.round(dmot) + ' vs ' + Math.round(rmot);
+        var farRatio = (f.spMean - f.baseMean) / Math.max(1e-6, n.spMean - n.baseMean);
+        out.push({ name: r.name, n: n, far: farRatio, distinct: distinct, run: nRun });
+      });
+      var tb = $('#benchTable tbody');
+      tb.innerHTML = '';
+      function ms(v) { return v === null ? 'never' : Math.round(v * 1000) + ' ms'; }
+      out.forEach(function (o) {
+        var tr = document.createElement('tr');
+        var ratio = o.n.spMot > 0 ? Math.round(o.n.silMot / o.n.spMot * 100) + '%' : '—';
+        tr.innerHTML = '<td>' + o.name + '</td>' +
+          '<td class="n">' + Math.round(o.n.silMot) + '</td><td class="n">' + Math.round(o.n.spMot) + '</td><td class="n">' + Math.round(o.n.steady) + '</td>' +
+          '<td class="n">' + ratio + '</td><td class="n">' + ms(o.n.onset) + '</td><td class="n">' + ms(o.n.half) + '</td>' +
+          '<td class="n">' + ms(o.n.settle) + (o.n.postMot > 50 ? '<br>then ' + Math.round(o.n.postMot) + ' px²/s at rest' : '') + '</td>' +
+          '<td class="n">' + o.far.toFixed(2) + '</td><td class="n">' + o.n.r.toFixed(2) + '</td><td>' + o.distinct + '</td>';
+        tb.appendChild(tr);
+      });
+      window.__benchResults = out.map(function (o) { return { name: o.name, n: o.n, far: o.far, distinct: o.distinct }; });
+      lastBench = { out: out, sig: sig };
+      renderTraces(); renderFilm();
+      note.textContent = 'done in ' + Math.round(performance.now() - t0) + ' ms · speech ' + sig.on.toFixed(2) + '–' + sig.off.toFixed(2) + ' s';
+    }, 30);
+  }
+  $('#benchRun').addEventListener('click', runBench);
+
+  /* ------------------------------------------------- traces and filmstrip */
+
+  var lastBench = null;
+  function cssVar(name) { return getComputedStyle(root).getPropertyValue(name).trim(); }
+
+  function renderTraces() {
+    if (!lastBench) return;
+    var host = $('#traces'), sig = lastBench.sig, dur = sig.len / sig.sr;
+    host.innerHTML = '';
+    lastBench.out.forEach(function (o) {
+      var run = o.run, n = run.frames, sm = new Float64Array(n), peak = 0;
+      for (var f = 0; f < n; f++) {
+        var a = 0, k = 0;
+        for (var j = Math.max(1, f - 3); j <= f; j++) { a += run.diff[j]; k++; }
+        sm[f] = k ? a / k * 60 : 0;
+        if (f > 2 && sm[f] > peak) peak = sm[f];
+      }
+      var row = document.createElement('div');
+      row.className = 'trace';
+      row.innerHTML = '<div class="lab">' + o.name + '<i>peak ' + Math.round(peak).toLocaleString() + ' px²/s</i><i class="hv">&nbsp;</i></div><canvas aria-label="Motion over time for ' + o.name + '"></canvas>';
+      host.appendChild(row);
+      var cv = $('canvas', row), hv = $('.hv', row);
+      function draw(hx) {
+        var w = cv.clientWidth, h = cv.clientHeight, dpr = window.devicePixelRatio || 1;
+        cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+        var ctx = cv.getContext('2d');
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, w, h);
+        ctx.fillStyle = cssVar('--sunken');
+        ctx.fillRect(sig.on / dur * w, 0, (sig.off - sig.on) / dur * w, h);
+        ctx.strokeStyle = cssVar('--line-2'); ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(0, h - 0.5); ctx.lineTo(w, h - 0.5); ctx.stroke();
+        ctx.strokeStyle = cssVar('--ink'); ctx.lineWidth = 1.5; ctx.lineJoin = 'round';
+        ctx.beginPath();
+        var top = 3, span = h - top - 1.5, sc = peak > 0 ? span / peak : 0;
+        for (var f = 0; f < n; f++) {
+          var x = (f / 60) / dur * w, y = h - 1.5 - Math.min(span, sm[f] * sc);
+          if (f === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+        if (hx !== undefined) {
+          ctx.strokeStyle = cssVar('--faint'); ctx.lineWidth = 1;
+          ctx.beginPath(); ctx.moveTo(Math.round(hx) + 0.5, 0); ctx.lineTo(Math.round(hx) + 0.5, h); ctx.stroke();
+        }
+      }
+      draw();
+      cv.addEventListener('mousemove', function (e) {
+        var r = cv.getBoundingClientRect(), x = e.clientX - r.left, f = clamp(Math.round(x / r.width * dur * 60), 0, n - 1);
+        draw(x);
+        hv.textContent = (f / 60).toFixed(2) + ' s · ' + Math.round(sm[f]).toLocaleString() + ' px²/s';
+      });
+      cv.addEventListener('mouseleave', function () { draw(); hv.innerHTML = '&nbsp;'; });
+    });
+    var axis = document.createElement('div');
+    axis.className = 'taxis';
+    for (var t = 0; t <= Math.floor(dur); t++) axis.innerHTML += '<span style="left:' + (t / dur * 100) + '%">' + t + ' s</span>';
+    host.appendChild(axis);
+  }
+
+  function renderFilm() {
+    if (!lastBench) return;
+    var sig = lastBench.sig;
+    var times = [
+      ['silence', 1.5], ['+17 ms', sig.on + 1 / 60], ['+50 ms', sig.on + 3 / 60], ['+150 ms', sig.on + 0.15],
+      ['speech', sig.on + 0.8], ['speech', sig.on + 1.6], ['end +100', sig.off + 0.1], ['end +400', sig.off + 0.4],
+      ['end +900', sig.off + 0.9], ['rest', 6.3]
+    ];
+    var ink = cssVar('--tileink'), rgb = [0, 0, 0];
+    var m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(ink);
+    if (m) rgb = [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)];
+    var html = '<table><thead><tr><th>Meter</th>' + times.map(function (t) { return '<th>' + t[0] + '<br><span class="mono" style="font-weight:400">' + t[1].toFixed(2) + ' s</span></th>'; }).join('') + '</tr></thead><tbody>';
+    lastBench.out.forEach(function (o, i) { html += '<tr><td>' + o.name + '</td>' + times.map(function (t, j) { return '<td><span class="tile"><canvas data-r="' + i + '" data-t="' + j + '"></canvas></span></td>'; }).join('') + '</tr>'; });
+    $('#film').innerHTML = html + '</tbody></table>';
+    $$('#film canvas').forEach(function (cv) {
+      var o = lastBench.out[+cv.getAttribute('data-r')], t = times[+cv.getAttribute('data-t')][1];
+      var f = clamp(Math.round(t * 60), 0, o.run.frames - 1), img = o.run.imgs[f];
+      cv.width = 87; cv.height = 36;
+      var ctx = cv.getContext('2d'), id = ctx.createImageData(87, 36);
+      for (var p = 0; p < img.length; p++) { id.data[p * 4] = rgb[0]; id.data[p * 4 + 1] = rgb[1]; id.data[p * 4 + 2] = rgb[2]; id.data[p * 4 + 3] = img[p]; }
+      ctx.putImageData(id, 0, 0);
+    });
+  }
+  window.addEventListener('resize', function () { renderTraces(); });
+
+  /* ================================================================= boot */
+
+  restart();
+  requestAnimationFrame(frame);
+  window.__lab = { opt: opt, setOpt: setOpt, runBench: runBench, CP: CP };
+
+  // ?input=silence&state=working&theme=dark&zoom=3&motion=reduced&bench — for
+  // screenshots and headless runs; the toolbar does the same thing by hand.
+  var q = new URLSearchParams(location.search);
+  ['input', 'state', 'theme', 'zoom', 'motion', 'blur'].forEach(function (k) { if (q.get(k)) setOpt(k, q.get(k)); });
+  if (q.has('glide')) live[0].meter.glide = +q.get('glide');
+  if (q.has('t')) demoStart = performance.now() - 1000 * +q.get('t');   // start the demo loop part-way in
+  if (q.has('bench')) runBench();
+})();
+</script>
+</body>
+</html>

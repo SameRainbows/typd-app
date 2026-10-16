@@ -1,0 +1,34 @@
+# Claude Code local settings
+.claude/settings.local.json
+
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+out/
+
+# Environment
+.env
+.env.local
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local models and runtime (large binaries, not source)
+vendor/
+models/
+
+# Large or personal bench data (kept locally)
+bench/models/
+bench/recordings/*.wav
+
+# Tester build config: holds an upload key, never committed (src/main/sharing.js)
+tester.json
+tester.*.json

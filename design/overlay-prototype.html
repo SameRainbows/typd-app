@@ -1,0 +1,623 @@
+<title>Typd — Overlay Motion Study</title>
+<style>
+  :root {
+    --bg:      #F3ECE1;
+    --stage:   #E4D9C9;
+    --surface: #FBF6EE;
+
+    --pill-bg:    rgba(249, 244, 235, 0.94);
+    --pill-line:  rgba(64, 42, 30, 0.13);
+    --pill-sheen: rgba(255, 255, 255, 0.75);
+    --pill-shadow:
+      0 1px 2px rgba(58, 36, 24, .10),
+      0 6px 18px rgba(58, 36, 24, .13),
+      0 16px 40px rgba(58, 36, 24, .10);
+
+    --text:  #2C211A;
+    --muted: #6B5648;
+    --faint: #9A8676;
+    --line:      rgba(64, 42, 30, 0.12);
+    --line-firm: rgba(64, 42, 30, 0.22);
+    --meter: #4A382C;
+    --chip:       rgba(64, 42, 30, 0.07);
+    --chip-hover: rgba(64, 42, 30, 0.15);
+
+    --accent:      #C86234;
+    --accent-ink:  #FFF8F0;
+    --accent-wash: rgba(200, 98, 52, 0.12);
+    --commit:      #C86234;
+    --commit-ink:  #FFF8F0;
+    --danger: #A32E22;
+
+    --font-ui: "Segoe UI Variable Display", "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-mono: "Cascadia Mono", "SF Mono", ui-monospace, Consolas, monospace;
+
+    --ease-spring: cubic-bezier(.16, 1.02, .3, 1.0);
+    --ease-exit:   cubic-bezier(.4, 0, .9, .35);
+    --dur-enter: 300ms;
+    --dur-morph: 240ms;
+    --dur-exit:  180ms;
+  }
+
+  :root[data-mode="ask"]       { --accent: #9C7419; --commit: #9C7419; --accent-wash: rgba(156, 116, 25, .12); }
+  :root[data-mode="translate"] { --accent: #92406B; --commit: #92406B; --accent-wash: rgba(146, 64, 107, .12); }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #17120F; --stage: #100C0A; --surface: #221B16;
+      --pill-bg: rgba(28,22,19,.90); --pill-line: rgba(255,236,222,.12); --pill-sheen: rgba(255,236,222,.10);
+      --pill-shadow: 0 1px 2px rgba(0,0,0,.45), 0 8px 22px rgba(0,0,0,.5), 0 20px 48px rgba(0,0,0,.4);
+      --text: #F2E9E1; --muted: #AC998B; --faint: #7C6C60;
+      --line: rgba(255,236,222,.10); --line-firm: rgba(255,236,222,.20); --meter: #EFE3D8;
+      --chip: rgba(255,236,222,.11); --chip-hover: rgba(255,236,222,.20);
+      --accent: #E8834A; --accent-ink: #23150D; --accent-wash: rgba(232,131,74,.15);
+    --commit: #AC998B; --commit-ink: #221A15;
+      --danger: #E8695C;
+    }
+    :root[data-mode="ask"]       { --accent: #DCB253; --accent-ink: #241C08; --accent-wash: rgba(220,178,83,.15); }
+    :root[data-mode="translate"] { --accent: #D5799F; --accent-ink: #2A1019; --accent-wash: rgba(213,121,159,.15); }
+  }
+
+  :root[data-theme="dark"] {
+    --bg: #17120F; --stage: #100C0A; --surface: #221B16;
+    --pill-bg: rgba(28,22,19,.90); --pill-line: rgba(255,236,222,.12); --pill-sheen: rgba(255,236,222,.10);
+    --pill-shadow: 0 1px 2px rgba(0,0,0,.45), 0 8px 22px rgba(0,0,0,.5), 0 20px 48px rgba(0,0,0,.4);
+    --text: #F2E9E1; --muted: #AC998B; --faint: #7C6C60;
+    --line: rgba(255,236,222,.10); --line-firm: rgba(255,236,222,.20); --meter: #EFE3D8;
+    --chip: rgba(255,236,222,.11); --chip-hover: rgba(255,236,222,.20);
+    --accent: #E8834A; --accent-ink: #23150D; --accent-wash: rgba(232,131,74,.15);
+    --commit: #AC998B; --commit-ink: #221A15;
+    --danger: #E8695C;
+  }
+  :root[data-theme="dark"][data-mode="ask"]       { --accent: #DCB253; --accent-ink: #241C08; }
+  :root[data-theme="dark"][data-mode="translate"] { --accent: #D5799F; --accent-ink: #2A1019; }
+
+  :root[data-theme="light"] {
+    --bg: #F3ECE1; --stage: #E4D9C9; --surface: #FBF6EE;
+    --pill-bg: rgba(249,244,235,.94); --pill-line: rgba(64,42,30,.13); --pill-sheen: rgba(255,255,255,.75);
+    --pill-shadow: 0 1px 2px rgba(58,36,24,.10), 0 6px 18px rgba(58,36,24,.13), 0 16px 40px rgba(58,36,24,.10);
+    --text: #2C211A; --muted: #6B5648; --faint: #9A8676;
+    --line: rgba(64,42,30,.12); --line-firm: rgba(64,42,30,.22); --meter: #4A382C;
+    --chip: rgba(64,42,30,.07); --chip-hover: rgba(64,42,30,.15);
+    --accent: #C86234; --accent-ink: #FFF8F0; --accent-wash: rgba(200,98,52,.12);
+    --commit: #C86234; --commit-ink: #FFF8F0;
+    --danger: #A32E22;
+  }
+  :root[data-theme="light"][data-mode="ask"]       { --accent: #8A6516; --accent-ink: #FFF8F0; }
+  :root[data-theme="light"][data-mode="translate"] { --accent: #7E3455; --accent-ink: #FFF8F0; }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-ui);
+    font-size: 15px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 1020px; margin: 0 auto; padding: 40px 24px 72px; display: flex; flex-direction: column; gap: 30px; }
+
+  .eyebrow { font-size: 11px; letter-spacing: .17em; text-transform: uppercase; color: var(--faint); font-weight: 650; }
+  .masthead { display: flex; flex-direction: column; gap: 8px; }
+  .masthead h1 { margin: 0; font-size: clamp(28px, 4.4vw, 42px); font-weight: 650; letter-spacing: -.026em; text-wrap: balance; }
+  .masthead p { margin: 0; max-width: 62ch; color: var(--muted); }
+
+  /* ------------------------------------------------------------- stage */
+
+  .stage {
+    position: relative;
+    border-radius: 14px;
+    background: var(--stage);
+    border: 1px solid var(--line);
+    min-height: 380px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    align-items: center;
+    padding: 0 20px 14px;   /* the pill sits low, just clear of the edge */
+  }
+
+  .backdrop {
+    position: absolute;
+    inset: 22px 22px 62px;
+    border-radius: 9px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    padding: 18px 22px;
+    display: flex; flex-direction: column; gap: 11px;
+    opacity: .6; overflow: hidden;
+  }
+  .backdrop .chrome { display: flex; gap: 6px; margin-bottom: 4px; }
+  .backdrop .chrome i { width: 9px; height: 9px; border-radius: 50%; background: var(--line-firm); }
+  .skel { height: 8px; border-radius: 4px; background: var(--line); }
+  .skel.w80 { width: 80% } .skel.w94 { width: 94% } .skel.w62 { width: 62% } .skel.w40 { width: 40% }
+  .typed-out { font-size: 13.5px; color: var(--text); min-height: 21px; max-width: 58ch; }
+  .caret { display: inline-block; width: 2px; height: 15px; background: var(--accent); vertical-align: middle; animation: blink 1.1s steps(1,end) infinite; }
+  @keyframes blink { 0%,55% { opacity: 1 } 56%,100% { opacity: 0 } }
+
+  /* -------------------------------------------------------------- pill */
+
+  .overlay { position: relative; display: flex; flex-direction: column; align-items: center; gap: 7px; }
+
+  .mode-label {
+    font-size: 9px; font-weight: 650; letter-spacing: .18em; text-transform: uppercase;
+    color: var(--accent); opacity: 0; transform: translateY(4px);
+    transition: opacity 180ms var(--ease-spring), transform 180ms var(--ease-spring);
+  }
+  .overlay[data-visible="true"][data-labelled="true"] .mode-label { opacity: 1; transform: translateY(0); }
+
+  .pill {
+    position: relative;
+    display: flex; align-items: center; gap: 6px;
+    width: 130px; height: 36px; padding: 0 6px;
+    border-radius: 18px;
+    background: var(--pill-bg);
+    border: 1px solid var(--pill-line);
+    box-shadow: var(--pill-shadow);
+    backdrop-filter: blur(18px) saturate(1.6);
+    opacity: 0; transform: translateY(10px) scale(.88); filter: blur(4px);
+    transition:
+      opacity var(--dur-exit) var(--ease-exit),
+      transform var(--dur-exit) var(--ease-exit),
+      filter var(--dur-exit) var(--ease-exit),
+      width var(--dur-morph) var(--ease-spring);
+  }
+  .pill::before {
+    content: ""; position: absolute; inset: 0; border-radius: inherit; padding-top: 1px;
+    background: linear-gradient(var(--pill-sheen), transparent 55%);
+    -webkit-mask: linear-gradient(#000,#000) content-box, linear-gradient(#000,#000);
+    -webkit-mask-composite: xor; mask-composite: exclude; pointer-events: none;
+  }
+  .overlay[data-visible="true"] .pill {
+    opacity: 1; transform: translateY(0) scale(1); filter: blur(0);
+    transition:
+      opacity var(--dur-enter) var(--ease-spring),
+      transform var(--dur-enter) var(--ease-spring),
+      filter var(--dur-enter) var(--ease-spring),
+      width var(--dur-morph) var(--ease-spring);
+  }
+  .overlay[data-state="thinking"]  .pill { width: 98px; }
+  .overlay[data-state="streaming"] .pill,
+  .overlay[data-state="result"]    .pill { width: 252px; }
+
+  .control {
+    flex: 0 0 auto; width: 24px; height: 24px; padding: 0; border: 0;
+    border-radius: 50%; background: transparent;
+    display: grid; place-items: center; cursor: pointer;
+    transition: background 150ms ease, transform 180ms var(--ease-spring);
+  }
+  .control svg { width: 12px; height: 12px; fill: none; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+  .control.cancel { background: var(--chip); }
+  .control.cancel svg { stroke: var(--muted); }
+  .control.cancel:hover { background: var(--chip-hover); }
+  .control.cancel:hover svg { stroke: var(--danger); }
+  .control.cancel:active { transform: scale(.92); }
+  .control.confirm { background: var(--commit); box-shadow: 0 1px 2px rgba(0,0,0,.2); }
+  .control.confirm svg { stroke: var(--commit-ink); }
+  .control.confirm:hover { transform: scale(1.09); }
+  .control.confirm:active { transform: scale(.94); }
+  .control:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .control.confirm .tick { stroke-dasharray: 22; stroke-dashoffset: 22; }
+  .overlay[data-visible="true"] .control.confirm .tick { animation: draw-tick 360ms var(--ease-spring) 140ms forwards; }
+  @keyframes draw-tick { to { stroke-dashoffset: 0 } }
+
+  .overlay[data-state="thinking"] .control.confirm,
+  .overlay[data-state="streaming"] .control.confirm,
+  .overlay[data-state="result"] .control.confirm { display: none; }
+  .overlay[data-state="result"] .control.cancel { display: none; }
+
+  .meter-slot { flex: 1 1 auto; height: 18px; min-width: 0; }
+  canvas.meter { width: 100%; height: 100%; display: block; }
+  .overlay[data-state="streaming"] .meter-slot,
+  .overlay[data-state="result"] .meter-slot { display: none; }
+
+  .result-text {
+    display: none; flex: 1 1 auto; min-width: 0; padding: 0 5px;
+    font-size: 12px; color: var(--muted);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    direction: rtl; text-align: left;
+  }
+  .overlay[data-state="streaming"] .result-text,
+  .overlay[data-state="result"] .result-text { display: block; }
+  .overlay[data-state="result"] .result-text { direction: ltr; color: var(--text); font-weight: 560; }
+
+  /* ------------------------------------------------------- answer card */
+
+  .answer {
+    position: absolute; left: 50%; bottom: 72px;
+    width: min(400px, calc(100% - 48px));
+    transform: translate(-50%, 10px) scale(.96);
+    opacity: 0; filter: blur(6px); pointer-events: none;
+    background: var(--pill-bg); border: 1px solid var(--pill-line);
+    border-radius: 13px; box-shadow: var(--pill-shadow);
+    backdrop-filter: blur(20px) saturate(1.6);
+    padding: 13px 15px 14px;
+    display: flex; flex-direction: column; gap: 8px;
+    transition: opacity var(--dur-exit) var(--ease-exit),
+                transform var(--dur-exit) var(--ease-exit),
+                filter var(--dur-exit) var(--ease-exit);
+  }
+  .answer[data-visible="true"] {
+    opacity: 1; transform: translate(-50%, 0) scale(1); filter: blur(0);
+    transition: opacity var(--dur-enter) var(--ease-spring) 40ms,
+                transform var(--dur-enter) var(--ease-spring) 40ms,
+                filter var(--dur-enter) var(--ease-spring) 40ms;
+  }
+  .answer .q { font-size: 12.5px; font-weight: 620; color: var(--text); padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+  .answer .a { font-size: 13px; color: var(--muted); line-height: 1.5; }
+
+  /* ---------------------------------------------------------- controls */
+
+  .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+  .seg { display: flex; background: var(--surface); border: 1px solid var(--line); border-radius: 9px; padding: 3px; gap: 2px; }
+  .seg button {
+    appearance: none; border: 0; background: transparent; color: var(--muted);
+    font-family: inherit; font-size: 12.5px; font-weight: 550;
+    padding: 7px 13px; border-radius: 6px; cursor: pointer;
+    transition: background 140ms ease, color 140ms ease;
+  }
+  .seg button:hover { color: var(--text); }
+  .seg button[aria-pressed="true"] { background: var(--accent-wash); color: var(--accent); }
+  .seg button:focus-visible, .talk:focus-visible, .ghost:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .talk {
+    appearance: none; border: 1px solid var(--line-firm); background: var(--surface);
+    color: var(--text); font-family: inherit; font-size: 13px; font-weight: 600;
+    padding: 10px 20px; border-radius: 9px; cursor: pointer; user-select: none;
+    transition: transform 110ms var(--ease-spring), background 140ms ease, border-color 140ms ease, color 140ms ease;
+  }
+  .talk[data-open="true"] { background: var(--accent-wash); border-color: var(--accent); color: var(--accent); }
+  .talk:active { transform: scale(.97); }
+  .talk kbd { font-family: var(--font-mono); font-size: 11px; color: var(--faint); margin-left: 7px; font-weight: 400; }
+  .ghost {
+    appearance: none; background: transparent; border: 1px solid var(--line);
+    color: var(--muted); font-family: inherit; font-size: 12.5px;
+    padding: 9px 13px; border-radius: 8px; cursor: pointer;
+    transition: color 140ms ease, border-color 140ms ease;
+  }
+  .ghost:hover { color: var(--text); border-color: var(--line-firm); }
+
+  /* ----------------------------------------------------------- notes */
+
+  .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 22px; }
+  .note-block h3 { margin: 0 0 5px; font-size: 13px; font-weight: 640; color: var(--text); }
+  .note-block p { margin: 0; font-size: 13px; color: var(--muted); }
+
+  .spec { display: flex; flex-direction: column; gap: 14px; }
+  .spec h2 { margin: 0; font-size: 11px; letter-spacing: .17em; text-transform: uppercase; color: var(--faint); font-weight: 650; }
+  .table-scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; min-width: 560px; font-size: 13px; }
+  th {
+    text-align: left; font-weight: 620; color: var(--faint); font-size: 11px;
+    letter-spacing: .09em; text-transform: uppercase;
+    padding: 0 14px 8px 0; border-bottom: 1px solid var(--line-firm); white-space: nowrap;
+  }
+  td { padding: 10px 14px 10px 0; border-bottom: 1px solid var(--line); color: var(--muted); vertical-align: top; }
+  td:first-child { color: var(--text); font-weight: 550; white-space: nowrap; }
+  td.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; color: var(--accent); white-space: nowrap; }
+
+  .note { font-size: 12.5px; color: var(--faint); max-width: 68ch; margin: 0; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition-duration: 1ms !important; }
+  }
+</style>
+
+<div class="wrap">
+  <header class="masthead">
+    <div class="eyebrow">Typd — motion study 05</div>
+    <h1>130 by 36. Two circles and eleven bars.</h1>
+    <p>A dictation overlay that asks to be looked at has already failed. This one sits low, stays compact, and keeps a floor under the meter so a silent moment reads as listening rather than as broken. Nothing reports how long you have been talking, because nobody has ever needed to know.</p>
+  </header>
+
+  <div class="stage" id="stage">
+    <div class="backdrop" aria-hidden="true">
+      <div class="chrome"><i></i><i></i><i></i></div>
+      <div class="skel w80"></div>
+      <div class="skel w94"></div>
+      <div class="skel w62"></div>
+      <div class="typed-out" id="typedOut"><span class="caret"></span></div>
+      <div class="skel w40"></div>
+    </div>
+
+    <div class="answer" id="answer">
+      <div class="q" id="answerQ">How tall is Mount Everest?</div>
+      <div class="a" id="answerA">8,849 m (29,032 ft) above sea level — the figure jointly agreed by China and Nepal in 2020.</div>
+    </div>
+
+    <div class="overlay" id="overlay" data-visible="false" data-state="idle" data-labelled="false">
+      <div class="mode-label" id="modeLabel">Ask Anything</div>
+      <div class="pill">
+        <button class="control cancel" id="cancel" type="button" title="Cancel">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7 L17 17 M17 7 L7 17" /></svg>
+        </button>
+        <span class="meter-slot"><canvas class="meter" id="meter"></canvas></span>
+        <span class="result-text" id="resultText"></span>
+        <button class="control confirm" id="confirm" type="button" title="Done">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path class="tick" d="M6.6 12.4 L10.5 16.3 L17.4 8.9" /></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <div class="seg" role="group" aria-label="Mode">
+      <button type="button" data-mode="dictate" aria-pressed="true">Dictate</button>
+      <button type="button" data-mode="ask" aria-pressed="false">Ask Anything</button>
+      <button type="button" data-mode="translate" aria-pressed="false">Translate</button>
+    </div>
+    <button type="button" class="talk" id="talk" data-open="false">Start dictating <kbd>Space</kbd></button>
+    <button type="button" class="ghost" id="themeToggle">Toggle theme</button>
+  </div>
+
+  <div class="cols">
+    <div class="note-block">
+      <h3>Eleven bars with a floor</h3>
+      <p>Fourteen hairlines collapsed into a dotted line the moment you stopped talking. Fewer, thicker, and with a minimum height in the geometry rather than the amplitude — silence now breathes instead of flatlining.</p>
+    </div>
+    <div class="note-block">
+      <h3>The commit circle is themed apart</h3>
+      <p>On ivory, hue is what makes it read as primary. On charcoal a saturated disc is the loudest thing on screen, so dark trades hue for luminance — the pill stays black, grey and ivory, and mode is carried by the label above it.</p>
+    </div>
+    <div class="note-block">
+      <h3>Cancel is filled, but quiet</h3>
+      <p>Enough of a chip to read as a button, a step down in contrast from the commit circle so the two never compete. It only turns red once the cursor is actually on it.</p>
+    </div>
+  </div>
+
+  <section class="spec">
+    <h2>Motion spec</h2>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Transition</th><th>Duration</th><th>Curve</th><th>What moves</th></tr></thead>
+        <tbody>
+          <tr><td>Summon</td><td class="num">300 ms</td><td class="num">.16, 1.02, .3, 1</td>
+              <td>Opacity, Y +10→0, scale .88→1, blur 4→0px. The overshoot is in the curve, not a keyframe.</td></tr>
+          <tr><td>Tick draw</td><td class="num">360 ms</td><td class="num">delay 140 ms</td>
+              <td>The checkmark strokes itself in behind the pill's arrival rather than popping into place.</td></tr>
+          <tr><td>Width morph</td><td class="num">240 ms</td><td class="num">.16, 1.02, .3, 1</td>
+              <td>130 → 98 → 252px across listening, thinking, result. Height is fixed at 36px throughout.</td></tr>
+          <tr><td>Bar response</td><td class="num">0.34 α</td><td class="num">per frame</td>
+              <td>Exponential approach toward a centre-weighted target. Fast enough to feel live, slow enough not to flicker.</td></tr>
+          <tr><td>Thinking sweep</td><td class="num">~1070 ms</td><td class="num">canvas</td>
+              <td>Bars settle to a 7% floor and a gaussian pulse walks the row left to right. Not a spinner.</td></tr>
+          <tr><td>Cleanup wait</td><td class="num">375 ms</td><td class="num">measured</td>
+              <td>Real Laguna XS 2.1 first-token latency at 4K context on a warm connection. See bench/RESULTS.md.</td></tr>
+          <tr><td>Dismiss</td><td class="num">180 ms</td><td class="num">.4, 0, .9, .35</td>
+              <td>Fast-out. Leaving is never as interesting as arriving.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">Amplitude here is synthesised with a syllabic envelope so the motion is reproducible frame to frame; in the app the meter binds to live microphone RMS. Type is the Segoe UI Variable / Cascadia stack — a shipped build would licence a display face, and webfonts are blocked on this page.</p>
+  </section>
+</div>
+
+<script>
+(function () {
+  var root = document.documentElement;
+  var overlay = document.getElementById('overlay');
+  var answer = document.getElementById('answer');
+  var answerQ = document.getElementById('answerQ');
+  var answerA = document.getElementById('answerA');
+  var modeLabel = document.getElementById('modeLabel');
+  var resultEl = document.getElementById('resultText');
+  var typedOut = document.getElementById('typedOut');
+  var talk = document.getElementById('talk');
+  var canvas = document.getElementById('meter');
+  var ctx = canvas.getContext('2d');
+
+  var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  var MODES = {
+    dictate: { label: null, result: 'Pasted into Notes',
+      typed: 'A dictation overlay that asks to be looked at has already failed.' },
+    ask: { label: 'Ask Anything', q: 'How tall is Mount Everest?',
+      a: '8,849 m (29,032 ft) above sea level — the figure jointly agreed by China and Nepal in 2020.' },
+    translate: { label: 'English → Türkçe', result: 'Pasted into Notes',
+      typed: 'Bakılmak isteyen bir dikte katmanı çoktan başarısız olmuştur.' }
+  };
+
+  var mode = 'dictate';
+  var state = 'idle';
+  var open = false;
+  var seq = 0;
+  var t0 = 0;
+
+  var BARS = 11;
+  var IDLE_FLOOR = 0.10;
+  var MIN_HALF = 1.5;
+  var bars = new Float32Array(BARS);
+  var phase = new Float32Array(BARS);
+  for (var b = 0; b < BARS; b++) phase[b] = b * 1.73 + Math.sin(b * 2.31) * 1.4;
+
+  function sizeCanvas() {
+    var r = canvas.getBoundingClientRect();
+    if (!r.width) return;
+    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.round(r.width * dpr);
+    canvas.height = Math.round(r.height * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  function envelope(t) {
+    var syl = Math.abs(Math.sin(t * 4.1) * Math.sin(t * 2.3 + 1.1));
+    var micro = 0.55 + 0.45 * Math.sin(t * 21.7 + 0.6);
+    var phr = 0.5 + 0.5 * Math.sin(t * 0.52 - 0.4);
+    return Math.min(1, syl * micro * (phr > 0.2 ? 1 : 0.07) * 1.7);
+  }
+
+  function meterColour() {
+    return getComputedStyle(root).getPropertyValue('--meter').trim() || '#EFE3D8';
+  }
+
+  function draw(now) {
+    requestAnimationFrame(draw);
+    var w = canvas.clientWidth, h = canvas.clientHeight;
+    if (!w || !h) return;
+    var t = (now - t0) / 1000;
+
+    if (state === 'listening') {
+      var level = envelope(t);
+      for (var i = 0; i < BARS; i++) {
+        var weight = 0.5 + 0.5 * Math.sin(((i + 0.5) / BARS) * Math.PI);
+        var jitter = 0.68 + 0.32 * Math.sin(t * 8.6 + phase[i]);
+        var idle = IDLE_FLOOR * (0.72 + 0.28 * Math.sin(t * 2.1 + phase[i] * 0.6));
+        bars[i] += (Math.max(idle, level * weight * jitter) - bars[i]) * 0.34;
+      }
+    } else if (state === 'thinking') {
+      var pos = ((t * 1.5) % 1.6) * (BARS + 5) - 2.5;
+      for (var j = 0; j < BARS; j++) {
+        var d = j - pos;
+        bars[j] += (0.07 + 0.8 * Math.exp(-(d * d) / 2.4) - bars[j]) * 0.32;
+      }
+    } else {
+      for (var k = 0; k < BARS; k++) bars[k] *= 0.82;
+    }
+
+    ctx.clearRect(0, 0, w, h);
+    if (state !== 'listening' && state !== 'thinking') return;
+
+    var slot = w / BARS;
+    var barW = Math.max(2, Math.min(2.6, slot * 0.44));
+    var mid = h / 2;
+    var maxHalf = h / 2 - barW / 2;
+
+    ctx.strokeStyle = meterColour();
+    ctx.lineWidth = barW;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    for (var m = 0; m < BARS; m++) {
+      var x = slot * (m + 0.5);
+      var half = MIN_HALF + bars[m] * (maxHalf - MIN_HALF);
+      ctx.moveTo(x, mid - half);
+      ctx.lineTo(x, mid + half);
+    }
+    ctx.stroke();
+  }
+
+  function setState(s) { state = s; overlay.setAttribute('data-state', s); }
+
+  function typeOut(text, token) {
+    var i = 0;
+    typedOut.innerHTML = '<span class="caret"></span>';
+    if (reduced) { typedOut.innerHTML = text + '<span class="caret"></span>'; return; }
+    (function step() {
+      if (token !== seq) return;
+      i += 2;
+      typedOut.innerHTML = text.slice(0, i) + '<span class="caret"></span>';
+      if (i < text.length) setTimeout(step, 16);
+    })();
+  }
+
+  function begin() {
+    seq++;
+    open = true;
+    talk.setAttribute('data-open', 'true');
+    talk.firstChild.nodeValue = 'Finish ';
+    answer.setAttribute('data-visible', 'false');
+
+    var cfg = MODES[mode];
+    overlay.setAttribute('data-labelled', cfg.label ? 'true' : 'false');
+    if (cfg.label) modeLabel.textContent = cfg.label;
+
+    t0 = performance.now();
+    bars.fill(0);
+    overlay.setAttribute('data-visible', 'true');
+    setState('listening');
+  }
+
+  function reset() {
+    open = false;
+    talk.setAttribute('data-open', 'false');
+    talk.firstChild.nodeValue = 'Start dictating ';
+  }
+
+  function commit() {
+    if (!open) return;
+    reset();
+    var token = ++seq;
+    setState('thinking');
+
+    setTimeout(function () {
+      if (token !== seq) return;
+      var cfg = MODES[mode];
+
+      if (mode === 'ask') {
+        answerQ.textContent = cfg.q;
+        answerA.textContent = cfg.a;
+        answer.setAttribute('data-visible', 'true');
+        overlay.setAttribute('data-visible', 'false');
+        setState('idle');
+        setTimeout(function () { if (token === seq) answer.setAttribute('data-visible', 'false'); }, 5000);
+      } else {
+        setState('streaming');
+        var words = cfg.typed.split(' '), shown = '', i = 0;
+        (function stream() {
+          if (token !== seq) return;
+          if (i < words.length) {
+            shown += (shown ? ' ' : '') + words[i++];
+            resultEl.textContent = shown;
+            setTimeout(stream, 42);
+            return;
+          }
+          setState('result');
+          resultEl.textContent = cfg.result;
+          typeOut(cfg.typed, token);
+          setTimeout(function () {
+            if (token !== seq) return;
+            overlay.setAttribute('data-visible', 'false');
+            setTimeout(function () { if (token === seq) setState('idle'); }, 200);
+          }, 900);
+        })();
+      }
+    }, reduced ? 60 : 375);
+  }
+
+  function abandon() {
+    seq++;
+    reset();
+    overlay.setAttribute('data-visible', 'false');
+    answer.setAttribute('data-visible', 'false');
+    setTimeout(function () { setState('idle'); }, 200);
+  }
+
+  talk.addEventListener('click', function () { open ? commit() : begin(); });
+  document.getElementById('confirm').addEventListener('click', commit);
+  document.getElementById('cancel').addEventListener('click', abandon);
+
+  window.addEventListener('keydown', function (e) {
+    if (e.code === 'Space' && !e.repeat) {
+      if (document.activeElement && document.activeElement.tagName === 'BUTTON') return;
+      e.preventDefault();
+      open ? commit() : begin();
+    }
+    if (e.code === 'Escape' && open) abandon();
+  });
+
+  Array.prototype.forEach.call(document.querySelectorAll('.seg button'), function (btn) {
+    btn.addEventListener('click', function () {
+      Array.prototype.forEach.call(document.querySelectorAll('.seg button'), function (o) {
+        o.setAttribute('aria-pressed', String(o === btn));
+      });
+      mode = btn.getAttribute('data-mode');
+      root.setAttribute('data-mode', mode);
+      abandon();
+    });
+  });
+
+  document.getElementById('themeToggle').addEventListener('click', function () {
+    var cur = root.getAttribute('data-theme');
+    if (!cur) cur = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    root.setAttribute('data-theme', cur === 'dark' ? 'light' : 'dark');
+  });
+
+  root.setAttribute('data-mode', mode);
+  new ResizeObserver(sizeCanvas).observe(canvas);
+  sizeCanvas();
+  requestAnimationFrame(function (n) { t0 = n; draw(n); });
+})();
+</script>

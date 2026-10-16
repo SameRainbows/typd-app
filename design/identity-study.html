@@ -1,0 +1,1236 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Typd — Identity Study</title>
+
+<style>
+:root {
+  --ink:    #F4F5F7;
+  --muted:  #9DA3AC;
+  --faint:  #6C727B;
+  --edge:   rgba(255, 255, 255, 0.11);
+  --edge-2: rgba(255, 255, 255, 0.055);
+  --page:   #0A0B0D;
+  --plate-dark:  #0D0E11;
+  --plate-light: #FCFCFD;
+  --ink-light:   #14161B;
+  --muted-light: #575D66;
+  --faint-light: #8B919B;
+  --edge-light:  rgba(16, 18, 23, 0.11);
+
+  --ui:   "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --disp: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+  --mono: "Cascadia Mono", Consolas, "SF Mono", ui-monospace, monospace;
+  --din:  "Bahnschrift", "DIN Alternate", "Segoe UI Variable Display", "Segoe UI", "Franklin Gothic Medium", Arial, sans-serif;
+  --gothic: "Franklin Gothic Medium", "Franklin Gothic", "Segoe UI", Arial, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html { background: var(--page); }
+
+body {
+  margin: 0;
+  padding: 0 32px 160px;
+  background: var(--page);
+  color: var(--ink);
+  font-family: var(--ui);
+  font-size: 15px;
+  line-height: 1.62;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap { max-width: 1060px; margin: 0 auto; }
+
+/* ------------------------------------------------------------------ type */
+
+h1, h2, h3 { font-family: var(--disp); font-weight: 600; margin: 0; }
+
+h1 {
+  font-size: 40px;
+  letter-spacing: -0.022em;
+  line-height: 1.06;
+}
+
+h2 {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--faint);
+  font-family: var(--mono);
+  margin: 0 0 26px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--edge);
+}
+
+h3 { font-size: 19px; letter-spacing: -0.012em; }
+
+p { margin: 0 0 14px; max-width: 68ch; color: var(--muted); }
+p.lead { color: var(--ink); font-size: 17px; line-height: 1.55; }
+p:last-child { margin-bottom: 0; }
+strong { color: var(--ink); font-weight: 600; }
+em { color: var(--ink); font-style: normal; border-bottom: 1px solid var(--edge); }
+
+code, .mono { font-family: var(--mono); font-size: 0.88em; }
+code { color: var(--ink); background: rgba(255,255,255,.06); padding: 1px 5px; border-radius: 3px; }
+
+section { margin: 84px 0 0; }
+section:first-of-type { margin-top: 56px; }
+
+hr { border: 0; border-top: 1px solid var(--edge-2); margin: 56px 0; }
+
+/* --------------------------------------------------------------- masthead */
+
+header {
+  padding: 72px 0 40px;
+  border-bottom: 1px solid var(--edge);
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 28px;
+  align-items: start;
+}
+header .glyph { padding-top: 4px; }
+.kicker {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--faint);
+  margin: 0 0 14px;
+}
+
+/* ----------------------------------------------------------------- plates */
+
+.plate {
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  padding: 34px 32px 26px;
+  background: var(--plate-dark);
+  margin-bottom: 14px;
+}
+.plate.light {
+  background: var(--plate-light);
+  border-color: var(--edge-light);
+  color: var(--ink-light);
+}
+.plate .plate-label {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--faint);
+  margin-bottom: 22px;
+}
+.plate.light .plate-label { color: var(--faint-light); }
+
+/* --------------------------------------------------------------- size row */
+
+.row {
+  display: flex;
+  align-items: flex-end;
+  gap: 30px;
+  flex-wrap: wrap;
+}
+.cell { display: flex; flex-direction: column; align-items: center; gap: 11px; }
+.cell svg { display: block; }
+.cell .cap {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: var(--faint);
+  white-space: nowrap;
+}
+.plate.light .cell .cap { color: var(--faint-light); }
+
+/* the judging column */
+.cell.judge {
+  border: 1px solid var(--edge);
+  border-radius: 5px;
+  padding: 16px 18px 11px;
+  margin: -16px -18px -11px;
+  background: rgba(255,255,255,.028);
+}
+.plate.light .cell.judge {
+  border-color: var(--edge-light);
+  background: rgba(16,18,23,.028);
+}
+.cell.judge .cap { color: var(--ink); }
+.plate.light .cell.judge .cap { color: var(--ink-light); }
+
+.mark { color: var(--ink); }
+.plate.light .mark { color: var(--ink-light); }
+
+/* --------------------------------------------------------------- concepts */
+
+.concept { margin-bottom: 66px; }
+.concept-head {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  margin-bottom: 6px;
+}
+.num {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  color: var(--faint);
+}
+.concept .why { max-width: 74ch; margin-bottom: 20px; }
+.verdict {
+  display: grid;
+  grid-template-columns: 84px 1fr;
+  gap: 0 16px;
+  border-top: 1px solid var(--edge-2);
+  padding-top: 14px;
+  margin-top: 4px;
+  font-size: 14px;
+}
+.verdict dt {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--faint);
+  padding-top: 4px;
+}
+.verdict dd { margin: 0 0 8px; color: var(--muted); max-width: 70ch; }
+.verdict dd:last-of-type { margin-bottom: 0; }
+.verdict dd.kill { color: #E8695C; }
+.verdict dd.win  { color: var(--ink); }
+
+/* ------------------------------------------------------------ pixel truth */
+
+.pixels {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 26px;
+}
+.pixel-item { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
+.pixel-item canvas {
+  display: block;
+  background: #08090B;
+  border: 1px solid var(--edge);
+  border-radius: 4px;
+  image-rendering: pixelated;
+  width: 192px;
+  height: 192px;
+}
+.pixel-item .cap {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+/* the hand-built pixel map for the winner */
+.map { display: grid; grid-template-columns: repeat(16, 11px); gap: 1px; width: max-content; }
+.map i { width: 11px; height: 11px; background: rgba(255,255,255,.045); border-radius: 1px; }
+.map i.on   { background: var(--ink); }
+.map i.half { background: rgba(244,245,247,.5); }
+
+/* -------------------------------------------------------------- taskbar */
+
+.taskbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0;
+  height: 48px;
+  padding: 0 12px 0 0;
+  border-radius: 6px;
+  overflow: hidden;
+  font-family: var(--ui);
+  user-select: none;
+}
+.taskbar.dark  { background: #1D1D1F; color: #FFFFFF; box-shadow: inset 0 1px 0 rgba(255,255,255,.07); }
+.taskbar.lightbar { background: #F3F3F3; color: #171717; box-shadow: inset 0 1px 0 rgba(0,0,0,.06); }
+
+.taskbar .apps { margin-right: auto; display: flex; align-items: center; gap: 4px; padding-left: 10px; }
+.taskbar .app {
+  width: 40px; height: 40px;
+  display: grid; place-items: center;
+  border-radius: 5px;
+  opacity: .34;
+}
+.taskbar.dark .app  { background: rgba(255,255,255,.10); }
+.taskbar.lightbar .app { background: rgba(0,0,0,.10); }
+
+.taskbar .slot {
+  width: 30px; height: 34px;
+  display: grid; place-items: center;
+  border-radius: 4px;
+}
+.taskbar .slot.ours { position: relative; }
+.taskbar .slot svg { display: block; }
+.taskbar .clock {
+  text-align: right;
+  font-size: 12px;
+  line-height: 1.28;
+  padding-left: 12px;
+  letter-spacing: .005em;
+  font-variant-numeric: tabular-nums;
+}
+.taskbar .div { width: 1px; height: 20px; margin: 0 8px; }
+.taskbar.dark .div { background: rgba(255,255,255,.14); }
+.taskbar.lightbar .div { background: rgba(0,0,0,.14); }
+
+.bar-note {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--faint);
+  margin: 12px 0 26px;
+}
+
+/* ------------------------------------------------------------- wordmarks */
+
+.wm { display: flex; align-items: baseline; gap: 0; }
+.lockup { display: flex; align-items: center; gap: 0; }
+
+.wm-din {
+  font-family: var(--din);
+  font-weight: 600;
+  font-stretch: 100%;
+  letter-spacing: 0.012em;
+}
+.wm-segoe { font-family: var(--disp); font-weight: 620; letter-spacing: -0.014em; }
+.wm-mono  { font-family: var(--mono); font-weight: 600; letter-spacing: 0.02em; }
+.wm-gothic { font-family: var(--gothic); font-weight: 500; letter-spacing: 0.008em; }
+
+.spec-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+  margin-top: 10px;
+}
+.spec-table td, .spec-table th {
+  text-align: left;
+  padding: 9px 16px 9px 0;
+  border-bottom: 1px solid var(--edge-2);
+  vertical-align: top;
+}
+.spec-table th {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--faint);
+  font-weight: 400;
+  white-space: nowrap;
+  width: 190px;
+}
+.spec-table td { color: var(--muted); }
+.spec-table td .mono { color: var(--ink); }
+
+pre {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.62;
+  background: #0D0E11;
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  padding: 22px 24px;
+  overflow-x: auto;
+  color: #C9CED6;
+  margin: 18px 0 0;
+  tab-size: 2;
+}
+
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; }
+@media (max-width: 860px) { .cols { grid-template-columns: 1fr; } }
+
+.callout {
+  border-left: 2px solid var(--edge);
+  padding: 2px 0 2px 20px;
+  margin: 22px 0;
+}
+.callout p { color: var(--ink); }
+</style>
+
+<!-- ================================================================ marks -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+
+    <!-- 01 ELISION — the word as a vertical skyline, the vowel's slot empty -->
+    <symbol id="m-elision" viewBox="0 0 16 16">
+      <path fill="currentColor" d="M0,1 H2.4 V11 H0 Z M3.4,5 H5.8 V15 H3.4 Z M6.8,5 H9.2 V15 H6.8 Z M13.6,1 H16 V11 H13.6 Z"/>
+    </symbol>
+
+    <!-- 02 INSERTION — the copyeditor's caret, set beneath the line -->
+    <symbol id="m-insertion" viewBox="0 0 16 16">
+      <path fill="currentColor" d="M0,2 H16 V4 H0 Z M8,5 L13.6,15 H2.4 Z"/>
+    </symbol>
+
+    <!-- 03 SLUG — a cast line of type; two lines knocked out, ragged right -->
+    <symbol id="m-slug" viewBox="0 0 16 16">
+      <path fill="currentColor" fill-rule="evenodd" d="M2.5,2 H13.5 A1.5,1.5 0 0 1 15,3.5 V12.5 A1.5,1.5 0 0 1 13.5,14 H2.5 A1.5,1.5 0 0 1 1,12.5 V3.5 A1.5,1.5 0 0 1 2.5,2 Z M4,5 H12 V7 H4 Z M4,9 H9 V11 H4 Z"/>
+    </symbol>
+    <!-- same geometry, cropped to the block for cap-height lockups -->
+    <symbol id="m-slug-tight" viewBox="1 2 14 12">
+      <path fill="currentColor" fill-rule="evenodd" d="M2.5,2 H13.5 A1.5,1.5 0 0 1 15,3.5 V12.5 A1.5,1.5 0 0 1 13.5,14 H2.5 A1.5,1.5 0 0 1 1,12.5 V3.5 A1.5,1.5 0 0 1 2.5,2 Z M4,5 H12 V7 H4 Z M4,9 H9 V11 H4 Z"/>
+    </symbol>
+
+    <!-- 04 RETURN — the line goes out, turns, and comes back part way -->
+    <symbol id="m-return" viewBox="0 0 16 16">
+      <path fill="none" stroke="currentColor" stroke-width="2.4" d="M1,4 H10.8 A4,4 0 0 1 10.8,12 H6"/>
+    </symbol>
+
+    <!-- 05 OVERWRITE — two texts in one place; where they meet, one is gone -->
+    <symbol id="m-overwrite" viewBox="0 0 16 16">
+      <path fill="currentColor" fill-rule="evenodd" d="M0,2 H10 V9 H0 Z M6,7 H16 V14 H6 Z"/>
+    </symbol>
+
+    <!-- 06 BEAM — the text insertion cursor, drawn as a mark -->
+    <symbol id="m-beam" viewBox="0 0 16 16">
+      <path fill="currentColor" d="M3,0 H13 V2 H9 V14 H13 V16 H3 V14 H7 V2 H3 Z"/>
+    </symbol>
+
+    <!-- ---------------------------------------------- neighbour tray glyphs -->
+    <symbol id="sys-chevron" viewBox="0 0 16 16">
+      <path fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" d="M3.4,9.7 L8,5.1 L12.6,9.7"/>
+    </symbol>
+    <symbol id="sys-cloud" viewBox="0 0 16 16">
+      <path fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round" d="M4.9,12.3 h7.1 a2.35,2.35 0 0 0 .3,-4.68 A3.45,3.45 0 0 0 6.05,6.2 a2.75,2.75 0 0 0 -1.15,6.1 Z"/>
+    </symbol>
+    <symbol id="sys-wifi" viewBox="0 0 16 16">
+      <path fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" d="M1.9,6.3 a8.9,8.9 0 0 1 12.2,0"/>
+      <path fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" d="M4.35,8.95 a5.3,5.3 0 0 1 7.3,0"/>
+      <circle cx="8" cy="12.1" r="1.35" fill="currentColor"/>
+    </symbol>
+    <symbol id="sys-volume" viewBox="0 0 16 16">
+      <path fill="currentColor" d="M2.4,6.3 H4.9 L7.9,3.6 V12.4 L4.9,9.7 H2.4 Z"/>
+      <path fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" d="M10.2,6.3 a2.9,2.9 0 0 1 0,3.4"/>
+      <path fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" d="M12.3,4.6 a5.6,5.6 0 0 1 0,6.8"/>
+    </symbol>
+    <symbol id="sys-battery" viewBox="0 0 16 16">
+      <rect x="1.2" y="5.5" width="11.7" height="5" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.15"/>
+      <rect x="2.6" y="6.9" width="6.2" height="2.2" rx=".5" fill="currentColor"/>
+      <path fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" d="M14.4,7.2 V8.8"/>
+    </symbol>
+  </defs>
+</svg>
+
+<div class="wrap">
+
+<!-- ============================================================= masthead -->
+<header>
+  <div class="glyph">
+    <svg class="mark" width="64" height="64" viewBox="0 0 16 16"><use href="#m-slug"/></svg>
+  </div>
+  <div>
+    <p class="kicker">Typd · brand identity · study 01</p>
+    <h1>The mark, the wordmark,<br>and the sixteen pixels<br>that decide both.</h1>
+    <p class="lead" style="margin-top:22px;">
+      Six candidate marks, tested where they will actually be seen: a 16&nbsp;pixel
+      monochrome tile in a Windows tray, next to a volume glyph and a battery.
+    </p>
+  </div>
+</header>
+
+<!-- ================================================================ brief -->
+<section>
+  <h2>The brief, restated as constraints</h2>
+  <div class="cols">
+    <div>
+      <p><strong>Text, never audio.</strong> Wispr Flow, superwhisper and Typeless all
+      draw a microphone or a waveform. That is a picture of the <em>input</em>. Typd's
+      subject is the <em>output</em> — the sentence you meant. The mark is made of
+      typographic material: rules, measures, carets, set lines. No mouth, no wave,
+      no bubble.</p>
+
+      <p><strong>Mass, not stroke.</strong> At 16&nbsp;px a 1.5&nbsp;px stroke is a grey
+      smear. Everything that survives at that size is a silhouette. So the candidates
+      are judged on the shape of their solid, not the cleverness of their line.</p>
+    </div>
+    <div>
+      <p><strong>Monochrome, both polarities.</strong> The taskbar flips with the OS
+      theme and the mark flips with it. Near-white <code>#F4F5F7</code> on dark,
+      near-black <code>#14161B</code> on light — the same ramp the overlay already
+      uses. Any mark that needs a fill <em>and</em> a background is disqualified.</p>
+
+      <p><strong>Whole pixels.</strong> The tray icon is drawn procedurally into a
+      BGRA buffer, supersampled 4× and downscaled. A mark whose edges land on
+      whole grid units at 16&nbsp;px comes out of that pipeline crisp. One whose
+      edges land on halves comes out soft. This is a design decision, not an
+      implementation detail.</p>
+    </div>
+  </div>
+
+  <div class="callout">
+    <p>Every concept below is shown at 16, 24, 32, 64 and 256&nbsp;px, white-on-dark
+    and black-on-light. <strong>The 16&nbsp;px cell is boxed.</strong> That is the
+    only column that decides anything; the others exist to confirm the mark does not
+    fall apart on the way up.</p>
+  </div>
+</section>
+
+<!-- ============================================================= concepts -->
+<section>
+  <h2>Six concepts</h2>
+
+  <!-- ------------------------------------------------------------- 01 -->
+  <div class="concept">
+    <div class="concept-head"><span class="num">01</span><h3>Elision</h3></div>
+    <p class="why">The name is <em>typed</em> with the vowel taken out — which is the
+    product's whole argument: what you meant, not what you literally said. So draw the
+    word as its own vertical rhythm. Ascender, descender, descender, <strong>nothing</strong>,
+    ascender. T&nbsp;y&nbsp;p&nbsp;·&nbsp;d. The gap is where the <em>e</em> was, and
+    the gap is the mark.</p>
+
+    <div class="plate">
+      <div class="plate-label">White on dark</div>
+      <div class="row">
+        <div class="cell judge"><svg class="mark" width="16" height="16" viewBox="0 0 16 16"><use href="#m-elision"/></svg><span class="cap">16 · judging</span></div>
+        <div class="cell"><svg class="mark" width="24" height="24" viewBox="0 0 16 16"><use href="#m-elision"/></svg><span class="cap">24</span></div>
+        <div class="cell"><svg class="mark" width="32" height="32" viewBox="0 0 16 16"><use href="#m-elision"/></svg><span class="cap">32</span></div>
+        <div class="cell"><svg class="mark" width="64" height="64" viewBox="0 0 16 16"><use href="#m-elision"/></svg><span class="cap">64</span></div>
+        <div class="cell"><svg class="mark" width="256" height="256" viewBox="0 0 16 16"><use href="#m-elision"/></svg><span class="cap">256</span></div>
+      </div>
+    </div>
+    <div class="plate light">
+      <div class="plate-label">Black on light</div>
+      <div class="row">
+        <div class="cell judge"><svg class="mark" width="16" height="16" viewBox="0 0 16 16"><use href="#m-elision"/></svg><span class="cap">16 · judging</span></div>
+        <div class="cell"><svg class="mark" width="24" height="24" viewBox="0 0 16 16"><use href="#m-elision"/></svg><span class="cap">24</span></div>
+        <div class="cell"><svg class="mark" width="32" height="32" viewBox="0 0 16 16"><use href="#m-elision"/></svg><span class="cap">32</span></div>
+        <div class="cell"><svg class="mark" width="64" height="64" viewBox="0 0 16 16"><use href="#m-elision"/></svg><span class="cap">64</span></div>
+        <div class="cell"><svg class="mark" width="256" height="256" viewBox="0 0 16 16"><use href="#m-elision"/></svg><span class="cap">256</span></div>
+      </div>
+    </div>
+
+    <dl class="verdict">
+      <dt>Holds</dt><dd>Unmistakably typographic, and the only concept that encodes the
+      name rather than a feature. Beautiful at 64 and up — it reads as a word you
+      almost recognise.</dd>
+      <dt>Fails</dt><dd class="kill">At 16&nbsp;px the four stems sit on a 3.4-unit
+      pitch, so nothing lands on a whole pixel; every stem is a soft grey column. The
+      differing heights that make it a skyline at 256&nbsp;px collapse into noise, and
+      what is left reads as a barcode. It also loses the argument to the taskbar: four
+      thin verticals is what a signal-strength meter looks like.</dd>
+      <dt>Verdict</dt><dd>The idea is right and the execution cannot be made to fit
+      sixteen pixels. Keep it for the loading state, the installer, the website hero.</dd>
+    </dl>
+  </div>
+
+  <!-- ------------------------------------------------------------- 02 -->
+  <div class="concept">
+    <div class="concept-head"><span class="num">02</span><h3>Insertion</h3></div>
+    <p class="why">Typography already has a mark for <em>what you meant goes here</em>:
+    the copyeditor's caret, set beneath the line, apex touching it. Typd's new feature
+    is exactly that gesture — select the line, say the correction, it lands in place.
+    Borrowed from the trade rather than invented, which is the honest kind of borrowing.</p>
+
+    <div class="plate">
+      <div class="plate-label">White on dark</div>
+      <div class="row">
+        <div class="cell judge"><svg class="mark" width="16" height="16" viewBox="0 0 16 16"><use href="#m-insertion"/></svg><span class="cap">16 · judging</span></div>
+        <div class="cell"><svg class="mark" width="24" height="24" viewBox="0 0 16 16"><use href="#m-insertion"/></svg><span class="cap">24</span></div>
+        <div class="cell"><svg class="mark" width="32" height="32" viewBox="0 0 16 16"><use href="#m-insertion"/></svg><span class="cap">32</span></div>
+        <div class="cell"><svg class="mark" width="64" height="64" viewBox="0 0 16 16"><use href="#m-insertion"/></svg><span class="cap">64</span></div>
+        <div class="cell"><svg class="mark" width="256" height="256" viewBox="0 0 16 16"><use href="#m-insertion"/></svg><span class="cap">256</span></div>
+      </div>
+    </div>
+    <div class="plate light">
+      <div class="plate-label">Black on light</div>
+      <div class="row">
+        <div class="cell judge"><svg class="mark" width="16" height="16" viewBox="0 0 16 16"><use href="#m-insertion"/></svg><span class="cap">16 · judging</span></div>
+        <div class="cell"><svg class="mark" width="24" height="24" viewBox="0 0 16 16"><use href="#m-insertion"/></svg><span class="cap">24</span></div>
+        <div class="cell"><svg class="mark" width="32" height="32" viewBox="0 0 16 16"><use href="#m-insertion"/></svg><span class="cap">32</span></div>
+        <div class="cell"><svg class="mark" width="64" height="64" viewBox="0 0 16 16"><use href="#m-insertion"/></svg><span class="cap">64</span></div>
+        <div class="cell"><svg class="mark" width="256" height="256" viewBox="0 0 16 16"><use href="#m-insertion"/></svg><span class="cap">256</span></div>
+      </div>
+    </div>
+
+    <dl class="verdict">
+      <dt>Holds</dt><dd>Survives 16&nbsp;px easily — a full-width rule and a solid wedge
+      are both mass. Strong, asymmetric silhouette. Nothing in a Windows tray is shaped
+      like it.</dd>
+      <dt>Fails</dt><dd class="kill">A wedge pointing up at a horizontal bar is what an
+      upload glyph looks like once the stem is gone, and the read gets worse the smaller
+      it is. It also stakes the whole identity on one feature — revision — rather than
+      on the product. In two years, when revision is table stakes, the mark is a
+      changelog entry.</dd>
+      <dt>Verdict</dt><dd>The best <em>icon</em> in the set and the wrong <em>mark</em>.
+      Reserve it for the revise-mode state in the overlay, where "insert here" is
+      literally what is happening.</dd>
+    </dl>
+  </div>
+
+  <!-- ------------------------------------------------------------- 03 -->
+  <div class="concept">
+    <div class="concept-head"><span class="num">03</span><h3>Slug</h3></div>
+    <p class="why">In hot metal, a <em>slug</em> is one line of type cast solid — finished,
+    single-piece, the thing you set out to make. Draw it as a solid block with the lines
+    knocked out of it, flush left and ragged right. The second line stops at three fifths
+    of the measure, and the void after it is the part you didn't have to say. It is also,
+    precisely, what selected text looks like on any operating system ever shipped.</p>
+
+    <div class="plate">
+      <div class="plate-label">White on dark</div>
+      <div class="row">
+        <div class="cell judge"><svg class="mark" width="16" height="16" viewBox="0 0 16 16"><use href="#m-slug"/></svg><span class="cap">16 · judging</span></div>
+        <div class="cell"><svg class="mark" width="24" height="24" viewBox="0 0 16 16"><use href="#m-slug"/></svg><span class="cap">24</span></div>
+        <div class="cell"><svg class="mark" width="32" height="32" viewBox="0 0 16 16"><use href="#m-slug"/></svg><span class="cap">32</span></div>
+        <div class="cell"><svg class="mark" width="64" height="64" viewBox="0 0 16 16"><use href="#m-slug"/></svg><span class="cap">64</span></div>
+        <div class="cell"><svg class="mark" width="256" height="256" viewBox="0 0 16 16"><use href="#m-slug"/></svg><span class="cap">256</span></div>
+      </div>
+    </div>
+    <div class="plate light">
+      <div class="plate-label">Black on light</div>
+      <div class="row">
+        <div class="cell judge"><svg class="mark" width="16" height="16" viewBox="0 0 16 16"><use href="#m-slug"/></svg><span class="cap">16 · judging</span></div>
+        <div class="cell"><svg class="mark" width="24" height="24" viewBox="0 0 16 16"><use href="#m-slug"/></svg><span class="cap">24</span></div>
+        <div class="cell"><svg class="mark" width="32" height="32" viewBox="0 0 16 16"><use href="#m-slug"/></svg><span class="cap">32</span></div>
+        <div class="cell"><svg class="mark" width="64" height="64" viewBox="0 0 16 16"><use href="#m-slug"/></svg><span class="cap">64</span></div>
+        <div class="cell"><svg class="mark" width="256" height="256" viewBox="0 0 16 16"><use href="#m-slug"/></svg><span class="cap">256</span></div>
+      </div>
+    </div>
+
+    <dl class="verdict">
+      <dt>Holds</dt><dd class="win">Every edge except the four corners lands on a whole
+      pixel at 16&nbsp;px. It is not an antialiased approximation of a shape — it is a
+      hand-set bitmap that happens to also be a vector. Mass-first, so the silhouette is
+      the loudest thing in a tray of hairline system glyphs, and it inverts natively:
+      knocking out the lines <em>is</em> the inversion.</dd>
+      <dt>Fails</dt><dd>The nearest collision is the closed-caption glyph — a rounded box
+      with dashes in it. Defused by three decisions: the fill is solid rather than
+      outlined, the corner radius is 1.5 units (a cast edge, not a friendly one), and the
+      lines are flush left with a ragged right rather than centred. Flush-left/ragged-right
+      is the signature of prose; centred short dashes is the signature of subtitles.</dd>
+      <dt>Verdict</dt><dd class="win">Recommended. Full spec below.</dd>
+    </dl>
+  </div>
+
+  <!-- ------------------------------------------------------------- 04 -->
+  <div class="concept">
+    <div class="concept-head"><span class="num">04</span><h3>Return</h3></div>
+    <p class="why">Every competitor is write-only: the text goes out and that is the end
+    of it. Typd comes back. One line runs out to the measure, turns, and returns part of
+    the way — stopping where the selection stops. A closed loop drawn as two lines of
+    type sharing a turn.</p>
+
+    <div class="plate">
+      <div class="plate-label">White on dark</div>
+      <div class="row">
+        <div class="cell judge"><svg class="mark" width="16" height="16" viewBox="0 0 16 16"><use href="#m-return"/></svg><span class="cap">16 · judging</span></div>
+        <div class="cell"><svg class="mark" width="24" height="24" viewBox="0 0 16 16"><use href="#m-return"/></svg><span class="cap">24</span></div>
+        <div class="cell"><svg class="mark" width="32" height="32" viewBox="0 0 16 16"><use href="#m-return"/></svg><span class="cap">32</span></div>
+        <div class="cell"><svg class="mark" width="64" height="64" viewBox="0 0 16 16"><use href="#m-return"/></svg><span class="cap">64</span></div>
+        <div class="cell"><svg class="mark" width="256" height="256" viewBox="0 0 16 16"><use href="#m-return"/></svg><span class="cap">256</span></div>
+      </div>
+    </div>
+    <div class="plate light">
+      <div class="plate-label">Black on light</div>
+      <div class="row">
+        <div class="cell judge"><svg class="mark" width="16" height="16" viewBox="0 0 16 16"><use href="#m-return"/></svg><span class="cap">16 · judging</span></div>
+        <div class="cell"><svg class="mark" width="24" height="24" viewBox="0 0 16 16"><use href="#m-return"/></svg><span class="cap">24</span></div>
+        <div class="cell"><svg class="mark" width="32" height="32" viewBox="0 0 16 16"><use href="#m-return"/></svg><span class="cap">32</span></div>
+        <div class="cell"><svg class="mark" width="64" height="64" viewBox="0 0 16 16"><use href="#m-return"/></svg><span class="cap">64</span></div>
+        <div class="cell"><svg class="mark" width="256" height="256" viewBox="0 0 16 16"><use href="#m-return"/></svg><span class="cap">256</span></div>
+      </div>
+    </div>
+
+    <dl class="verdict">
+      <dt>Holds</dt><dd>The most ownable shape in the set. Nobody in the category has a
+      hairpin, and the asymmetry — long out, short back — carries real meaning at large
+      sizes. Genuinely handsome at 256&nbsp;px.</dd>
+      <dt>Fails</dt><dd class="kill">It is a stroke, and strokes die at 16. A 2.4-unit
+      stroke is 2.4 real pixels; the semicircular turn spreads that over a curve and the
+      whole right side goes to 50% grey. Next to a battery outline it stops looking like
+      a mark and starts looking like a system affordance. It is also one flip away from
+      the universal "repeat" glyph.</dd>
+      <dt>Verdict</dt><dd>Cut. Worth keeping as the motion the pill makes when it enters
+      revise mode.</dd>
+    </dl>
+  </div>
+
+  <!-- ------------------------------------------------------------- 05 -->
+  <div class="concept">
+    <div class="concept-head"><span class="num">05</span><h3>Overwrite</h3></div>
+    <p class="why">Revision is two texts trying to occupy the same place. Draw both as
+    solid bars and let the overlap cancel — where the new text lands, the old one is
+    simply gone. A constructivist device: the meaning is in the subtraction, not in a
+    symbol standing for it.</p>
+
+    <div class="plate">
+      <div class="plate-label">White on dark</div>
+      <div class="row">
+        <div class="cell judge"><svg class="mark" width="16" height="16" viewBox="0 0 16 16"><use href="#m-overwrite"/></svg><span class="cap">16 · judging</span></div>
+        <div class="cell"><svg class="mark" width="24" height="24" viewBox="0 0 16 16"><use href="#m-overwrite"/></svg><span class="cap">24</span></div>
+        <div class="cell"><svg class="mark" width="32" height="32" viewBox="0 0 16 16"><use href="#m-overwrite"/></svg><span class="cap">32</span></div>
+        <div class="cell"><svg class="mark" width="64" height="64" viewBox="0 0 16 16"><use href="#m-overwrite"/></svg><span class="cap">64</span></div>
+        <div class="cell"><svg class="mark" width="256" height="256" viewBox="0 0 16 16"><use href="#m-overwrite"/></svg><span class="cap">256</span></div>
+      </div>
+    </div>
+    <div class="plate light">
+      <div class="plate-label">Black on light</div>
+      <div class="row">
+        <div class="cell judge"><svg class="mark" width="16" height="16" viewBox="0 0 16 16"><use href="#m-overwrite"/></svg><span class="cap">16 · judging</span></div>
+        <div class="cell"><svg class="mark" width="24" height="24" viewBox="0 0 16 16"><use href="#m-overwrite"/></svg><span class="cap">24</span></div>
+        <div class="cell"><svg class="mark" width="32" height="32" viewBox="0 0 16 16"><use href="#m-overwrite"/></svg><span class="cap">32</span></div>
+        <div class="cell"><svg class="mark" width="64" height="64" viewBox="0 0 16 16"><use href="#m-overwrite"/></svg><span class="cap">64</span></div>
+        <div class="cell"><svg class="mark" width="256" height="256" viewBox="0 0 16 16"><use href="#m-overwrite"/></svg><span class="cap">256</span></div>
+      </div>
+    </div>
+
+    <dl class="verdict">
+      <dt>Holds</dt><dd>Pure mass, whole-pixel edges, survives 16&nbsp;px intact. The
+      stepped silhouette is distinctive and the 4×2&nbsp;px void does read.</dd>
+      <dt>Fails</dt><dd class="kill">It reads as a chart, a spreadsheet fragment, or a
+      logo for a company that sells layers. The concept is legible only once explained,
+      which is the definition of a bad mark. It also has no typographic content at all —
+      strip the caption and nothing in it says <em>text</em>.</dd>
+      <dt>Verdict</dt><dd>Cut. Clever, cold, and about nothing.</dd>
+    </dl>
+  </div>
+
+  <!-- ------------------------------------------------------------- 06 -->
+  <div class="concept">
+    <div class="concept-head"><span class="num">06</span><h3>Beam</h3></div>
+    <p class="why">The I-beam is the one glyph in computing that means <em>text is about
+    to happen here</em>, and every rival ignored it in favour of a microphone. Take the
+    thing the OS already draws and claim it. Maximum thesis alignment: it is not an app's
+    logo, it is a piece of the operating system.</p>
+
+    <div class="plate">
+      <div class="plate-label">White on dark</div>
+      <div class="row">
+        <div class="cell judge"><svg class="mark" width="16" height="16" viewBox="0 0 16 16"><use href="#m-beam"/></svg><span class="cap">16 · judging</span></div>
+        <div class="cell"><svg class="mark" width="24" height="24" viewBox="0 0 16 16"><use href="#m-beam"/></svg><span class="cap">24</span></div>
+        <div class="cell"><svg class="mark" width="32" height="32" viewBox="0 0 16 16"><use href="#m-beam"/></svg><span class="cap">32</span></div>
+        <div class="cell"><svg class="mark" width="64" height="64" viewBox="0 0 16 16"><use href="#m-beam"/></svg><span class="cap">64</span></div>
+        <div class="cell"><svg class="mark" width="256" height="256" viewBox="0 0 16 16"><use href="#m-beam"/></svg><span class="cap">256</span></div>
+      </div>
+    </div>
+    <div class="plate light">
+      <div class="plate-label">Black on light</div>
+      <div class="row">
+        <div class="cell judge"><svg class="mark" width="16" height="16" viewBox="0 0 16 16"><use href="#m-beam"/></svg><span class="cap">16 · judging</span></div>
+        <div class="cell"><svg class="mark" width="24" height="24" viewBox="0 0 16 16"><use href="#m-beam"/></svg><span class="cap">24</span></div>
+        <div class="cell"><svg class="mark" width="32" height="32" viewBox="0 0 16 16"><use href="#m-beam"/></svg><span class="cap">32</span></div>
+        <div class="cell"><svg class="mark" width="64" height="64" viewBox="0 0 16 16"><use href="#m-beam"/></svg><span class="cap">64</span></div>
+        <div class="cell"><svg class="mark" width="256" height="256" viewBox="0 0 16 16"><use href="#m-beam"/></svg><span class="cap">256</span></div>
+      </div>
+    </div>
+
+    <dl class="verdict">
+      <dt>Holds</dt><dd>Perfectly crisp at 16&nbsp;px — whole-pixel everywhere — because
+      it is a shape Windows has been rendering at that size since 1985. Instant, unarguable
+      "text".</dd>
+      <dt>Fails</dt><dd class="kill">And that is exactly why it cannot be the mark. In a
+      tray it does not read as a logo, it reads as a stuck mouse cursor. A brand cannot be
+      a piece of chrome the user has been trained for forty years to look straight through.
+      Ownership is also zero: it is a system glyph, unprotectable and already in use by
+      every text tool ever made.</dd>
+      <dt>Verdict</dt><dd>Cut, but instructively. It proves the direction — typographic,
+      structural, monochrome — while showing that the mark has to be a <em>thing</em>,
+      not a <em>tool</em>.</dd>
+    </dl>
+  </div>
+</section>
+
+<!-- ========================================================= pixel truth -->
+<section>
+  <h2>Pixel truth · every candidate rasterised at 16 and magnified 12×</h2>
+  <p>Rendered to a 16&nbsp;×&nbsp;16 canvas, then blown up with smoothing off. This is
+  what the tray will actually hold — not a scaled drawing of it. Grey pixels are the
+  enemy: each one is an edge that missed the grid.</p>
+
+  <div class="pixels" style="margin-top:26px;">
+    <div class="pixel-item"><canvas data-zoom="m-elision"></canvas><span class="cap">01 Elision</span></div>
+    <div class="pixel-item"><canvas data-zoom="m-insertion"></canvas><span class="cap">02 Insertion</span></div>
+    <div class="pixel-item"><canvas data-zoom="m-slug"></canvas><span class="cap">03 Slug ✓</span></div>
+    <div class="pixel-item"><canvas data-zoom="m-return"></canvas><span class="cap">04 Return</span></div>
+    <div class="pixel-item"><canvas data-zoom="m-overwrite"></canvas><span class="cap">05 Overwrite</span></div>
+    <div class="pixel-item"><canvas data-zoom="m-beam"></canvas><span class="cap">06 Beam</span></div>
+  </div>
+
+  <h3 style="margin:44px 0 10px;">Counted, not eyeballed</h3>
+  <p>Every candidate rasterised to 16&nbsp;×&nbsp;16 and its 256 pixels sorted into three
+  bins: fully inked, partial, empty. <em>Partial</em> is the number that matters — each
+  one is an edge that missed the grid and will render as a grey smudge at whatever
+  brightness the taskbar happens to be.</p>
+
+  <table class="spec-table" style="margin-top:18px;">
+    <tr>
+      <th style="width:auto">Mark</th>
+      <th style="width:90px">Solid</th>
+      <th style="width:90px">Partial</th>
+      <th style="width:150px">Partial, as % of ink</th>
+      <th style="width:auto">Where the partials are</th>
+    </tr>
+    <tr><td>01 Elision</td><td><span class="mono">70</span></td><td><span class="mono">60</span></td><td><span class="mono">46%</span></td><td>Both vertical edges of all four stems. The mark is half smudge.</td></tr>
+    <tr><td>02 Insertion</td><td><span class="mono">79</span></td><td><span class="mono">22</span></td><td><span class="mono">22%</span></td><td>The wedge's two diagonals. Unavoidable — a diagonal cannot land on the grid.</td></tr>
+    <tr><td style="color:var(--ink)">03 Slug</td><td><span class="mono">135</span></td><td><span class="mono">7</span></td><td><span class="mono" style="color:var(--ink)">5%</span></td><td style="color:var(--ink)">All seven are corner radius — four corner pixels plus three neighbours at 87% alpha. <strong>Not one straight edge is partial.</strong></td></tr>
+    <tr><td>04 Return</td><td><span class="mono">49</span></td><td><span class="mono">49</span></td><td><span class="mono">50%</span></td><td>The semicircular turn, and both flanks of a 2.4&nbsp;px stroke. Exactly half the mark is grey.</td></tr>
+    <tr><td>05 Overwrite</td><td><span class="mono">124</span></td><td><span class="mono">0</span></td><td><span class="mono">0%</span></td><td>None. Perfectly crisp — and about nothing.</td></tr>
+    <tr><td>06 Beam</td><td><span class="mono">64</span></td><td><span class="mono">0</span></td><td><span class="mono">0%</span></td><td>None. It is a system glyph; of course it fits the grid.</td></tr>
+  </table>
+
+  <p style="margin-top:20px;"><strong>Read this honestly.</strong> The Slug is not the
+  only mark that survives the grid — Overwrite and Beam are cleaner still, at zero
+  partials. But both are crisp <em>because</em> they are trivial: an orthogonal step and a
+  cursor. The Slug is the only candidate that carries the argument <em>and</em> holds the
+  grid, and its seven partial pixels are not failure — they are the corner radius, put
+  there on purpose so the block reads as a cast object rather than a raw rectangle. That
+  is a spent pixel, not a lost one.</p>
+</section>
+
+<!-- ============================================================== taskbar -->
+<section>
+  <h2>The honest test · 16 px in a Windows 11 tray</h2>
+  <p>The mark sits between OneDrive and the network glyph, which is where a tray app
+  actually lands. A volume speaker is two slots to its right on purpose: if the mark
+  reads as audio, it will read as audio <em>there</em>.</p>
+
+  <div style="margin-top:30px;">
+    <div class="taskbar dark">
+      <div class="apps">
+        <div class="app"></div><div class="app"></div><div class="app"></div><div class="app"></div>
+      </div>
+      <div class="slot"><svg width="16" height="16" viewBox="0 0 16 16" style="color:#FFF"><use href="#sys-chevron"/></svg></div>
+      <div class="slot"><svg width="16" height="16" viewBox="0 0 16 16" style="color:#FFF"><use href="#sys-cloud"/></svg></div>
+      <div class="slot ours"><svg width="16" height="16" viewBox="0 0 16 16" style="color:#F4F5F7"><use href="#m-slug"/></svg></div>
+      <div class="slot"><svg width="16" height="16" viewBox="0 0 16 16" style="color:#FFF"><use href="#sys-wifi"/></svg></div>
+      <div class="slot"><svg width="16" height="16" viewBox="0 0 16 16" style="color:#FFF"><use href="#sys-volume"/></svg></div>
+      <div class="slot"><svg width="16" height="16" viewBox="0 0 16 16" style="color:#FFF"><use href="#sys-battery"/></svg></div>
+      <div class="div"></div>
+      <div class="clock">14:32<br>19/08/2026</div>
+    </div>
+    <p class="bar-note">Dark theme · taskbar #1D1D1F · mark #F4F5F7</p>
+
+    <div class="taskbar lightbar">
+      <div class="apps">
+        <div class="app"></div><div class="app"></div><div class="app"></div><div class="app"></div>
+      </div>
+      <div class="slot"><svg width="16" height="16" viewBox="0 0 16 16" style="color:#171717"><use href="#sys-chevron"/></svg></div>
+      <div class="slot"><svg width="16" height="16" viewBox="0 0 16 16" style="color:#171717"><use href="#sys-cloud"/></svg></div>
+      <div class="slot ours"><svg width="16" height="16" viewBox="0 0 16 16" style="color:#14161B"><use href="#m-slug"/></svg></div>
+      <div class="slot"><svg width="16" height="16" viewBox="0 0 16 16" style="color:#171717"><use href="#sys-wifi"/></svg></div>
+      <div class="slot"><svg width="16" height="16" viewBox="0 0 16 16" style="color:#171717"><use href="#sys-volume"/></svg></div>
+      <div class="slot"><svg width="16" height="16" viewBox="0 0 16 16" style="color:#171717"><use href="#sys-battery"/></svg></div>
+      <div class="div"></div>
+      <div class="clock">14:32<br>19/08/2026</div>
+    </div>
+    <p class="bar-note">Light theme · taskbar #F3F3F3 · mark #14161B</p>
+  </div>
+
+  <p style="margin-top:8px;"><strong>What the test shows.</strong> Every system glyph
+  beside it is a 1.2–1.4&nbsp;px outline. The Slug is the only solid in the strip, so it
+  is found instantly without being loud — it takes up the same 16&nbsp;×&nbsp;16 tile as
+  everything else, it just uses it. Nothing about a filled rectangle with two lines out
+  of it suggests sound; the eye files it with the document glyphs, which is correct.</p>
+
+  <p>The runners-up in the same strip, for comparison — note how the Return dissolves and
+  the Beam disappears into the cursor:</p>
+
+  <div style="margin-top:22px;">
+    <div class="taskbar dark">
+      <div class="apps"><div class="app"></div><div class="app"></div><div class="app"></div></div>
+      <div class="slot"><svg width="16" height="16" viewBox="0 0 16 16" style="color:#FFF"><use href="#sys-chevron"/></svg></div>
+      <div class="slot"><svg width="16" height="16" viewBox="0 0 16 16" style="color:#F4F5F7"><use href="#m-elision"/></svg></div>
+      <div class="slot"><svg width="16" height="16" viewBox="0 0 16 16" style="color:#F4F5F7"><use href="#m-insertion"/></svg></div>
+      <div class="slot"><svg width="16" height="16" viewBox="0 0 16 16" style="color:#F4F5F7"><use href="#m-return"/></svg></div>
+      <div class="slot"><svg width="16" height="16" viewBox="0 0 16 16" style="color:#F4F5F7"><use href="#m-overwrite"/></svg></div>
+      <div class="slot"><svg width="16" height="16" viewBox="0 0 16 16" style="color:#F4F5F7"><use href="#m-beam"/></svg></div>
+      <div class="slot"><svg width="16" height="16" viewBox="0 0 16 16" style="color:#FFF"><use href="#sys-volume"/></svg></div>
+      <div class="slot"><svg width="16" height="16" viewBox="0 0 16 16" style="color:#FFF"><use href="#sys-battery"/></svg></div>
+      <div class="div"></div>
+      <div class="clock">14:32<br>19/08/2026</div>
+    </div>
+    <p class="bar-note">01 · 02 · 04 · 05 · 06 in sequence, between the chevron and the volume glyph</p>
+  </div>
+</section>
+
+<!-- ============================================================ wordmarks -->
+<section>
+  <h2>Wordmark</h2>
+  <p>Strict CSP, no external font loading: the wordmark has to be set in something
+  already on the machine. That is less of a constraint than it sounds — Windows 11 ships
+  a DIN, a variable humanist sans and a good gothic. Three treatments, for the three
+  marks that reached the shortlist.</p>
+
+  <div class="callout">
+    <p>One decision applies to all three: <strong>the word is set plainly.</strong> No
+    gap opened between <span class="mono">p</span> and <span class="mono">d</span>, no
+    ghosted <span class="mono">e</span>, no underscore standing in for the missing vowel.
+    The elision is already in the name. Drawing attention to it in the wordmark is
+    explaining the joke.</p>
+  </div>
+
+  <!-- A -->
+  <h3 style="margin:44px 0 4px;">A · Bahnschrift SemiBold <span style="color:var(--faint);font-weight:400;font-size:15px;">— recommended</span></h3>
+  <p style="margin-bottom:18px;"><span class="mono" style="color:var(--muted)">"Bahnschrift", "DIN&nbsp;Alternate", "Segoe&nbsp;UI&nbsp;Variable&nbsp;Display", "Segoe&nbsp;UI", "Franklin&nbsp;Gothic&nbsp;Medium", Arial, sans-serif</span></p>
+
+  <div class="plate">
+    <div class="plate-label">Lockup · dark</div>
+    <div class="lockup" style="gap:16px;">
+      <svg class="mark" width="61" height="52" viewBox="1 2 14 12"><use href="#m-slug-tight"/></svg>
+      <span class="wm-din" style="font-size:60px;line-height:1;">Typd</span>
+    </div>
+    <div class="lockup" style="gap:9px;margin-top:34px;">
+      <svg class="mark" width="23" height="20" viewBox="1 2 14 12"><use href="#m-slug-tight"/></svg>
+      <span class="wm-din" style="font-size:23px;line-height:1;">Typd</span>
+    </div>
+    <div class="lockup" style="gap:6px;margin-top:26px;">
+      <svg class="mark" width="14" height="12" viewBox="1 2 14 12"><use href="#m-slug-tight"/></svg>
+      <span class="wm-din" style="font-size:14px;line-height:1;">Typd</span>
+    </div>
+  </div>
+  <div class="plate light">
+    <div class="plate-label">Lockup · light</div>
+    <div class="lockup" style="gap:16px;">
+      <svg class="mark" width="61" height="52" viewBox="1 2 14 12"><use href="#m-slug-tight"/></svg>
+      <span class="wm-din" style="font-size:60px;line-height:1;">Typd</span>
+    </div>
+    <div class="lockup" style="gap:9px;margin-top:34px;">
+      <svg class="mark" width="23" height="20" viewBox="1 2 14 12"><use href="#m-slug-tight"/></svg>
+      <span class="wm-din" style="font-size:23px;line-height:1;">Typd</span>
+    </div>
+  </div>
+
+  <p><strong>Why.</strong> Bahnschrift is Microsoft's variable DIN — metrically compatible
+  with DIN&nbsp;1451, the German engineering-drawing standard that Braun and Teenage
+  Engineering both live inside. It is a face made for <em>labelling machines</em>, which
+  is exactly what a wordmark next to a tray icon is doing. It ships with every Windows 10
+  build from 1709 and every Windows 11, and it is variable, so weight and width are
+  continuous rather than four cut files.</p>
+  <p>The name happens to set beautifully in it. <span class="mono">T&nbsp;y&nbsp;p&nbsp;d</span>
+  is cap · descender · descender · ascender: two verticals bracketing two descenders, a
+  symmetry Bahnschrift's flat, unmodulated terminals make plain. The straight diagonal on
+  the <span class="mono">y</span> and the perfectly vertical stem on the
+  <span class="mono">d</span> stop it going soft. Set at SemiBold with
+  <span class="mono">+1.2%</span> tracking so the four letters read as four assembled
+  parts rather than a fused word.</p>
+
+  <!-- B -->
+  <h3 style="margin:48px 0 4px;">B · Segoe UI Variable Display Semibold</h3>
+  <p style="margin-bottom:18px;"><span class="mono" style="color:var(--muted)">"Segoe&nbsp;UI&nbsp;Variable&nbsp;Display", "Segoe&nbsp;UI", system-ui, sans-serif</span></p>
+
+  <div class="plate">
+    <div class="plate-label">Lockup · dark</div>
+    <div class="lockup" style="gap:16px;">
+      <svg class="mark" width="61" height="52" viewBox="1 2 14 12"><use href="#m-slug-tight"/></svg>
+      <span class="wm-segoe" style="font-size:60px;line-height:1;">Typd</span>
+    </div>
+    <div class="lockup" style="gap:9px;margin-top:34px;">
+      <svg class="mark" width="23" height="20" viewBox="1 2 14 12"><use href="#m-slug-tight"/></svg>
+      <span class="wm-segoe" style="font-size:23px;line-height:1;">Typd</span>
+    </div>
+  </div>
+  <div class="plate light">
+    <div class="plate-label">Lockup · light</div>
+    <div class="lockup" style="gap:16px;">
+      <svg class="mark" width="61" height="52" viewBox="1 2 14 12"><use href="#m-slug-tight"/></svg>
+      <span class="wm-segoe" style="font-size:60px;line-height:1;">Typd</span>
+    </div>
+  </div>
+
+  <p><strong>Why.</strong> The thesis says the product should feel like part of the
+  operating system. Setting the wordmark in the OS's own display face is the literal
+  reading of that, and it is already the overlay's <code>--font-ui</code>, so the identity
+  and the product surface would be one typeface with no second file to load. It is also
+  the safest possible stack.</p>
+  <p><strong>Why not.</strong> Segoe UI Variable is a <em>reading</em> face — humanist,
+  slightly flared, tuned to disappear. That is right for a pill 12&nbsp;px tall and wrong
+  for a name. At 60&nbsp;px the <span class="mono">y</span>'s curved tail and the
+  <span class="mono">p</span>'s soft shoulder make the word look like a dialog heading
+  rather than a mark. Being indistinguishable from the OS is a virtue in the overlay and a
+  problem on a landing page. Hold it as the fallback for any surface where Bahnschrift
+  cannot be guaranteed.</p>
+
+  <!-- C -->
+  <h3 style="margin:48px 0 4px;">C · Cascadia Mono SemiBold <span style="color:var(--faint);font-weight:400;font-size:15px;">— pairs with 06 Beam</span></h3>
+  <p style="margin-bottom:18px;"><span class="mono" style="color:var(--muted)">"Cascadia&nbsp;Mono", Consolas, ui-monospace, monospace</span></p>
+
+  <div class="plate">
+    <div class="plate-label">Lockup · dark</div>
+    <div class="lockup" style="gap:16px;">
+      <svg class="mark" width="52" height="52" viewBox="0 0 16 16"><use href="#m-beam"/></svg>
+      <span class="wm-mono" style="font-size:56px;line-height:1;">Typd</span>
+    </div>
+    <div class="lockup" style="gap:9px;margin-top:34px;">
+      <svg class="mark" width="20" height="20" viewBox="0 0 16 16"><use href="#m-beam"/></svg>
+      <span class="wm-mono" style="font-size:22px;line-height:1;">Typd</span>
+    </div>
+  </div>
+  <div class="plate light">
+    <div class="plate-label">Lockup · light</div>
+    <div class="lockup" style="gap:16px;">
+      <svg class="mark" width="52" height="52" viewBox="0 0 16 16"><use href="#m-beam"/></svg>
+      <span class="wm-mono" style="font-size:56px;line-height:1;">Typd</span>
+    </div>
+  </div>
+
+  <p><strong>Why.</strong> Monospace makes the elision structural: in a fixed-width face
+  every character occupies one cell, so a four-cell word that ought to be five is visibly
+  short. It is the only setting where the missing vowel is felt without being pointed at.
+  Cascadia is Microsoft's own and ships with Windows 11; Consolas is the fallback on
+  anything older.</p>
+  <p><strong>Why not.</strong> Monospace signals <em>developer tool</em>, and Typd is for
+  anyone who writes. It also chains the wordmark to the Beam, and the Beam is cut. Shown
+  because the argument is real and someone will raise it.</p>
+</section>
+
+<!-- ======================================================= recommendation -->
+<section>
+  <h2>Recommendation</h2>
+
+  <div style="display:grid;grid-template-columns:auto 1fr;gap:38px;align-items:start;margin-bottom:32px;">
+    <div>
+      <svg class="mark" width="128" height="128" viewBox="0 0 16 16"><use href="#m-slug"/></svg>
+      <div class="lockup" style="gap:6px;margin-top:20px;justify-content:center;">
+        <svg class="mark" width="14" height="12" viewBox="1 2 14 12"><use href="#m-slug-tight"/></svg>
+        <span class="wm-din" style="font-size:14px;line-height:1;">Typd</span>
+      </div>
+    </div>
+    <div>
+      <p class="lead"><strong>03 Slug</strong>, set with the wordmark in
+      <strong>Bahnschrift SemiBold</strong>.</p>
+
+      <p>It wins on the only criterion that was ever going to decide this. At
+      16&nbsp;pixels every straight edge sits on a whole-pixel boundary, so it does not
+      survive the rasteriser — it ignores it. Seven of its 142 inked pixels are partial
+      and all seven are the corner radius, spent deliberately. The same drawing is correct
+      on a 100% display and a 200% one.</p>
+
+      <p>Two other candidates rasterise cleaner. Neither means anything: Overwrite is a
+      shape in search of a story, and Beam is a mouse cursor. The Slug is the only one on
+      the sheet that holds the grid <em>and</em> holds an argument, which is the whole
+      job.</p>
+
+      <p>It is also the only candidate that is about the whole product rather than one
+      feature of it. The Insertion caret and the Return hairpin both illustrate revision,
+      which is this year's differentiator and next year's checkbox. The Slug is a
+      finished line of type with the part you didn't have to say left blank — dictation
+      and revision are the same picture, and it will still be the right picture when the
+      feature list has moved on.</p>
+
+      <p>And it does the thesis. A solid block with lines knocked out of it is what the
+      operating system draws when text is selected; the mark is borrowed from the same
+      vocabulary the overlay is written in, so it reads as a part of Windows that happens
+      to be yours rather than an app announcing itself.</p>
+    </div>
+  </div>
+
+  <h3 style="margin:44px 0 14px;">Specification</h3>
+
+  <div style="display:grid;grid-template-columns:auto 1fr;gap:44px;align-items:start;">
+    <div>
+      <div class="map" id="pixmap" aria-hidden="true"></div>
+      <p class="bar-note" style="margin-top:14px;">The 16&nbsp;px bitmap, from the
+      geometry.<br>Solid = fully inked · half-tone = corner radius.<br>
+      138 solid + 4 corner = 142 inked. A real rasteriser<br>
+      spreads those corners over 7 pixels; see the count above.</p>
+    </div>
+    <div>
+      <table class="spec-table">
+        <tr><th>Grid</th><td>16 × 16 units. One unit = one pixel at the tray size, so the
+        drawing and the bitmap are the same document. Every coordinate is a whole unit
+        except the corner radius.</td></tr>
+
+        <tr><th>Block</th><td><span class="mono">x 1 → 15, y 2 → 14</span> — 14 × 12
+        units, ratio 7:6. Corner radius <span class="mono">1.5</span>. Not square, not a
+        page: landscape, because a line of set type is wider than it is tall. The 1-unit
+        side bearing and 2-unit top/bottom bearing keep it the same optical weight as the
+        outlined system glyphs it sits beside.</td></tr>
+
+        <tr><th>Measure</th><td><span class="mono">x 4 → 12</span> — 8 units, inset 3 from
+        each block edge. That inset is the mark's only stem width and it never changes.</td></tr>
+
+        <tr><th>Line 1</th><td><span class="mono">x 4 → 12, y 5 → 7</span> — full measure,
+        2 units tall.</td></tr>
+
+        <tr><th>Line 2</th><td><span class="mono">x 4 → 9, y 9 → 11</span> — 5 of 8 units,
+        62.5% of the measure. The 3 units of solid after it are the elision. Flush left,
+        ragged right; never centred, never justified.</td></tr>
+
+        <tr><th>Leading</th><td>3 units above, 2 between, 3 below — <span class="mono">3·2·2·2·3
+        = 12</span>. The interline gap equals the line weight, which is what makes it read
+        as a dense block of set type rather than a list.</td></tr>
+
+        <tr><th>Fill rule</th><td>Even-odd. The lines are <em>knocked out</em>, never
+        painted in a second colour. This is what makes the mark invert for free: flip the
+        fill and the mark is already correct.</td></tr>
+
+        <tr><th>Colour</th><td>Near-white <span class="mono">#F4F5F7</span> on dark,
+        near-black <span class="mono">#14161B</span> on light — the overlay's existing
+        ramp. Follow <span class="mono">nativeTheme.shouldUseDarkColors</span> and redraw
+        on <span class="mono">nativeTheme 'updated'</span>. Never any third value.</td></tr>
+
+        <tr><th>Clear space</th><td>2 units on every side of the 16 × 16 tile — one eighth
+        of the tile. In a lockup that is <span class="mono">0.125 × mark&nbsp;width</span>
+        minimum, and the gap to the wordmark is 4 units (one line-plus-leading). In the
+        tray, the OS cell already provides more than this: <strong>do not add padding
+        there</strong>, or the mark shrinks below its neighbours and loses the only
+        advantage it has.</td></tr>
+
+        <tr><th>Lockup</th><td>Mark cropped to the block (<span class="mono">viewBox
+        "1 2 14 12"</span>) and set to the wordmark's cap height. Horizontal only. The
+        stacked lockup does not exist; if there is no room for the horizontal one, use the
+        mark alone.</td></tr>
+
+        <tr><th>Never</th><td>Outline it. Round the corners further. Centre the lines. Add
+        a third line. Tilt it. Put it in a container. Give it colour.</td></tr>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ========================================================= bitmap code -->
+<section>
+  <h2>Bonus · the mark as the procedural bitmap</h2>
+  <p>A drop-in replacement for <span class="mono">trayIcon()</span> in
+  <span class="mono">src/main/index.js</span>. Same shape as the existing function —
+  allocate BGRA, supersample 4×, let the downscale antialias — but the geometry is
+  declared in grid units rather than pixels, so the spec above and the code are the same
+  numbers.</p>
+  <p>Note what falls out of the whole-pixel grid: at
+  <span class="mono">size&nbsp;=&nbsp;16</span> one grid unit is exactly 4 supersampled
+  pixels, so every straight edge in the mark falls on a 4-pixel block boundary and the
+  downscale has nothing to blend except the corners. Measured against the vector: 7 of
+  256 pixels come back partial, <span class="mono">2.7%</span> of the tile, and all of
+  them are radius. The supersample earns its cost on the corners and is a no-op
+  everywhere else.</p>
+
+<pre>/**
+ * Typd's tray mark — "the slug": one line of type, cast solid, with the
+ * lines knocked out of it and the last one stopping short.
+ *
+ * Declared on a 16-unit grid. At the tray size one unit is one pixel, so
+ * every edge but the four corners lands on a whole-pixel boundary and the
+ * supersample only ever has corners to soften.
+ *
+ *   block    x 1 → 15   y  2 → 14    corner radius 1.5
+ *   line 1   x 4 → 12   y  5 →  7    full measure
+ *   line 2   x 4 →  9   y  9 → 11    62.5% of measure — the elision
+ */
+function trayIcon(size, dark = nativeTheme.shouldUseDarkColors) {
+  const scale = 4;              // supersample, then let the downscale antialias
+  const big   = size * scale;
+  const unit  = big / 16;       // one grid unit, in supersampled pixels
+  const buf   = Buffer.alloc(big * big * 4);
+
+  // The overlay's own ramp. Near-white on a dark taskbar, near-black on a
+  // light one, and never a third value.
+  const [B, G, R] = dark ? [0xF7, 0xF5, 0xF4] : [0x1B, 0x16, 0x14];
+
+  const BLOCK = { x0: 1, y0: 2, x1: 15, y1: 14, r: 1.5 };
+  const LINES = [
+    { x0: 4, y0: 5, x1: 12, y1:  7 },
+    { x0: 4, y0: 9, x1:  9, y1: 11 }
+  ];
+
+  const inRect = (x, y, k) =&gt; x &gt;= k.x0 &amp;&amp; x &lt; k.x1 &amp;&amp; y &gt;= k.y0 &amp;&amp; y &lt; k.y1;
+
+  // Rounded rectangle: clamp the point into the corner-centre rectangle and
+  // measure from there. Inside the straight edges the distance is zero, so
+  // only the four corners ever test against the radius.
+  const inBlock = (x, y) =&gt; {
+    if (!inRect(x, y, BLOCK)) return false;
+    const r  = BLOCK.r;
+    const cx = Math.min(Math.max(x, BLOCK.x0 + r), BLOCK.x1 - r);
+    const cy = Math.min(Math.max(y, BLOCK.y0 + r), BLOCK.y1 - r);
+    const dx = x - cx, dy = y - cy;
+    return dx * dx + dy * dy &lt;= r * r;
+  };
+
+  for (let py = 0; py &lt; big; py++) {
+    for (let px = 0; px &lt; big; px++) {
+      const x = (px + 0.5) / unit;                 // grid coordinates
+      const y = (py + 0.5) / unit;
+
+      if (!inBlock(x, y)) continue;                // outside the slug
+      if (LINES.some(l =&gt; inRect(x, y, l))) continue;   // knocked out
+
+      const i = (py * big + px) * 4;
+      buf[i] = B; buf[i + 1] = G; buf[i + 2] = R; buf[i + 3] = 0xff;
+    }
+  }
+
+  return nativeImage
+    .createFromBitmap(buf, { width: big, height: big })
+    .resize({ width: size, height: size, quality: 'best' });
+}
+
+// The taskbar flips; so does the mark.
+nativeTheme.on('updated', () =&gt; { if (tray) tray.setImage(trayIcon(16)); });</pre>
+</section>
+
+</div>
+
+<script>
+(function () {
+  /* ---- pixel truth: rasterise each symbol at 16 and magnify with no smoothing */
+  var ZOOM = 12;
+
+  document.querySelectorAll('canvas[data-zoom]').forEach(function (canvas) {
+    var sym = document.getElementById(canvas.dataset.zoom);
+    if (!sym) return;
+
+    var body = sym.innerHTML.replace(/currentColor/g, '#F4F5F7');
+    var svg  = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" '
+             + 'viewBox="' + (sym.getAttribute('viewBox') || '0 0 16 16') + '">'
+             + body + '</svg>';
+
+    var img = new Image();
+    img.onload = function () {
+      try {
+        var small = document.createElement('canvas');
+        small.width = 16; small.height = 16;
+        small.getContext('2d').drawImage(img, 0, 0, 16, 16);
+
+        canvas.width  = 16 * ZOOM;
+        canvas.height = 16 * ZOOM;
+        var ctx = canvas.getContext('2d');
+        ctx.imageSmoothingEnabled = false;
+        ctx.mozImageSmoothingEnabled = false;
+        ctx.drawImage(small, 0, 0, 16 * ZOOM, 16 * ZOOM);
+
+        /* pixel grid, so the eye can count */
+        ctx.strokeStyle = 'rgba(255,255,255,.07)';
+        ctx.lineWidth = 1;
+        for (var i = 1; i < 16; i++) {
+          ctx.beginPath();
+          ctx.moveTo(i * ZOOM + .5, 0); ctx.lineTo(i * ZOOM + .5, 16 * ZOOM);
+          ctx.moveTo(0, i * ZOOM + .5); ctx.lineTo(16 * ZOOM, i * ZOOM + .5);
+          ctx.stroke();
+        }
+      } catch (e) { /* leave the canvas blank rather than break the page */ }
+    };
+    img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+  });
+
+  /* ---- the winner's 16px bitmap, stated rather than measured */
+  var map = document.getElementById('pixmap');
+  if (map) {
+    var BLOCK = { x0: 1, y0: 2, x1: 15, y1: 14 };
+    var LINES = [ { x0: 4, y0: 5, x1: 12, y1: 7 }, { x0: 4, y0: 9, x1: 9, y1: 11 } ];
+    var corners = [[1,2],[14,2],[1,13],[14,13]];
+
+    var html = '';
+    for (var y = 0; y < 16; y++) {
+      for (var x = 0; x < 16; x++) {
+        var on = x >= BLOCK.x0 && x < BLOCK.x1 && y >= BLOCK.y0 && y < BLOCK.y1;
+        if (on) {
+          for (var i = 0; i < LINES.length; i++) {
+            var l = LINES[i];
+            if (x >= l.x0 && x < l.x1 && y >= l.y0 && y < l.y1) { on = false; break; }
+          }
+        }
+        var half = false;
+        for (var c = 0; c < corners.length; c++) {
+          if (corners[c][0] === x && corners[c][1] === y) { half = true; break; }
+        }
+        html += '<i class="' + (on ? (half ? 'half' : 'on') : '') + '"></i>';
+      }
+    }
+    map.innerHTML = html;
+  }
+})();
+</script>
+</html>

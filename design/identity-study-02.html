@@ -1,0 +1,1719 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Typd Identity Study 02</title>
+
+<style>
+/* Layout: study 01's dark reading column, plates for every judgement, and one
+   new rule: every raster on the page is drawn at the screen's real pixel count. */
+:root {
+  --ink:    #F4F5F7;
+  --muted:  #9DA3AC;
+  --faint:  #6C727B;
+  --edge:   rgba(255, 255, 255, 0.11);
+  --edge-2: rgba(255, 255, 255, 0.055);
+  --page:   #0A0B0D;
+  --plate-dark:  #0D0E11;
+  --plate-light: #FCFCFD;
+  --ink-light:   #14161B;
+  --muted-light: #575D66;
+  --faint-light: #8B919B;
+  --edge-light:  rgba(16, 18, 23, 0.11);
+  --kill: #E8695C;
+
+  --ui:   "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --disp: "Segoe UI Variable Display", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --mono: "Cascadia Mono", Consolas, "SF Mono", ui-monospace, monospace;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { background: var(--page); }
+body {
+  margin: 0;
+  padding: 0 32px 160px;
+  background: var(--page);
+  color: var(--ink);
+  font-family: var(--ui);
+  font-size: 15px;
+  line-height: 1.62;
+  -webkit-font-smoothing: antialiased;
+}
+@media (max-width: 640px) { body { padding: 0 16px 120px; } }
+
+.wrap { max-width: 1060px; margin: 0 auto; }
+
+h1, h2, h3 { font-family: var(--disp); font-weight: 600; margin: 0; text-wrap: balance; }
+h1 { font-size: clamp(30px, 5vw, 40px); letter-spacing: -0.022em; line-height: 1.08; }
+h2 {
+  font-size: 12px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--faint); font-family: var(--mono);
+  margin: 0 0 26px; padding-bottom: 12px; border-bottom: 1px solid var(--edge);
+}
+h3 { font-size: 19px; letter-spacing: -0.012em; }
+h4 { font-family: var(--disp); font-size: 15px; font-weight: 600; margin: 34px 0 8px; }
+
+p { margin: 0 0 14px; max-width: 68ch; color: var(--muted); }
+p.lead { color: var(--ink); font-size: 17px; line-height: 1.55; }
+p:last-child { margin-bottom: 0; }
+strong { color: var(--ink); font-weight: 600; }
+em { color: var(--ink); font-style: normal; border-bottom: 1px solid var(--edge); }
+code, .mono { font-family: var(--mono); font-size: 0.88em; }
+code { color: var(--ink); background: rgba(255,255,255,.06); padding: 1px 5px; border-radius: 3px; }
+a { color: var(--ink); text-decoration-color: var(--faint); text-underline-offset: 3px; }
+a:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; border-radius: 2px; }
+
+section { margin: 96px 0 0; }
+section:first-of-type { margin-top: 56px; }
+
+/* ------------------------------------------------------------- masthead */
+header.top {
+  padding: 72px 0 40px;
+  border-bottom: 1px solid var(--edge);
+  display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 32px; align-items: start;
+}
+header.top .glyph { padding-top: 6px; }
+@media (max-width: 640px) { header.top { grid-template-columns: minmax(0, 1fr); padding-top: 48px; } }
+.kicker {
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase;
+  color: var(--faint); margin: 0 0 14px;
+}
+.toc { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 26px; font-family: var(--mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+.toc a { color: var(--muted); text-decoration: none; }
+.toc a:hover { color: var(--ink); }
+
+/* ---------------------------------------------------------------- plates */
+.plate {
+  border: 1px solid var(--edge); border-radius: 8px;
+  padding: 30px 30px 24px; background: var(--plate-dark); margin-bottom: 14px;
+  min-width: 0;
+}
+.plate.light { background: var(--plate-light); border-color: var(--edge-light); color: var(--ink-light); }
+.plate-label {
+  font-family: var(--mono); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--faint); margin-bottom: 20px;
+}
+.plate.light .plate-label { color: var(--faint-light); }
+@media (max-width: 640px) { .plate { padding: 22px 18px 18px; } }
+
+.row { display: flex; align-items: flex-end; gap: 30px; flex-wrap: wrap; }
+.cell { display: flex; flex-direction: column; align-items: center; gap: 11px; }
+.cell canvas, .cell svg { display: block; }
+.cap {
+  font-family: var(--mono); font-size: 10px; letter-spacing: 0.1em; color: var(--faint); white-space: nowrap;
+}
+.plate.light .cap { color: var(--faint-light); }
+.cell.judge {
+  border: 1px solid var(--edge); border-radius: 5px;
+  padding: 16px 18px 11px; margin: -16px -18px -11px; background: rgba(255,255,255,.028);
+}
+.plate.light .cell.judge { border-color: var(--edge-light); background: rgba(16,18,23,.028); }
+.cell.judge .cap { color: var(--ink); }
+.plate.light .cell.judge .cap { color: var(--ink-light); }
+
+/* ---------------------------------------------------------------- concepts */
+.concept { margin-bottom: 84px; scroll-margin-top: 24px; }
+.concept-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 14px; margin-bottom: 8px; }
+.num { font-family: var(--mono); font-size: 12px; letter-spacing: 0.1em; color: var(--faint); }
+.tag { font-family: var(--mono); font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--faint); }
+.badge {
+  font-family: var(--mono); font-size: 10px; letter-spacing: .14em; text-transform: uppercase;
+  color: var(--page); background: var(--ink); border-radius: 999px; padding: 2px 9px 1px; align-self: center;
+}
+.concept .why { max-width: 74ch; margin-bottom: 22px; }
+
+.uses {
+  display: grid; grid-template-columns: auto auto minmax(0, 1fr); gap: 0 34px; align-items: end;
+  border: 1px solid var(--edge); border-radius: 8px; padding: 26px 30px 20px; margin-bottom: 14px;
+  background: linear-gradient(180deg, #121419, #0D0E11);
+}
+.uses figure { margin: 0; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.uses figcaption { font-family: var(--mono); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--faint); }
+.uses .ico-row { display: flex; align-items: flex-end; gap: 14px; }
+.uses .lockups { display: grid; gap: 10px; }
+.uses .lk { border-radius: 6px; padding: 16px 18px; display: flex; align-items: center; min-height: 72px; overflow: hidden; }
+.uses .lk.d { background: #16181D; color: var(--ink); }
+.uses .lk.l { background: var(--plate-light); color: var(--ink-light); }
+.uses .lk svg { max-width: 100%; height: auto; }
+@media (max-width: 860px) { .uses { grid-template-columns: auto minmax(0, 1fr); gap: 24px 30px; } .uses figure.lockfig { grid-column: 1 / -1; } }
+@media (max-width: 520px) { .uses { grid-template-columns: minmax(0, 1fr); padding: 22px 18px; } }
+
+.verdict {
+  display: grid; grid-template-columns: 84px minmax(0, 1fr); gap: 0 16px;
+  border-top: 1px solid var(--edge-2); padding-top: 14px; margin: 18px 0 0; font-size: 14px;
+}
+.verdict dt { font-family: var(--mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--faint); padding-top: 4px; }
+.verdict dd { margin: 0 0 8px; color: var(--muted); max-width: 70ch; }
+.verdict dd:last-of-type { margin-bottom: 0; }
+.verdict dd.kill { color: var(--kill); }
+.verdict dd.win  { color: var(--ink); }
+
+/* ------------------------------------------------------- where we are now */
+.cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 40px; }
+@media (max-width: 860px) { .cols { grid-template-columns: minmax(0, 1fr); } }
+.then { display: flex; align-items: flex-end; gap: 22px; flex-wrap: wrap; margin-bottom: 18px; }
+.then .ai svg { display: block; }
+
+.callout { border-left: 2px solid var(--edge); padding: 2px 0 2px 20px; margin: 22px 0; }
+.callout p { color: var(--ink); }
+
+/* ------------------------------------------------------------- pixel truth */
+.ptable { overflow-x: auto; }
+.pgrid { display: grid; grid-template-columns: 120px repeat(4, max-content); gap: 18px 22px; align-items: center; min-width: max-content; }
+.pgrid .hd { font-family: var(--mono); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--faint); }
+.pgrid .nm { font-family: var(--mono); font-size: 11px; letter-spacing: .06em; color: var(--muted); }
+.pgrid .nm b { color: var(--ink); font-weight: 600; display: block; }
+canvas.zoom { display: block; image-rendering: pixelated; image-rendering: crisp-edges; border: 1px solid var(--edge); border-radius: 4px; background: #08090B; }
+.pgrid .pc { display: flex; flex-direction: column; gap: 6px; }
+.pgrid .pc span { font-family: var(--mono); font-size: 10px; letter-spacing: .06em; color: var(--faint); }
+
+.spec-table { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 10px; font-variant-numeric: tabular-nums; }
+.spec-table td, .spec-table th { text-align: left; padding: 9px 16px 9px 0; border-bottom: 1px solid var(--edge-2); vertical-align: top; }
+.spec-table th { font-family: var(--mono); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--faint); font-weight: 400; white-space: nowrap; }
+.spec-table td { color: var(--muted); }
+.spec-table td .mono, .spec-table td.mono { color: var(--ink); }
+.spec-table tr.rec td { color: var(--ink); }
+.table-wrap { overflow-x: auto; }
+
+/* ------------------------------------------------------------ the taskbar */
+.taskbar {
+  display: flex; align-items: center; justify-content: flex-end; height: 48px; padding: 0 12px 0 0;
+  border-radius: 6px; overflow: hidden; user-select: none; min-width: 560px;
+}
+.taskbar.dark  { background: #1D1D1F; color: #FFFFFF; box-shadow: inset 0 1px 0 rgba(255,255,255,.07); }
+.taskbar.lightbar { background: #F3F3F3; color: #171717; box-shadow: inset 0 1px 0 rgba(0,0,0,.06); }
+.taskbar .apps { margin-right: auto; display: flex; align-items: center; gap: 4px; padding-left: 10px; }
+.taskbar .app { width: 40px; height: 40px; display: grid; place-items: center; border-radius: 5px; }
+.taskbar .app.ghost { opacity: .34; }
+.taskbar.dark .app.ghost  { background: rgba(255,255,255,.10); }
+.taskbar.lightbar .app.ghost { background: rgba(0,0,0,.10); }
+.taskbar .app.open { position: relative; background: rgba(255,255,255,.06); }
+.taskbar .app.open::after { content: ""; position: absolute; bottom: 2px; left: 50%; width: 6px; height: 3px; margin-left: -3px; border-radius: 2px; background: #9DA3AC; }
+.taskbar .slot { width: 30px; height: 34px; display: grid; place-items: center; border-radius: 4px; }
+.taskbar .slot svg, .taskbar .slot canvas { display: block; }
+.taskbar .clock { text-align: right; font-size: 12px; line-height: 1.28; padding-left: 12px; font-variant-numeric: tabular-nums; }
+.taskbar .div { width: 1px; height: 20px; margin: 0 8px; }
+.taskbar.dark .div { background: rgba(255,255,255,.14); }
+.taskbar.lightbar .div { background: rgba(0,0,0,.14); }
+.bar-note { font-family: var(--mono); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--faint); margin: 12px 0 26px; }
+.scroller { overflow-x: auto; padding-bottom: 2px; }
+
+/* ----------------------------------------------------------- the menu bar */
+.desk { border-radius: 8px; overflow: hidden; border: 1px solid var(--edge); min-width: 640px; }
+.desk.lightdesk { background: linear-gradient(160deg, #C9D3DE 0%, #E6E1D8 55%, #D7CFC4 100%); }
+.desk.darkdesk  { background: linear-gradient(160deg, #1B2330 0%, #252029 55%, #15171C 100%); }
+.menubar {
+  height: 24px; display: flex; align-items: center; gap: 16px; padding: 0 12px;
+  font: 500 13px/1 -apple-system, "SF Pro Text", var(--ui); user-select: none;
+}
+.lightdesk .menubar { background: rgba(246,246,248,.62); color: rgba(0,0,0,.86); box-shadow: 0 .5px 0 rgba(0,0,0,.12); }
+.darkdesk .menubar  { background: rgba(28,28,32,.55); color: rgba(255,255,255,.9); box-shadow: 0 .5px 0 rgba(255,255,255,.08); }
+.menubar b { font-weight: 700; }
+.menubar .sp { margin-left: auto; }
+.menubar .st { display: grid; place-items: center; height: 22px; padding: 0 4px; border-radius: 4px; }
+.menubar .st.ours { background: rgba(127,127,127,.0); }
+.menubar svg, .menubar canvas { display: block; }
+.desk .below { min-height: 86px; padding-bottom: 14px; display: flex; align-items: flex-start; justify-content: flex-end; padding: 6px 10px; }
+.popover {
+  font: 13px/1.35 -apple-system, "SF Pro Text", var(--ui); border-radius: 10px; padding: 6px; min-width: 214px;
+}
+.lightdesk .popover { background: rgba(246,246,248,.86); color: rgba(0,0,0,.86); box-shadow: 0 8px 28px rgba(0,0,0,.18), 0 0 0 .5px rgba(0,0,0,.12); }
+.darkdesk .popover  { background: rgba(40,40,46,.86); color: rgba(255,255,255,.9); box-shadow: 0 8px 28px rgba(0,0,0,.4), 0 0 0 .5px rgba(255,255,255,.12); }
+.popover div { padding: 3px 10px; border-radius: 5px; display: flex; justify-content: space-between; gap: 20px; }
+.popover div span { opacity: .5; }
+.popover hr { border: 0; height: .5px; margin: 4px 10px; }
+.lightdesk .popover hr { background: rgba(0,0,0,.12); }
+.darkdesk .popover hr { background: rgba(255,255,255,.14); }
+
+.tgrid { display: grid; grid-template-columns: 120px repeat(6, max-content); gap: 14px 16px; align-items: center; min-width: max-content; }
+.tgrid .hd { font-family: var(--mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); }
+.tgrid .nm { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.tgrid canvas.zoom { background: #ECECEE; border-color: rgba(0,0,0,.08); }
+.tgrid .rec, .pgrid .rec { color: var(--ink); }
+
+/* -------------------------------------------------------------- app icons */
+.dockdesk {
+  border-radius: 8px; border: 1px solid var(--edge); overflow: hidden; min-width: 700px;
+  background: linear-gradient(160deg, #3A4A5E 0%, #5B5466 50%, #2C2A33 100%);
+  height: 230px; position: relative;
+}
+.dock {
+  position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%);
+  display: flex; align-items: flex-end; gap: 6px; padding: 6px 8px;
+  border-radius: 20px; background: rgba(255,255,255,.18); box-shadow: inset 0 0 0 .5px rgba(255,255,255,.35), 0 10px 30px rgba(0,0,0,.25);
+  backdrop-filter: blur(20px);
+}
+.dock .di { position: relative; display: flex; flex-direction: column; align-items: center; }
+.dock .di .lab {
+  position: absolute; bottom: 84px; white-space: nowrap; font: 500 12px/1 -apple-system, var(--ui);
+  color: rgba(0,0,0,.85); background: rgba(240,240,242,.86); padding: 5px 9px; border-radius: 6px;
+}
+.dock .sep { width: 1px; align-self: stretch; margin: 6px 4px; background: rgba(255,255,255,.3); }
+.dock .ph { width: 64px; height: 64px; display: grid; place-items: center; }
+.dock .ph i { display: block; width: 52px; height: 52px; border-radius: 12px; }
+.dock-key { display: flex; flex-wrap: wrap; gap: 4px 18px; margin-top: 12px; font-family: var(--mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); }
+
+.startmenu {
+  border-radius: 8px; overflow: hidden; border: 1px solid var(--edge); min-width: 700px;
+  background: linear-gradient(160deg, #1F3346 0%, #26303F 60%, #1A1F28 100%);
+  padding: 22px 22px 0; display: flex; flex-direction: column; align-items: center;
+}
+.start {
+  width: 600px; border-radius: 8px 8px 0 0; background: rgba(32,32,36,.94); box-shadow: 0 0 0 1px rgba(255,255,255,.07);
+  padding: 22px 28px 26px; color: #FFF; font: 12px/1.3 var(--ui);
+}
+.start .search { height: 32px; border-radius: 16px; background: rgba(255,255,255,.07); box-shadow: inset 0 -1px 0 rgba(255,255,255,.18); margin-bottom: 20px; display: flex; align-items: center; padding: 0 14px; color: rgba(255,255,255,.5); }
+.start .sh { display: flex; justify-content: space-between; font-weight: 600; font-size: 13px; margin: 0 6px 12px; }
+.start .sh span { font-weight: 400; font-size: 11px; color: rgba(255,255,255,.6); background: rgba(255,255,255,.06); padding: 3px 9px; border-radius: 4px; }
+.start .pins { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; }
+.start .pin { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 12px 0 10px; border-radius: 6px; }
+.start .pin.ours { background: rgba(255,255,255,.05); }
+.start .pin .ph { width: 32px; height: 32px; border-radius: 7px; }
+.start .pin span { color: rgba(255,255,255,.88); font-size: 11.5px; }
+.startmenu .taskbar { width: calc(100% + 44px); margin: 0 -22px; border-radius: 0; justify-content: center; padding: 0; min-width: 0; }
+.startmenu .taskbar .apps { margin: 0; padding: 0; }
+
+.icogrid { display: grid; grid-template-columns: 120px repeat(6, max-content); gap: 14px 20px; align-items: end; min-width: max-content; }
+.icogrid .hd { font-family: var(--mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); align-self: center; }
+.icogrid .nm { font-family: var(--mono); font-size: 11px; color: var(--muted); align-self: center; }
+.icogrid .nm.rec { color: var(--ink); }
+
+.construct { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 40px; align-items: start; }
+@media (max-width: 860px) { .construct { grid-template-columns: minmax(0, 1fr); } }
+.construct .stage { position: relative; width: 340px; height: 340px; max-width: 100%; }
+.construct .stage svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+/* ----------------------------------------------------------------- wordmark */
+.lockrow { display: flex; flex-wrap: wrap; gap: 14px; }
+.lockrow .plate { flex: 1 1 300px; margin: 0; display: flex; align-items: center; justify-content: center; min-height: 150px; }
+.lockrow .plate svg { max-width: 100%; height: auto; display: block; }
+.lockname { font-family: var(--mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); margin: 30px 0 10px; }
+.lockname.rec { color: var(--ink); }
+
+.sitebar { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 26px; border-radius: 8px; min-width: 560px; font: 15px/1 var(--ui); }
+.sitebar.l { background: #FBFBFC; color: #14161B; }
+.sitebar.d { background: #121317; color: #ECEEF1; border: 1px solid var(--edge-2); }
+.sitebar nav { display: flex; gap: 24px; align-items: center; font-size: 14px; }
+.sitebar nav span { opacity: .62; }
+.sitebar nav b { font-weight: 600; padding: 10px 16px; border-radius: 999px; font-size: 13px; }
+.sitebar.l nav b { background: #14161B; color: #FFF; }
+.sitebar.d nav b { background: #ECEEF1; color: #14161B; }
+
+/* -------------------------------------------------------- recommendation */
+.rec-grid { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 44px; align-items: start; }
+@media (max-width: 860px) { .rec-grid { grid-template-columns: minmax(0, 1fr); } }
+.rec-side { display: flex; flex-direction: column; gap: 22px; align-items: flex-start; }
+.rec-tiles { display: flex; gap: 14px; }
+.rec-call {
+  border: 1px solid var(--ink); border-radius: 10px; padding: 26px 28px; margin-bottom: 34px;
+  display: flex; gap: 22px; align-items: center; flex-wrap: wrap;
+}
+.rec-call p { margin: 0; color: var(--ink); font-size: 17px; }
+.rec-call .badge { font-size: 11px; }
+
+pre {
+  font-family: var(--mono); font-size: 12.5px; line-height: 1.62; background: #0D0E11;
+  border: 1px solid var(--edge); border-radius: 8px; padding: 22px 24px; overflow-x: auto;
+  color: #C9CED6; margin: 18px 0 0; tab-size: 2;
+}
+.files td:first-child { white-space: nowrap; }
+</style>
+
+<!-- system glyphs the marks have to sit beside -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="sys-chevron" viewBox="0 0 16 16"><path fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" d="M3.4,9.7 L8,5.1 L12.6,9.7"/></symbol>
+    <symbol id="sys-cloud" viewBox="0 0 16 16"><path fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round" d="M4.9,12.3 h7.1 a2.35,2.35 0 0 0 .3,-4.68 A3.45,3.45 0 0 0 6.05,6.2 a2.75,2.75 0 0 0 -1.15,6.1 Z"/></symbol>
+    <symbol id="sys-wifi" viewBox="0 0 16 16">
+      <path fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" d="M1.9,6.3 a8.9,8.9 0 0 1 12.2,0"/>
+      <path fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" d="M4.35,8.95 a5.3,5.3 0 0 1 7.3,0"/>
+      <circle cx="8" cy="12.1" r="1.35" fill="currentColor"/>
+    </symbol>
+    <symbol id="sys-volume" viewBox="0 0 16 16">
+      <path fill="currentColor" d="M2.4,6.3 H4.9 L7.9,3.6 V12.4 L4.9,9.7 H2.4 Z"/>
+      <path fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" d="M10.2,6.3 a2.9,2.9 0 0 1 0,3.4"/>
+      <path fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" d="M12.3,4.6 a5.6,5.6 0 0 1 0,6.8"/>
+    </symbol>
+    <symbol id="sys-battery" viewBox="0 0 16 16">
+      <rect x="1.2" y="5.5" width="11.7" height="5" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.15"/>
+      <rect x="2.6" y="6.9" width="6.2" height="2.2" rx=".5" fill="currentColor"/>
+      <path fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" d="M14.4,7.2 V8.8"/>
+    </symbol>
+    <symbol id="mac-battery" viewBox="0 0 26 16">
+      <rect x="1" y="3.5" width="21" height="9" rx="2.6" fill="none" stroke="currentColor" stroke-opacity=".5" stroke-width="1"/>
+      <rect x="2.5" y="5" width="14" height="6" rx="1.4" fill="currentColor"/>
+      <path d="M23.4,6.3 a1.6,1.6 0 0 1 0,3.4 Z" fill="currentColor" fill-opacity=".5"/>
+    </symbol>
+    <symbol id="mac-cc" viewBox="0 0 16 16">
+      <rect x="1.5" y="3" width="13" height="4.2" rx="2.1" fill="none" stroke="currentColor" stroke-width="1.2"/>
+      <circle cx="12.4" cy="5.1" r="1.25" fill="currentColor"/>
+      <rect x="1.5" y="8.8" width="13" height="4.2" rx="2.1" fill="none" stroke="currentColor" stroke-width="1.2"/>
+      <circle cx="3.6" cy="10.9" r="1.25" fill="currentColor"/>
+    </symbol>
+    <symbol id="mac-search" viewBox="0 0 16 16">
+      <circle cx="6.8" cy="6.8" r="4.6" fill="none" stroke="currentColor" stroke-width="1.5"/>
+      <path d="M10.2,10.2 L14,14" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+    </symbol>
+  </defs>
+</svg>
+
+<div class="wrap">
+
+<!-- ============================================================ masthead -->
+<header class="top">
+  <div class="glyph"><canvas class="mk" data-id="ligature" data-css="64" data-color="#F4F5F7" aria-label="The recommended mark, Ligature"></canvas></div>
+  <div>
+    <p class="kicker">Typd · brand identity · study 02</p>
+    <h1>Surviving sixteen pixels was the entry fee. This study looks for a mark.</h1>
+    <p class="lead" style="margin-top:22px;">
+      Five new marks for Typd, set against the icon that ships today and study 01's Slug.
+      Each one is drawn as a function of its pixel size, judged in a Windows tray and a
+      macOS menu bar, made into an app icon for both platforms, and locked up with a
+      drawn wordmark. The recommendation is <a href="#recommendation">03 Ligature</a>.
+    </p>
+    <nav class="toc" aria-label="Sections">
+      <a href="#now">Where we are</a><a href="#brief">Brief</a><a href="#concepts">Concepts</a>
+      <a href="#pixels">Pixel truth</a><a href="#tray">Tray</a><a href="#menubar">Menu bar</a>
+      <a href="#appicon">App icon</a><a href="#wordmark">Wordmark</a>
+      <a href="#recommendation">Recommendation</a><a href="#files">Files</a>
+    </nav>
+  </div>
+</header>
+
+<!-- ========================================================= where we are -->
+<section id="now">
+  <h2>Where we are</h2>
+  <div class="cols">
+    <div>
+      <div class="then">
+        <div class="ai" data-kind="current" data-css="96"></div>
+        <div class="cell"><canvas class="mk" data-id="baseline" data-css="16" data-color="#F4F5F7"></canvas><span class="cap">tray · 16</span></div>
+        <div class="cell"><canvas class="mk" data-id="baseline" data-css="32" data-color="#F4F5F7"></canvas><span class="cap">32</span></div>
+      </div>
+      <h3 style="margin-bottom:10px;">The icon that ships</h3>
+      <p>The app icon, the favicon and the site header all draw the overlay pill with a red
+      dot at its right end. A pill does not fit a 16 px tray, so <code>trayIcon()</code>
+      draws a filled circle instead. It reads as a toggle switch in the on position. The
+      red dot is a recording light, which makes the mark about audio, and it spends the
+      one danger red that Law 7 keeps for errors. The tray circle is a status light: it
+      says nothing about Typd and shares nothing with the app icon.</p>
+    </div>
+    <div>
+      <div class="then">
+        <div class="ai" data-id="slug" data-kind="mac" data-css="96"></div>
+        <div class="cell"><canvas class="mk" data-id="slug" data-css="16" data-color="#F4F5F7"></canvas><span class="cap">tray · 16</span></div>
+        <div class="cell"><canvas class="mk" data-id="slug" data-css="32" data-color="#F4F5F7"></canvas><span class="cap">32</span></div>
+      </div>
+      <h3 style="margin-bottom:10px;">Study 01's Slug, never shipped</h3>
+      <p>Crisp at 16 px and on thesis, which is why it won. But a rounded rectangle with
+      two bars knocked out of it is a stock glyph: Material's <em>subtitles</em> icon and a
+      dozen <em>notes</em> icons are drawn the same way. Nothing in it comes from Typd, so
+      you could not pick it out of an icon font as ours, or draw it from memory. It passed
+      the pixel test and failed the logo test.</p>
+    </div>
+  </div>
+</section>
+
+<!-- =============================================================== brief -->
+<section id="brief">
+  <h2>The brief, restated</h2>
+  <div class="cols">
+    <div>
+      <p><strong>Kept from study 01.</strong> Text, never audio: no microphone, no
+      waveform, no bubble. Mass, not stroke, because a 1.5 px line is a grey smear at
+      16 px. Monochrome in both polarities, <code>#F4F5F7</code> on dark and
+      <code>#14161B</code> on light. Straight edges on whole pixels.</p>
+      <p><strong>New: it has to be ours.</strong> A shape that belongs to a category is
+      not a mark. Every concept here starts from something only Typd has: its name, its
+      letters, or the precise job it does to a sentence.</p>
+      <p><strong>New: no red.</strong> The red stays where the roadmap put it: errors in
+      the pill, struck-out words on the website.</p>
+    </div>
+    <div>
+      <p><strong>New: hinted at every size, not scaled from 16.</strong> Windows asks the
+      tray for 16, 20, 24 or 32 px depending on display scaling. A macOS menu-bar
+      template is 16, 18 or 22 pt at @1x and @2x, so 16 to 44 px. A 16-unit drawing
+      scaled to 24 puts every odd coordinate on a half pixel. So each mark below is a
+      short function of its pixel size: stems, gaps and margins are re-rounded for every
+      size, and the SVGs in <code>assets/brand</code> come out of the same function.</p>
+      <p><strong>Four outputs, two platforms.</strong> The Windows tray, the macOS menu
+      bar, the app icon (Windows <code>.ico</code> from 16 to 256; macOS 1024 on the Big
+      Sur grid, split into Icon Composer layers for macOS 26), and the lockup on
+      typd.mehmetdedeler.com.</p>
+    </div>
+  </div>
+  <div class="callout">
+    <p>Every raster on this page is drawn at your screen's real pixel count
+    (<span class="mono" id="dpr-note">devicePixelRatio 1</span>). On a 150 % display the
+    cell captioned 16 is a 24-pixel drawing, which is exactly the image Windows asks the
+    tray for at that setting. <strong>The 16 cell is boxed: it decides.</strong></p>
+  </div>
+</section>
+
+<!-- ============================================================ concepts -->
+<section id="concepts">
+  <h2>Five concepts, and the baseline</h2>
+
+  <!-- ------------------------------------------------------------- 00 -->
+  <div class="concept" id="c-baseline">
+    <div class="concept-head"><span class="num">00</span><h3>Pill</h3><span class="tag">Ships today · baseline</span></div>
+    <p class="why">The overlay pill with a red dot, in a dark tile; in the tray, a filled
+    circle of radius <span class="mono">size / 2 − 1</span>. Shown at the same sizes and
+    in the same settings as the new concepts, so every comparison below has a floor.</p>
+    <div class="sizes" data-id="baseline"></div>
+    <div class="uses" data-id="baseline"></div>
+    <dl class="verdict">
+      <dt>Holds</dt><dd>The pill is the right object to care about: it is the whole
+      product surface. The dark tile is calm and reads at Dock size.</dd>
+      <dt>Fails</dt><dd class="kill">A toggle switch, a recording light, and a red that
+      belongs to errors. The tray and the app icon share nothing, and the tray circle is
+      the softest drawing on the page: <span data-count="baseline:16"></span> at 16 px.</dd>
+      <dt>Verdict</dt><dd>Replace. Keep the pill in the overlay, where it is the product,
+      and keep the red for errors.</dd>
+    </dl>
+  </div>
+
+  <!-- ------------------------------------------------------------- 01 -->
+  <div class="concept" id="c-selection">
+    <div class="concept-head"><span class="num">01</span><h3>Selection</h3><span class="tag">Refinement of Slug</span></div>
+    <p class="why">The Slug's weakness was its container. Take it away and let the block
+    take the shape its text gives it. Select three lines that start mid-sentence and most
+    editors draw the same staircase: the first line from where you clicked to the margin,
+    the middle line full, the last line stopping where you let go. The mark is that
+    highlight with its text knocked out. It is the moment revise mode begins, and it keeps
+    everything the Slug got right: mass, whole pixels, and lines knocked out of the fill
+    so the mark inverts for free.</p>
+    <div class="sizes" data-id="selection"></div>
+    <div class="uses" data-id="selection"></div>
+    <dl class="verdict">
+      <dt>Holds</dt><dd>Zero partial pixels at every size from 16 to 44. The staircase is
+      the only silhouette in the study that every user has already drawn, thousands of
+      times, with a mouse.</dd>
+      <dt>Fails</dt><dd class="kill">Three lines and two steps is a lot of event for 16
+      pixels: in the tray it is a busy little stack, and as an app icon it can read as
+      stacked bricks. It also ties the identity to one feature, revision, which is the
+      trap study 01 warned about.</dd>
+      <dt>Verdict</dt><dd>The best refinement of the Slug, and the right glyph for the
+      revise state in the overlay. Not the mark.</dd>
+    </dl>
+  </div>
+
+  <!-- ------------------------------------------------------------- 02 -->
+  <div class="concept" id="c-pasttense">
+    <div class="concept-head"><span class="num">02</span><h3>Past tense</h3><span class="tag">Slug, cast as a letter</span></div>
+    <p class="why">One letter turns <em>type</em> into <em>typed</em>. The d is the part of
+    the name that says the work is already done, which is the whole promise: you speak,
+    and the text is finished. Cast that d as a slug: a solid bowl with two set lines
+    knocked out of it, the second stopping short, and the ascender rising from its right
+    side. It keeps the Slug's material and finally gives it a letter, so the shape belongs
+    to the name.</p>
+    <div class="sizes" data-id="pasttense"></div>
+    <div class="uses" data-id="pasttense"></div>
+    <dl class="verdict">
+      <dt>Holds</dt><dd>Reads as a d at every size, and as a d made of text from 64 px
+      up. Crisp: the only partial pixels are the two rounded corners on the bowl side,
+      spent so it reads as a letter and not as a box with a tab.</dd>
+      <dt>Fails</dt><dd class="kill">At 16 px the set lines are 2 px slots in a 14 px
+      letter, so the read is "a d with something in it". With the ascender at one corner
+      the silhouette sits close to a folder or a clipboard. And a lone d in the tray says
+      d, not Typd.</dd>
+      <dt>Verdict</dt><dd>A real step up from the Slug and the safest option here. It has
+      less presence than 03 or 04.</dd>
+    </dl>
+  </div>
+
+  <!-- ------------------------------------------------------------- 03 -->
+  <div class="concept" id="c-ligature">
+    <div class="concept-head"><span class="num">03</span><h3>Ligature</h3><span class="tag">Monogram cut from a drawn wordmark</span><span class="badge">Recommended</span></div>
+    <p class="why">Typd's last two letters are the same shape: a p turned over is a d.
+    Draw them as a ligature and they share one bowl, with the p's descender on the left
+    and the d's ascender on the right. That is the product's central claim drawn as a
+    letter: <em>one model, not two</em>. The usual design chains a recogniser to a
+    cleanup model; in Typd the hearing and the writing share one body. The glyph is
+    rotationally symmetric, two stems and one bowl, and its counter is a stadium: the
+    overlay pill, sitting inside the letter. The mark is cut out of the wordmark rather
+    than placed beside it, so the logo and the name are one drawing.</p>
+    <div class="sizes" data-id="ligature"></div>
+    <div class="uses" data-id="ligature"></div>
+    <dl class="verdict">
+      <dt>Holds</dt><dd class="win">Ownable: no system glyph or category icon looks like
+      it, and it comes from the name. Every outer edge is straight and lands on a whole
+      pixel at every size; the only partial pixels are the round ends of the counter
+      (<span data-count="ligature:16"></span> at 16 px). Twelve pixels wide and full
+      height, it sits in a tray like a character of type: about the footprint of the
+      outlined system glyphs, and the only solid among them.</dd>
+      <dt>Fails</dt><dd>In the wordmark, a shared bowl can read as "typ" on first sight.
+      Standalone at 16 px nobody reads "pd"; they see a glyph, which is fine for a mark.
+      The wordmark risk is real, so it gets a test before it ships
+      (<a href="#recommendation">below</a>).</dd>
+      <dt>Verdict</dt><dd class="win">Recommended.</dd>
+    </dl>
+  </div>
+
+  <!-- ------------------------------------------------------------- 04 -->
+  <div class="concept" id="c-apostrophe">
+    <div class="concept-head"><span class="num">04</span><h3>Apostrophe</h3><span class="tag">Punctuation</span></div>
+    <p class="why">Typd is <em>typed</em> with a letter taken out, and English already has
+    a mark for exactly that: the apostrophe, as in typ’d. The same glyph closes a
+    quotation, so it is also how writing marks somebody speaking. One heavy comma carries
+    both the name's construction and the product's job, speech into text, without drawing
+    a microphone. It is also the tray circle you have today, given a tail: the dot that is
+    already there becomes a mark that means something.</p>
+    <div class="sizes" data-id="apostrophe"></div>
+    <div class="uses" data-id="apostrophe"></div>
+    <dl class="verdict">
+      <dt>Holds</dt><dd>The strongest silhouette in the set. Nothing in a tray or a menu
+      bar is shaped like it, so it is found at a glance, and it is warm where the
+      rectilinear marks are cool. As an app icon it is the most confident tile on the
+      sheet.</dd>
+      <dt>Fails</dt><dd class="kill">It is all curve, so at 16 px it is mostly
+      antialiased edge (<span data-count="apostrophe:16"></span>). Small, it can read as
+      a 9 or a raindrop. The lockup typ’d will teach people to spell the name with an
+      apostrophe. And a comma is easy to admire and hard to own.</dd>
+      <dt>Verdict</dt><dd>Runner-up. If the read-aloud test sinks the Ligature's
+      wordmark, this is the one to take, with the name set as plain typd.</dd>
+    </dl>
+  </div>
+
+  <!-- ------------------------------------------------------------- 05 -->
+  <div class="concept" id="c-omission">
+    <div class="concept-head"><span class="num">05</span><h3>Omission</h3><span class="tag">Editorial mark</span></div>
+    <p class="why">When an editor quotes somebody and cuts the words that add nothing, the
+    cut is marked [...]. It is the trade's own sign for what Typd does to a dictation:
+    the ums, the false start and the "Tuesday, actually" come out, and what is left is
+    still what the speaker meant. The square brackets are themselves the editor's sign for
+    words that are the writer's, not the speaker's. No dictation tool has borrowed from
+    the conventions of quotation, which is where this product actually lives.</p>
+    <div class="sizes" data-id="omission"></div>
+    <div class="uses" data-id="omission"></div>
+    <dl class="verdict">
+      <dt>Holds</dt><dd>Zero partial pixels at every size: 2 px stems and three 2 × 2
+      dots with a pixel between them, every one of which survives at 16. The most precise
+      idea in the set.</dd>
+      <dt>Fails</dt><dd class="kill">Five separate pieces in sixteen pixels. In a tray
+      [...] reads as an overflow menu or a placeholder, and on a Mac it sits beside the
+      ellipsis that means "more". Anyone who has seen a JSON array reads it as code.</dd>
+      <dt>Verdict</dt><dd>Cut as a mark. Keep the idea as a line for the website, where a
+      sentence can explain it.</dd>
+    </dl>
+  </div>
+</section>
+
+<!-- ========================================================= pixel truth -->
+<section id="pixels">
+  <h2>Pixel truth · rasterised at each tray size and magnified</h2>
+  <p>Each mark drawn at the exact pixel count Windows asks for at 100, 125, 150 and 200 %
+  scaling, then blown up with smoothing off. Grey pixels are edges that missed the grid.
+  Counts are measured from the rasters on this page, not stated.</p>
+  <div class="ptable" style="margin-top:26px;"><div class="pgrid" id="pgrid"></div></div>
+
+  <h3 style="margin:48px 0 10px;">Counted</h3>
+  <p>Fully inked, partial, and partial as a share of the ink, at 16 px (100 %) and 24 px
+  (150 %). A partial pixel renders as a grey smudge at whatever brightness the taskbar
+  happens to be.</p>
+  <div class="table-wrap"><table class="spec-table" id="counts"></table></div>
+</section>
+
+<!-- ================================================================ tray -->
+<section id="tray">
+  <h2>Windows 11 tray · in context</h2>
+  <p>The marks between OneDrive and the network glyph, where a tray app lands, with the
+  volume speaker two slots to the right: if a mark reads as audio, it reads as audio
+  there. Drawn at this display's scale, so you are looking at the image Windows would
+  ask for.</p>
+
+  <div class="scroller" style="margin-top:28px;"><div class="taskbar dark" data-strip="ligature"></div></div>
+  <p class="bar-note">03 Ligature · dark theme · taskbar #1D1D1F · mark #F4F5F7</p>
+  <div class="scroller"><div class="taskbar lightbar" data-strip="ligature"></div></div>
+  <p class="bar-note">03 Ligature · light theme · taskbar #F3F3F3 · mark #14161B</p>
+
+  <p style="margin-top:8px;">Every concept in one strip, left to right: current, Slug, 01 to 05.</p>
+  <div class="scroller" style="margin-top:18px;"><div class="taskbar dark" data-strip="all"></div></div>
+  <p class="bar-note">dark</p>
+  <div class="scroller"><div class="taskbar lightbar" data-strip="all"></div></div>
+  <p class="bar-note">light</p>
+
+  <p><strong>What it shows.</strong> Every system glyph beside them is a 1.2 to 1.4 px
+  outline, so any solid is found instantly. The circle reads as a notification badge.
+  Selection and Omission are the busiest drawings in the strip. The Apostrophe and the
+  Ligature are the two that look like they were drawn on purpose; the Ligature is the
+  one that stays crisp.</p>
+</section>
+
+<!-- ============================================================ menu bar -->
+<section id="menubar">
+  <h2>macOS menu bar · template image</h2>
+  <p>A menu-bar template is alpha only: macOS paints it in the bar's label colour, dims it
+  when inactive and inverts it when the menu is open. So the mark ships as black on
+  transparent. Below, every mark at 16, 18 and 22 pt, each at @1x and @2x, magnified so
+  each pair is the same physical size: the @1x raster at 4×, the @2x at 2×.</p>
+  <div class="ptable" style="margin-top:26px;"><div class="tgrid" id="tgrid"></div></div>
+  <p style="margin-top:22px;"><strong>Ship 16 pt.</strong> The menu bar is 24 pt tall and
+  the system's own status glyphs are drawn well inside a 16 pt box. All five marks fill
+  their box, so an 18 or 22 pt drawing stands taller than Wi-Fi and the battery. Use
+  <code>px/mark-16.svg</code> and <code>px/mark-32.svg</code> as
+  <code>trayTemplate.png</code> and <code>trayTemplate@2x.png</code>; 18 and 22 are here
+  because they were asked for, and they are hinted and exported too.</p>
+
+  <div class="scroller" style="margin-top:28px;">
+    <div class="desk lightdesk" data-menubar="light"></div>
+  </div>
+  <p class="bar-note">03 Ligature at 16 pt in a light menu bar, with its menu open</p>
+  <div class="scroller">
+    <div class="desk darkdesk" data-menubar="dark"></div>
+  </div>
+  <p class="bar-note">dark menu bar · all five, then the system items</p>
+</section>
+
+<!-- ============================================================ app icon -->
+<section id="appicon">
+  <h2>App icon · macOS and Windows</h2>
+  <p>One graphite tile for every concept, so the comparison is between marks: a gradient
+  from <code>#2B2E35</code> to <code>#121317</code>, a hairline of light on the top edge,
+  and the mark in near-white. On macOS Typd is an <code>LSUIElement</code> app, so it
+  never sits in the Dock while running; the icon is seen in Launchpad, Finder, the
+  installer and the microphone permission prompt. The Dock is shown because it is the
+  harshest line-up.</p>
+
+  <div class="scroller" style="margin-top:28px;"><div class="dockdesk" id="dock"></div></div>
+  <div class="dock-key" id="dock-key"></div>
+
+  <h3 style="margin:56px 0 10px;">Construction · 03 Ligature on Apple's grid</h3>
+  <div class="construct">
+    <div class="stage" id="construct"></div>
+    <div>
+      <table class="spec-table">
+        <tr><th>Canvas</th><td>1024 × 1024. Export 16 to 1024 for the <code>.icns</code>,
+        or import the two groups into Icon Composer.</td></tr>
+        <tr><th>Tile</th><td>824 × 824 at 100, Apple's continuous-corner squircle, corner
+        radius 185.4. A soft drop shadow below the tile, as the template draws it; check
+        it against Apple's current template before export.</td></tr>
+        <tr><th>Mark</th><td>The 16-unit drawing at 58 % of the tile, centred on its own
+        bounding box: <span id="cons-dims">stems of 2 units</span>.</td></tr>
+        <tr><th>Layers</th><td><code>#background</code> (tile, shadow, edge light) and
+        <code>#foreground</code> (the mark). On macOS 26 and later the system draws the
+        shape and the glass from those two layers.</td></tr>
+        <tr><th>Colourways</th><td>Graphite is the default. Paper (white tile, near-black
+        mark) is exported as <code>app-icon-paper.svg</code>.</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <h3 style="margin:56px 0 10px;">Windows · Start and the taskbar</h3>
+  <p>Pinned in Start at 32 px, and on the taskbar at 24 px while the Settings window is
+  open. The 16, 24 and 32 px frames are hand-hinted (the mark drawn at its own pixel size
+  on a full-bleed tile); 48 and up come from the 256 master.</p>
+  <div class="scroller" style="margin-top:22px;"><div class="startmenu" id="start"></div></div>
+
+  <h3 style="margin:56px 0 10px;">Every .ico frame</h3>
+  <div class="ptable" style="margin-top:18px;"><div class="icogrid" id="icogrid"></div></div>
+</section>
+
+<!-- ============================================================ wordmark -->
+<section id="wordmark">
+  <h2>Wordmark</h2>
+  <p>Drawn, not typeset. Study 01 set the name in Bahnschrift; a font that ships with
+  Windows cannot become a logo without its licence coming along, and it shares nothing
+  with the mark. So typd is drawn on the Ligature's own construction: stems of 2 units,
+  an x-height of 8, ascenders and descenders of 4, and every bowl a stadium. Every
+  counter in the word is the overlay pill. Lowercase, because the ligature only exists
+  in lowercase, and because the word reads as a thing that was written.</p>
+  <div class="plate" style="margin-top:24px;"><div class="plate-label">Construction · units</div><div id="construction" style="overflow-x:auto;"></div></div>
+
+  <div id="lockups"></div>
+
+  <h3 style="margin:56px 0 14px;">On the site header</h3>
+  <p>The lockup at 20 px tall, where the current CSS pill sits on typd.mehmetdedeler.com.</p>
+  <div class="scroller" style="margin-top:18px;"><div class="sitebar l" data-site="l"></div></div>
+  <div class="scroller" style="margin-top:12px;"><div class="sitebar d" data-site="d"></div></div>
+</section>
+
+<!-- ====================================================== recommendation -->
+<section id="recommendation">
+  <h2>Recommendation</h2>
+  <div class="rec-call">
+    <span class="badge">Recommended</span>
+    <p><strong>03 Ligature</strong>, with the drawn wordmark, on a graphite tile.</p>
+  </div>
+
+  <div class="rec-grid">
+    <div class="rec-side">
+      <canvas class="mk" data-id="ligature" data-css="128" data-color="#F4F5F7"></canvas>
+      <div class="rec-tiles">
+        <div class="ai" data-id="ligature" data-kind="mac" data-css="104"></div>
+        <div class="ai" data-id="ligature" data-kind="paper" data-css="104"></div>
+      </div>
+      <div class="wm" data-id="ligature" data-h="40" style="color:var(--ink)"></div>
+    </div>
+    <div>
+      <p class="lead">It is the only candidate that is both crisp and owned.</p>
+      <p>Selection, Past tense and Omission hold the grid as well or better, and each is a
+      shape that already belongs to something: a highlight, a d, a pair of brackets. The
+      Apostrophe is owned and memorable and cannot hold the grid. The Ligature does both.
+      Its outline is straight lines on whole pixels at every size, and its shape exists
+      only because Typd's name ends in p and d.</p>
+      <p><strong>It carries the claim the site leads with.</strong> One model that hears
+      and writes in one step is what the README measures: better dictation than a
+      recogniser plus a cleanup model, in about a third of the time. Two letters around
+      one bowl says it without a caption. The
+      counter is the pill, so the mark also holds the product surface.</p>
+      <p><strong>It makes one system.</strong> The mark is cut from the wordmark, the
+      wordmark's other bowls are the same stadium, and the app icon is the mark on a
+      graphite tile. Nothing needs a second idea, and nothing is borrowed from a font.</p>
+      <p><strong>The risk, and the test.</strong> The wordmark has to be read correctly by
+      people who have never seen it. Before it ships, show the lockup at 20 px and at
+      72 px to five people cold and ask them to read it aloud (Law 5). If more than one
+      says "typ", keep the mark and set the name as plain typd
+      (<code>wordmark-plain.svg</code>). The system loses one trick and nothing else.</p>
+    </div>
+  </div>
+
+  <h3 style="margin:56px 0 12px;">Specification</h3>
+  <table class="spec-table">
+    <tr><th>Grid</th><td>N × N at the size it will be shown: 16, 20, 24, 32 in the tray;
+    16 and 32 in the menu bar. Never scaled from another size.</td></tr>
+    <tr><th>Stem</th><td><span class="mono">max(1, round(N / 8))</span>. The bowl's top
+    and bottom are the same weight.</td></tr>
+    <tr><th>Ascender, descender</th><td><span class="mono">round(N / 4)</span> each; the
+    bowl is what is left.</td></tr>
+    <tr><th>Bowl width</th><td>Nearest whole number to <span class="mono">12N / 16</span>
+    that leaves an even margin, so the glyph is centred on whole pixels.</td></tr>
+    <tr><th>Counter</th><td>A stadium inset one stem into the bowl. Its round ends are the
+    only curves in the mark.</td></tr>
+    <tr><th>Colour</th><td>Tray: <span class="mono">#F4F5F7</span> on a dark taskbar,
+    <span class="mono">#14161B</span> on a light one, following
+    <span class="mono">nativeTheme</span>. Menu bar: black and alpha, as a template.
+    Never a third value, never red.</td></tr>
+    <tr><th>Clear space</th><td>One ascender (a quarter of the mark's height) on every
+    side. In the tray, nothing beyond the OS cell: padding there only shrinks the mark.</td></tr>
+    <tr><th>Never</th><td>Outline it, slant it, round its outer corners, open the
+    counter, separate the stems from the bowl, put it in a second container.</td></tr>
+  </table>
+
+  <h4>Per size, from the geometry</h4>
+  <div class="table-wrap"><table class="spec-table" id="ligspec"></table></div>
+
+  <h3 style="margin:56px 0 12px;">Drop-in tray code</h3>
+  <p>The same geometry as a replacement for <code>trayIcon()</code> in
+  <code>src/main/index.js</code>, not applied. Each display scale gets its own drawing,
+  and macOS gets a template image. Alternatively load the PNGs exported from
+  <code>px/</code>, named <code>tray.png</code>, <code>tray@1.25x.png</code>,
+  <code>tray@1.5x.png</code>, <code>tray@2x.png</code>; Electron picks the right one.</p>
+<pre>/**
+ * Typd's tray mark: the ligature. The p and the d of "typd" share one bowl.
+ * Drawn at the pixel size each display scale asks for (16, 20, 24, 32) rather
+ * than scaled from 16, so every straight edge lands on a whole pixel.
+ */
+function ligature(N) {
+  const w = Math.max(1, Math.round(N / 8));         // stem = bowl weight
+  const a = Math.round(N / 4);                      // ascender and descender
+  const ideal = N * 12 / 16;                        // bowl width, stems included,
+  let W = null;                                     // kept centred on whole pixels
+  for (let c = Math.floor(ideal) - 1; c &lt;= Math.ceil(ideal) + 1; c++)
+    if ((N - c) % 2 === 0 &amp;&amp; (W === null || Math.abs(c - ideal) &lt; Math.abs(W - ideal))) W = c;
+  const x0 = (N - W) / 2;
+  return { w, top: a, bot: N - a, x0, x1: x0 + W };
+}
+
+function trayBitmap(N, [R, G, B]) {
+  const ss = 4, big = N * ss, buf = Buffer.alloc(big * big * 4);
+  const { w, top, bot, x0, x1 } = ligature(N);
+
+  // the counter: a stadium inset one stem into the bowl, the overlay pill's shape
+  const c = { x0: x0 + w, x1: x1 - w, y0: top + w, y1: bot - w };
+  const r = Math.min(c.x1 - c.x0, c.y1 - c.y0) / 2;
+  const inCounter = (x, y) =&gt; {
+    if (x &lt; c.x0 || x &gt;= c.x1 || y &lt; c.y0 || y &gt;= c.y1) return false;
+    const qx = Math.min(Math.max(x, c.x0 + r), c.x1 - r);
+    const qy = Math.min(Math.max(y, c.y0 + r), c.y1 - r);
+    return (x - qx) ** 2 + (y - qy) ** 2 &lt;= r * r;
+  };
+  const inMark = (x, y) =&gt;
+    (x &gt;= x1 - w &amp;&amp; x &lt; x1 &amp;&amp; y &lt; bot) ||                 // d: ascender, right of bowl
+    (x &gt;= x0 &amp;&amp; x &lt; x0 + w &amp;&amp; y &gt;= top) ||                // p: descender, left of bowl
+    (x &gt;= x0 &amp;&amp; x &lt; x1 &amp;&amp; y &gt;= top &amp;&amp; y &lt; bot &amp;&amp; !inCounter(x, y));
+
+  for (let py = 0; py &lt; big; py++) {
+    for (let px = 0; px &lt; big; px++) {
+      if (!inMark((px + 0.5) / ss, (py + 0.5) / ss)) continue;
+      const i = (py * big + px) * 4;
+      buf[i] = B; buf[i + 1] = G; buf[i + 2] = R; buf[i + 3] = 0xff;
+    }
+  }
+  return nativeImage.createFromBitmap(buf, { width: big, height: big })
+    .resize({ width: N, height: N, quality: 'best' });
+}
+
+function trayIcon(dark = nativeTheme.shouldUseDarkColors) {
+  const img = nativeImage.createEmpty();
+  if (process.platform === 'darwin') {              // template: alpha only, macOS paints it
+    for (const s of [1, 2]) {
+      img.addRepresentation({ scaleFactor: s, width: 16 * s, height: 16 * s,
+                              buffer: trayBitmap(16 * s, [0, 0, 0]).toBitmap() });
+    }
+    img.setTemplateImage(true);
+    return img;
+  }
+  const ink = dark ? [0xF4, 0xF5, 0xF7] : [0x14, 0x16, 0x1B];
+  for (const s of [1, 1.25, 1.5, 2]) {              // 16, 20, 24, 32 px
+    const N = Math.round(16 * s);
+    img.addRepresentation({ scaleFactor: s, width: N, height: N,
+                            buffer: trayBitmap(N, ink).toBitmap() });
+  }
+  return img;
+}
+
+// The taskbar flips; so does the mark.
+nativeTheme.on('updated', () =&gt; { if (tray) tray.setImage(trayIcon()); });</pre>
+</section>
+
+<!-- =============================================================== files -->
+<section id="files">
+  <h2>Files</h2>
+  <p>Every concept has the same set in <code>Typd/assets/brand/&lt;concept&gt;/</code>,
+  generated from the geometry on this page, so whichever is chosen can be exported
+  without redrawing. Nothing in the app or the site has been changed.</p>
+  <div class="table-wrap"><table class="spec-table files">
+    <tr><th>File</th><th>What it is for</th></tr>
+    <tr><td class="mono">mark.svg</td><td>The 16 × 16 master. <span class="mono">currentColor</span>: rasterise in <span class="mono">#F4F5F7</span> and <span class="mono">#14161B</span> for the Windows tray; black for macOS.</td></tr>
+    <tr><td class="mono">px/mark-16 … 44.svg</td><td>The mark drawn at 16, 18, 20, 22, 24, 32, 36 and 44 px. Rasterise each at exactly its size: tray at 100 / 125 / 150 / 200 % is 16 / 20 / 24 / 32; the menu bar is 16 + 32 (recommended), 18 + 36 or 22 + 44.</td></tr>
+    <tr><td class="mono">app-icon.svg</td><td>macOS, 1024 canvas on the Big Sur grid, graphite. Groups <span class="mono">#background</span> and <span class="mono">#foreground</span> are the Icon Composer layers.</td></tr>
+    <tr><td class="mono">app-icon-paper.svg</td><td>The same in the paper colourway.</td></tr>
+    <tr><td class="mono">app-icon-win.svg</td><td>Windows master for the 48, 64, 128 and 256 frames of <span class="mono">typd.ico</span>.</td></tr>
+    <tr><td class="mono">px/app-icon-win-16 / 24 / 32.svg</td><td>The small <span class="mono">.ico</span> frames, hand-hinted. Rasterise at exactly their size.</td></tr>
+    <tr><td class="mono">wordmark.svg</td><td>Horizontal lockup with the drawn logotype, <span class="mono">currentColor</span>. For the site header and the og image.</td></tr>
+    <tr><td class="mono">wordmark-plain.svg</td><td>Ligature and Apostrophe only: the fallback lockup with an ordinary p and d and no apostrophe.</td></tr>
+  </table></div>
+  <p style="margin-top:20px;">Concepts: <code>selection</code>, <code>pasttense</code>,
+  <code>ligature</code>, <code>apostrophe</code>, <code>omission</code>.</p>
+</section>
+
+</div>
+
+<script>
+/*
+ * Typd identity study 02: the geometry, once.
+ *
+ * Every mark is a function of the pixel size it will be drawn at. geom(N)
+ * returns an SVG path in an N x N box with every straight edge on a whole
+ * pixel, so the 16 px tray icon, the 22 pt menu-bar template at @2x and the
+ * 1024 px app icon all come out of the same few lines. The page renders from
+ * this file; build.js writes the SVG sources from it.
+ */
+(function (root) {
+  'use strict';
+
+  var R = Math.round;
+  var max = Math.max, min = Math.min;
+  function f(n) { return +(+n).toFixed(3); }
+
+  /* nearest integer to v whose difference from N is even, so (N - v) / 2 is whole */
+  function sameParity(v, N) {
+    var best = null;
+    for (var c = Math.floor(v) - 1; c <= Math.ceil(v) + 1; c++) {
+      if ((N - c) % 2 !== 0) continue;
+      if (best === null || Math.abs(c - v) < Math.abs(best - v)) best = c;
+    }
+    return best;
+  }
+
+  function rect(x0, y0, x1, y1) {
+    return 'M' + f(x0) + ',' + f(y0) + 'H' + f(x1) + 'V' + f(y1) + 'H' + f(x0) + 'Z';
+  }
+
+  /* rounded rectangle, radii [tl, tr, br, bl], drawn clockwise */
+  function rrect(x0, y0, x1, y1, r) {
+    if (typeof r === 'number') r = [r, r, r, r];
+    var tl = r[0], tr = r[1], br = r[2], bl = r[3];
+    var d = 'M' + f(x0 + tl) + ',' + f(y0) + 'H' + f(x1 - tr);
+    if (tr) d += 'A' + f(tr) + ',' + f(tr) + ' 0 0 1 ' + f(x1) + ',' + f(y0 + tr);
+    d += 'V' + f(y1 - br);
+    if (br) d += 'A' + f(br) + ',' + f(br) + ' 0 0 1 ' + f(x1 - br) + ',' + f(y1);
+    d += 'H' + f(x0 + bl);
+    if (bl) d += 'A' + f(bl) + ',' + f(bl) + ' 0 0 1 ' + f(x0) + ',' + f(y1 - bl);
+    d += 'V' + f(y0 + tl);
+    if (tl) d += 'A' + f(tl) + ',' + f(tl) + ' 0 0 1 ' + f(x0 + tl) + ',' + f(y0);
+    return d + 'Z';
+  }
+
+  /* stadium: a rectangle whose short ends are full semicircles (the overlay pill's shape) */
+  function stadium(x0, y0, x1, y1) {
+    var r = min(x1 - x0, y1 - y0) / 2;
+    return rrect(x0, y0, x1, y1, r);
+  }
+
+  /* ---------------------------------------------------------------- the marks */
+
+  var MARKS = {};
+
+  /* 00 · the current tray glyph: a filled circle, r = size/2 - 1 (src/main/index.js) */
+  MARKS.baseline = function (N) {
+    var r = N / 2 - 1, c = N / 2;
+    return {
+      d: 'M' + f(c - r) + ',' + f(c) + 'A' + f(r) + ',' + f(r) + ' 0 1 0 ' + f(c + r) + ',' + f(c) +
+         'A' + f(r) + ',' + f(r) + ' 0 1 0 ' + f(c - r) + ',' + f(c) + 'Z',
+      rule: 'nonzero'
+    };
+  };
+
+  /* study 01's Slug, coordinates scaled and rounded, kept for comparison */
+  MARKS.slug = function (N) {
+    var s = N / 16, q = function (v) { return R(v * s); };
+    var rc = 1.5 * s;
+    return {
+      d: rrect(q(1), q(2), q(15), q(14), rc) + rect(q(4), q(5), q(12), q(7)) + rect(q(4), q(9), q(9), q(11)),
+      rule: 'evenodd'
+    };
+  };
+
+  /* 01 · SELECTION — three set lines, and the block takes the staircase a real selection makes */
+  MARKS.selection = function (N) {
+    var u = N / 16;
+    var k  = max(1, R(2 * u));          // line weight (the knocked-out text)
+    var pv = max(1, R(u));              // padding above and below each line
+    var b  = k + 2 * pv;                // one line box
+    var top = Math.floor((N - 3 * b) / 2);
+    var ph = max(1, R(2 * u));          // padding left and right of the text
+    var xl = R(u), xr = N - xl;
+    var s1 = xl + R(6 * u);             // where the selection starts on line 1
+    var e3 = xl + R(9 * u);             // where it ends on line 3
+    var y1 = top, y2 = top + b, y3 = top + 2 * b, y4 = top + 3 * b;
+    var outer = 'M' + s1 + ',' + y1 + 'H' + xr + 'V' + y3 + 'H' + e3 + 'V' + y4 + 'H' + xl + 'V' + y2 + 'H' + s1 + 'Z';
+    return {
+      d: outer +
+         rect(s1 + ph, y1 + pv, xr - ph, y1 + pv + k) +
+         rect(xl + ph, y2 + pv, xr - ph, y2 + pv + k) +
+         rect(xl + ph, y3 + pv, e3 - ph, y3 + pv + k),
+      rule: 'evenodd'
+    };
+  };
+
+  /* 02 · PAST TENSE — the d that turns "type" into "typed", cast as a slug */
+  MARKS.pasttense = function (N) {
+    var u = N / 16;
+    var xl = R(u), xr = N - xl;
+    var sw = max(2, R(3 * u));          // the ascender, heavier than the lines
+    var p  = max(1, R(2 * u));          // line weight = leading = margin
+    var yt = R(u), yb = N - R(u);
+    var bt = yb - 5 * p;                // bowl: margin, line, leading, line, margin
+    var rc = R(2 * u);
+    var outer = 'M' + (xr - sw) + ',' + yt + 'H' + xr + 'V' + yb + 'H' + (xl + rc);
+    if (rc) outer += 'A' + rc + ',' + rc + ' 0 0 1 ' + xl + ',' + (yb - rc);
+    outer += 'V' + (bt + rc);
+    if (rc) outer += 'A' + rc + ',' + rc + ' 0 0 1 ' + (xl + rc) + ',' + bt;
+    outer += 'H' + (xr - sw) + 'Z';
+    return {
+      d: outer +
+         rect(xl + p, bt + p, xr - sw - p, bt + 2 * p) +
+         rect(xl + p, bt + 3 * p, xl + p + R(4 * u), bt + 4 * p),
+      rule: 'evenodd'
+    };
+  };
+
+  /* 03 · LIGATURE — the p and the d of typd share one bowl; its counter is the pill */
+  MARKS.ligature = function (N) {
+    var w = max(1, R(N / 8));           // stem = bowl weight
+    var a = R(N / 4);                   // ascender above, descender below
+    var top = a, bot = N - a;
+    var W = sameParity(N * 12 / 16, N); // bowl width, stems included
+    var x0 = (N - W) / 2, x1 = x0 + W;
+    var outer = 'M' + (x1 - w) + ',0H' + x1 + 'V' + bot + 'H' + (x0 + w) + 'V' + N + 'H' + x0 + 'V' + top + 'H' + (x1 - w) + 'Z';
+    return { d: outer + stadium(x0 + w, top + w, x1 - w, bot - w), rule: 'evenodd' };
+  };
+
+  /* 04 · APOSTROPHE — typ'd: the mark of a missing letter, and of somebody speaking */
+  MARKS.apostrophe = function (N) {
+    var s = N / 16;
+    var r = max(2, R(5 * s));
+    var cx = R(8 * s), cy = R(6 * s);
+    var P = function (dx, dy) { return f(cx + dx * s) + ',' + f(cy + dy * s); };
+    var cj = 0.16, sj = Math.sqrt(1 - cj * cj);          // where the tail leaves the head
+    var jx = f(cx + r * cj), jy = f(cy + r * sj);
+    return {
+      d: 'M' + f(cx + r) + ',' + f(cy) +
+         'C' + f(cx + r) + ',' + f(cy + 4.8 * s) + ' ' + P(2, 8.2) + ' ' + P(-3.4, 9.4) +
+         'L' + P(-3.8, 8.2) +
+         'C' + P(-1.2, 7.2) + ' ' + P(0.2, 6.3) + ' ' + jx + ',' + jy +
+         'A' + r + ',' + r + ' 0 1 1 ' + f(cx + r) + ',' + f(cy) + 'Z',
+      rule: 'nonzero'
+    };
+  };
+
+  /* 05 · OMISSION — [...], the editor's sign for words left out of a quotation */
+  MARKS.omission = function (N) {
+    var u = N / 16;
+    var w = max(1, R(2 * u));           // bracket stem and serif length
+    var m0 = R(u);                      // margin
+    /* three dots and two gaps have to fit between the stems with clear space
+       either side; search the few integer layouts and keep the most faithful */
+    var best = null;
+    [m0, m0 - 1].forEach(function (m) {
+      if (m < 0) return;
+      var inner = N - 2 * m - 2 * w;
+      [w, w - 1].forEach(function (ds) {
+        if (ds < 1) return;
+        [R(u), R(u) - 1, R(u) + 1].forEach(function (g) {
+          if (g < 1) return;
+          var side = inner - (3 * ds + 2 * g);
+          if (Math.floor(side / 2) < g) return;
+          var score = (ds !== w ? 4 : 0) + (m !== m0 ? 2 : 0) + Math.abs(g - u) + (side % 2 ? 5 : 0);
+          if (!best || score < best.score) best = { score: score, m: m, ds: ds, g: g, side: side };
+        });
+      });
+    });
+    var m = best.m, ds = best.ds, g = best.g;
+    var x0 = m, x1 = N - m, y0 = m, y1 = N - m;
+    var left  = 'M' + x0 + ',' + y0 + 'H' + (x0 + 2 * w) + 'V' + (y0 + w) + 'H' + (x0 + w) + 'V' + (y1 - w) + 'H' + (x0 + 2 * w) + 'V' + y1 + 'H' + x0 + 'Z';
+    var right = 'M' + x1 + ',' + y0 + 'V' + y1 + 'H' + (x1 - 2 * w) + 'V' + (y1 - w) + 'H' + (x1 - w) + 'V' + (y0 + w) + 'H' + (x1 - 2 * w) + 'V' + y0 + 'Z';
+    var dx = x0 + w + Math.floor(best.side / 2);
+    var db = y1 - w - g;                // dots sit one gap above the bottom serif
+    var dots = '';
+    for (var i = 0; i < 3; i++) dots += rect(dx + i * (ds + g), db - ds, dx + i * (ds + g) + ds, db);
+    return { d: left + right + dots, rule: 'nonzero' };
+  };
+
+  /* the 16-unit design-space extents of each mark, for centring it in a tile */
+  var BOX = {
+    baseline:   [1, 1, 15, 15],
+    slug:       [1, 2, 15, 14],
+    selection:  [1, 2, 15, 14],
+    pasttense:  [1, 1, 15, 15],
+    ligature:   [2, 0, 14, 16],
+    apostrophe: [3, 1, 13, 15.4],
+    omission:   [1, 1, 15, 15]
+  };
+
+  /* how much of the app-icon tile the 16-unit box takes, judged by eye per mark */
+  var TILE_SCALE = {
+    slug: 0.60, selection: 0.60, pasttense: 0.56, ligature: 0.58, apostrophe: 0.64, omission: 0.58
+  };
+
+  /* ------------------------------------------------------------ the logotype */
+  /*
+   * typd, drawn rather than typeset, on the ligature's own construction:
+   * stem 2, x-height 8, ascender 4, descender 4, baseline at 12. Bowls are
+   * stadiums, so every counter in the word is the overlay pill.
+   */
+  var COUNTER = 'M4,6H6A2,2 0 0 1 6,10H4A2,2 0 0 1 4,6Z';
+  var COUNTER_WIDE = 'M4,6H8A2,2 0 0 1 8,10H4A2,2 0 0 1 4,6Z';
+  var GLYPH = {
+    t:   { w: 5.5, d: 'M1,1H3V4H5.5V6H3V9A1,1 0 0 0 4,10H5.5V12H4A3,3 0 0 1 1,9V6H0V4H1Z' },
+    y:   { w: 8.2, d: 'M0,4H2.3L4.1,8.879L5.9,4H8.2L3.771,16H1.471L2.952,12Z' },
+    p:   { w: 10,  d: 'M0,4H6A4,4 0 0 1 6,12H2V16H0Z' + COUNTER },
+    d:   { w: 10,  d: 'M10,12H4A4,4 0 0 1 4,4H8V0H10Z' + COUNTER },
+    pd:  { w: 12,  d: 'M10,0H12V12H2V16H0V4H10Z' + COUNTER_WIDE },
+    apo: { w: 3.6, d: '' }
+  };
+  /* sidebearings between pairs, in units */
+  var KERN = { ty: 1.25, yp: 1.35, pd: 1.2, 'p apo': 0.55, 'apo d': 0.75, ypd: 1.35 };
+
+  /* the apostrophe glyph is the mark itself, scaled to sit on the ascender line */
+  function apostropheGlyph() {
+    var m = MARKS.apostrophe(16).d;
+    return { scale: 0.42, dx: -1.25, dy: -0.45, d: m };
+  }
+
+  /* lays out a word; returns { w, parts: [{x, d, transform?}] } in units */
+  function logotype(word) {
+    var seq = word === 'typd' ? ['t', 'y', 'p', 'd']
+            : word === 'ty-pd' ? ['t', 'y', 'pd']
+            : word === "typ'd" ? ['t', 'y', 'p', 'apo', 'd'] : null;
+    var x = 0, parts = [];
+    for (var i = 0; i < seq.length; i++) {
+      var g = seq[i];
+      if (i > 0) {
+        var prev = seq[i - 1];
+        var key = prev === 'apo' || g === 'apo' ? prev + ' ' + g : prev + g;
+        if (g === 'pd') key = 'ypd';
+        x += KERN[key] !== undefined ? KERN[key] : 1.3;
+      }
+      if (g === 'apo') {
+        var a = apostropheGlyph();
+        parts.push({ x: x, apo: a });
+        x += GLYPH.apo.w;
+      } else {
+        parts.push({ x: x, d: GLYPH[g].d, glyph: g });
+        x += GLYPH[g].w;
+      }
+    }
+    return { w: x, parts: parts };
+  }
+
+  /* SVG markup for a word at unit scale, origin top-left of the 16-unit line */
+  function logotypeSVG(word, fill) {
+    var L = logotype(word), out = '';
+    L.parts.forEach(function (p) {
+      if (p.apo) {
+        var a = p.apo;
+        out += '<path fill="' + fill + '" transform="translate(' + f(p.x + a.dx) + ' ' + f(a.dy) + ') scale(' + a.scale + ')" d="' + a.d + '"/>';
+      } else {
+        out += '<path fill="' + fill + '" fill-rule="evenodd" transform="translate(' + f(p.x) + ' 0)" d="' + p.d + '"/>';
+      }
+    });
+    return { w: L.w, svg: out };
+  }
+
+  /* ---------------------------------------------------------------- lockups */
+  /*
+   * Horizontal only. The mark runs from the ascender line to the baseline
+   * (12 units) unless it is part of the word; the gap is one bowl weight + 2.
+   */
+  var LOCKUP = {
+    selection:  { word: 'typd',  mark: true },
+    pasttense:  { word: 'typd',  mark: true },
+    ligature:   { word: 'ty-pd', mark: false },
+    apostrophe: { word: "typ'd", mark: false },
+    omission:   { word: 'typd',  mark: true },
+    slug:       { word: 'typd',  mark: true }
+  };
+
+  function wordmarkSVG(id, opts) {
+    opts = opts || {};
+    var fill = opts.fill || 'currentColor';
+    var spec = LOCKUP[id];
+    /* the fallback when the drawn word is not read correctly: ordinary p and d,
+       no apostrophe, and the mark beside the word where it can stand there */
+    if (opts.plain) spec = { word: 'typd', mark: id !== 'apostrophe' };
+    var pad = opts.pad === undefined ? 2 : opts.pad;
+    var x = 0, body = '';
+    if (spec.mark) {
+      var b = BOX[id], bw = b[2] - b[0], bh = b[3] - b[1];
+      var s = 12 / bh;
+      body += '<path fill="' + fill + '" fill-rule="' + (MARKS[id](16).rule) + '" transform="translate(' +
+              f(-b[0] * s) + ' ' + f(-b[1] * s) + ') scale(' + f(s) + ')" d="' + MARKS[id](16).d + '"/>';
+      x = bw * s + 4;
+    }
+    var L = logotypeSVG(spec.word, fill);
+    body += '<g transform="translate(' + f(x) + ' 0)">' + L.svg + '</g>';
+    var W = x + L.w;
+    var vb = f(-pad) + ' ' + f(-pad) + ' ' + f(W + 2 * pad) + ' ' + f(16 + 2 * pad);
+    return {
+      w: W + 2 * pad, h: 16 + 2 * pad, viewBox: vb, body: body,
+      svg: function (height, extra) {
+        var hpx = height || 64, wpx = f(hpx * (W + 2 * pad) / (16 + 2 * pad));
+        return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + vb + '" width="' + wpx + '" height="' + hpx + '"' + (extra || '') + '>' + body + '</svg>';
+      }
+    };
+  }
+
+  /* ------------------------------------------------------------- app icons */
+
+  /* Apple's continuous-corner rounded rectangle (the squircle), as cubic Beziers */
+  var SQ = [
+    ['L', 1.52866483, 0],
+    ['C', 1.08849323, 0, 0.86840689, 0, 0.66993427, 0.06549600],
+    ['L', 0.63149399, 0.07491100],
+    ['C', 0.37282392, 0.16905899, 0.16906013, 0.37282401, 0.07491100, 0.63149399],
+    ['L', 0.06549600, 0.66993427],
+    ['C', 0, 0.86840689, 0, 1.08849323, 0, 1.52866483]
+  ];
+  function squircle(x, y, w, h, r) {
+    var corners = [
+      function (u, v) { return [x + w - u * r, y + v * r]; },       // top right
+      function (u, v) { return [x + w - v * r, y + h - u * r]; },   // bottom right
+      function (u, v) { return [x + u * r, y + h - v * r]; },       // bottom left
+      function (u, v) { return [x + v * r, y + u * r]; }            // top left
+    ];
+    var start = corners[3](0, 1.52866483);
+    var d = 'M' + f(start[0]) + ',' + f(start[1]);
+    corners.forEach(function (P) {
+      SQ.forEach(function (seg) {
+        var pts = [];
+        for (var i = 1; i < seg.length; i += 2) {
+          var p = P(seg[i], seg[i + 1]);
+          pts.push(f(p[0]) + ',' + f(p[1]));
+        }
+        d += seg[0] + pts.join(' ');
+      });
+    });
+    return d + 'Z';
+  }
+
+  var INK = { light: '#F4F5F7', dark: '#14161B' };
+
+  /* the mark placed in a tile of size T at (ox, oy), from its 16-unit design */
+  function markInTile(id, ox, oy, T, scale, fill) {
+    var k = (scale || TILE_SCALE[id]) * T / 16;
+    var b = BOX[id];
+    var cx = (b[0] + b[2]) / 2, cy = (b[1] + b[3]) / 2;
+    var tx = ox + T / 2 - cx * k, ty = oy + T / 2 - cy * k;
+    var g = MARKS[id](16);
+    return '<path fill="' + fill + '" fill-rule="' + g.rule + '" transform="translate(' + f(tx) + ' ' + f(ty) + ') scale(' + f(k) + ')" d="' + g.d + '"/>';
+  }
+
+  /*
+   * macOS: 1024 canvas, 824 squircle at 100 (Big Sur grid), corner radius 185.4,
+   * Apple's template shadow. Background and foreground are separate groups so
+   * they drop straight into Icon Composer as two layers on macOS 26 and later.
+   */
+  var TILE = {
+    graphite: { bg: ['#2B2E35', '#121317'], fg: ['#FFFFFF', '#E3E5E9'], edge: '#FFFFFF', edgeOp: 0.16 },
+    paper:    { bg: ['#FFFFFF', '#E9EBEE'], fg: ['#1E2026', '#0E0F12'], edge: '#FFFFFF', edgeOp: 0.9 }
+  };
+
+  function appIconMac(id, uid, tone) {
+    uid = uid || id;
+    var t = TILE[tone || 'graphite'];
+    var sq = squircle(100, 100, 824, 824, 185.4);
+    return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">' +
+      '<defs>' +
+        '<linearGradient id="' + uid + '-bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="' + t.bg[0] + '"/><stop offset="1" stop-color="' + t.bg[1] + '"/></linearGradient>' +
+        '<linearGradient id="' + uid + '-edge" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="' + t.edge + '" stop-opacity="' + t.edgeOp + '"/><stop offset=".35" stop-color="' + t.edge + '" stop-opacity="' + (t.edgeOp / 4) + '"/><stop offset="1" stop-color="' + t.edge + '" stop-opacity="0"/></linearGradient>' +
+        '<linearGradient id="' + uid + '-fg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="' + t.fg[0] + '"/><stop offset="1" stop-color="' + t.fg[1] + '"/></linearGradient>' +
+        '<filter id="' + uid + '-sh" x="-10%" y="-10%" width="120%" height="125%" color-interpolation-filters="sRGB"><feDropShadow dx="0" dy="10" stdDeviation="10" flood-color="#000" flood-opacity=".3"/></filter>' +
+        '<clipPath id="' + uid + '-clip"><path d="' + sq + '"/></clipPath>' +
+      '</defs>' +
+      '<g id="background"><path d="' + sq + '" fill="url(#' + uid + '-bg)" filter="url(#' + uid + '-sh)"/>' +
+        '<path d="' + sq + '" fill="none" stroke="url(#' + uid + '-edge)" stroke-width="4" clip-path="url(#' + uid + '-clip)"/></g>' +
+      '<g id="foreground">' + markInTile(id, 100, 100, 824, null, 'url(#' + uid + '-fg)') + '</g>' +
+      '</svg>';
+  }
+
+  /* Windows: 256 master for the 48-256 frames of the .ico */
+  function appIconWin(id, uid) {
+    uid = uid || id;
+    return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">' +
+      '<defs><linearGradient id="' + uid + '-wbg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2B2E35"/><stop offset="1" stop-color="#121317"/></linearGradient></defs>' +
+      '<rect x="8" y="8" width="240" height="240" rx="52" fill="url(#' + uid + '-wbg)"/>' +
+      '<rect x="9" y="9" width="238" height="238" rx="51" fill="none" stroke="#FFFFFF" stroke-opacity=".08" stroke-width="2"/>' +
+      markInTile(id, 8, 8, 240, TILE_SCALE[id] * 1.04, INK.light) +
+      '</svg>';
+  }
+
+  /* Windows: the 16/24/32 frames, hand-hinted: full-bleed tile, mark drawn at its own pixel size */
+  function appIconWinSmall(id, N) {
+    var M = sameParity(N * 0.66, N);
+    var o = (N - M) / 2;
+    var g = MARKS[id](M);
+    var r = R(N * 3 / 16);
+    return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + N + ' ' + N + '" width="' + N + '" height="' + N + '">' +
+      '<rect width="' + N + '" height="' + N + '" rx="' + r + '" fill="#1B1D22"/>' +
+      '<path fill="' + INK.light + '" fill-rule="' + g.rule + '" transform="translate(' + o + ' ' + o + ')" d="' + g.d + '"/>' +
+      '</svg>';
+  }
+
+  /* a mark alone, at its own pixel size, for the tray and the menu bar */
+  function markSVG(id, N, fill) {
+    var g = MARKS[id](N);
+    return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + N + ' ' + N + '" width="' + N + '" height="' + N + '">' +
+      '<path fill="' + (fill || 'currentColor') + '" fill-rule="' + g.rule + '" d="' + g.d + '"/></svg>';
+  }
+
+  /* the icon that ships today: assets/typd.png and typd-site/public/icon.svg */
+  var CURRENT_ICON =
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="8 8 240 240">' +
+    '<rect x="8" y="8" width="240" height="240" rx="48" fill="#18191C"/>' +
+    '<rect x="46" y="104" width="164" height="48" rx="24" fill="#F4F5F7"/>' +
+    '<circle cx="186" cy="128" r="16" fill="#E53935"/></svg>';
+
+  var api = {
+    MARKS: MARKS, BOX: BOX, TILE_SCALE: TILE_SCALE, INK: INK, GLYPH: GLYPH,
+    markSVG: markSVG, wordmarkSVG: wordmarkSVG, logotypeSVG: logotypeSVG,
+    appIconMac: appIconMac, appIconWin: appIconWin, appIconWinSmall: appIconWinSmall,
+    squircle: squircle, CURRENT_ICON: CURRENT_ICON, sameParity: sameParity
+  };
+  root.TypdBrand = api;
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+})(typeof window !== 'undefined' ? window : globalThis);
+
+</script>
+<script>
+(function () {
+  var B = window.TypdBrand;
+  var DPR = window.devicePixelRatio || 1;
+  var INK = { dark: '#F4F5F7', light: '#14161B' };
+  var NAME = {
+    baseline: 'Current', slug: 'Slug · 01', selection: '01 Selection', pasttense: '02 Past tense',
+    ligature: '03 Ligature', apostrophe: '04 Apostrophe', omission: '05 Omission'
+  };
+  var ALL = ['baseline', 'slug', 'selection', 'pasttense', 'ligature', 'apostrophe', 'omission'];
+  var NEW = ['selection', 'pasttense', 'ligature', 'apostrophe', 'omission'];
+  var uidN = 0;
+  function uid() { return 'u' + (uidN++); }
+
+  var note = document.getElementById('dpr-note');
+  if (note) note.textContent = 'devicePixelRatio ' + (+DPR.toFixed(2));
+
+  function el(tag, cls, html) { var e = document.createElement(tag); if (cls) e.className = cls; if (html !== undefined) e.innerHTML = html; return e; }
+
+  /* a mark at a CSS size, drawn at the device's real pixel count */
+  function paint(canvas, id, css, color) {
+    var N = Math.max(1, Math.round(css * DPR));
+    canvas.width = N; canvas.height = N;
+    canvas.style.width = (N / DPR) + 'px'; canvas.style.height = (N / DPR) + 'px';
+    var ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, N, N);
+    ctx.fillStyle = color;
+    var g = B.MARKS[id](N);
+    ctx.fill(new Path2D(g.d), g.rule);
+    return canvas;
+  }
+  function mk(id, css, color) { return paint(document.createElement('canvas'), id, css, color); }
+
+  /* a raster at N px, magnified z times with no smoothing and a pixel grid */
+  function zoom(id, N, z, fg, bg, grid) {
+    var small = document.createElement('canvas');
+    small.width = N; small.height = N;
+    var s = small.getContext('2d');
+    s.fillStyle = fg;
+    var g = B.MARKS[id](N);
+    s.fill(new Path2D(g.d), g.rule);
+    var c = document.createElement('canvas');
+    c.className = 'zoom';
+    c.width = N * z; c.height = N * z;
+    c.style.width = N * z + 'px'; c.style.height = N * z + 'px';
+    var ctx = c.getContext('2d');
+    ctx.fillStyle = bg; ctx.fillRect(0, 0, c.width, c.height);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(small, 0, 0, N * z, N * z);
+    if (grid) {
+      ctx.strokeStyle = grid; ctx.lineWidth = 1;
+      for (var i = 1; i < N; i++) {
+        ctx.beginPath();
+        ctx.moveTo(i * z + .5, 0); ctx.lineTo(i * z + .5, N * z);
+        ctx.moveTo(0, i * z + .5); ctx.lineTo(N * z, i * z + .5);
+        ctx.stroke();
+      }
+    }
+    return c;
+  }
+
+  /* solid and partial pixel counts, measured from a raster */
+  var countCache = {};
+  function count(id, N) {
+    var key = id + ':' + N;
+    if (countCache[key]) return countCache[key];
+    var c = document.createElement('canvas'); c.width = N; c.height = N;
+    var x = c.getContext('2d'); x.fillStyle = '#fff';
+    var g = B.MARKS[id](N); x.fill(new Path2D(g.d), g.rule);
+    var d = x.getImageData(0, 0, N, N).data, full = 0, part = 0;
+    for (var i = 0; i < N * N; i++) { var a = d[i * 4 + 3]; if (a >= 242) full++; else if (a > 13) part++; }
+    return (countCache[key] = { full: full, part: part });
+  }
+
+  /* an app icon as inline SVG at a CSS size */
+  function appIcon(id, kind, css) {
+    var wrap = el('div', 'ai');
+    var svg;
+    if (kind === 'current') svg = B.CURRENT_ICON;
+    else if (kind === 'mac') svg = B.appIconMac(id, uid());
+    else if (kind === 'paper') svg = B.appIconMac(id, uid(), 'paper');
+    else if (kind === 'win') {
+      var N = Math.round(css * DPR);
+      svg = (N === 16 || N === 24 || N === 32) ? B.appIconWinSmall(id, N) : B.appIconWin(id, uid());
+    }
+    wrap.innerHTML = svg;
+    var s = wrap.firstChild;
+    s.setAttribute('width', css); s.setAttribute('height', css);
+    s.style.display = 'block';
+    return wrap;
+  }
+  function fillAI(node) {
+    var css = +node.dataset.css, id = node.dataset.id, kind = node.dataset.kind;
+    var a = appIcon(id, kind, css);
+    node.innerHTML = a.innerHTML;
+    var s = node.firstChild; s.setAttribute('width', css); s.setAttribute('height', css); s.style.display = 'block';
+  }
+
+  /* the baseline lockup: the CSS pill the site uses today, beside the name in Segoe */
+  function currentLockup(h, dark) {
+    var ink = dark ? '#ECEEF1' : '#14161B', red = dark ? '#E8695C' : '#AF2C21';
+    var s = h / 18;
+    return '<span style="display:inline-flex;align-items:center;gap:' + (0.6 * h) + 'px;font:600 ' + h + 'px/1 var(--disp);letter-spacing:-0.005em;color:' + ink + '">' +
+      '<span style="position:relative;display:inline-block;width:' + (22 * s) + 'px;height:' + (11 * s) + 'px;border-radius:' + (6 * s) + 'px;background:' + ink + '">' +
+      '<span style="position:absolute;right:' + (2.5 * s) + 'px;top:' + (2.5 * s) + 'px;width:' + (6 * s) + 'px;height:' + (6 * s) + 'px;border-radius:50%;background:' + red + '"></span></span>Typd</span>';
+  }
+  function lockupHTML(id, h, dark) {
+    if (id === 'baseline') return currentLockup(h * 0.62, dark);
+    return B.wordmarkSVG(id).svg(h);
+  }
+
+  /* ------------------------------------------------ simple mark canvases */
+  document.querySelectorAll('canvas.mk').forEach(function (c) {
+    var color = c.dataset.color || (c.closest('.plate.light') ? INK.light : INK.dark);
+    paint(c, c.dataset.id, +c.dataset.css, color);
+  });
+  document.querySelectorAll('.ai[data-kind]').forEach(fillAI);
+  document.querySelectorAll('.wm[data-id]').forEach(function (n) { n.innerHTML = B.wordmarkSVG(n.dataset.id).svg(+n.dataset.h); });
+
+  /* ------------------------------------------------ size plates per concept */
+  document.querySelectorAll('.sizes[data-id]').forEach(function (host) {
+    var id = host.dataset.id;
+    [['dark', 'White on dark'], ['light', 'Black on light']].forEach(function (t) {
+      var plate = el('div', 'plate' + (t[0] === 'light' ? ' light' : ''));
+      plate.appendChild(el('div', 'plate-label', t[1]));
+      var row = el('div', 'row');
+      [16, 24, 32, 64, 256].forEach(function (css) {
+        var cell = el('div', 'cell' + (css === 16 ? ' judge' : ''));
+        var hint = Math.round(css * DPR);
+        cell.appendChild(mk(id, css, INK[t[0]]));
+        cell.appendChild(el('span', 'cap', css === 16 ? '16 · judging' : String(css)));
+        if (css === 16 && DPR !== 1) cell.lastChild.title = 'drawn at ' + hint + ' device pixels';
+        row.appendChild(cell);
+      });
+      plate.appendChild(row);
+      host.appendChild(plate);
+    });
+  });
+
+  /* ------------------------------------------------ app icon + lockup strip */
+  document.querySelectorAll('.uses[data-id]').forEach(function (host) {
+    var id = host.dataset.id;
+    var f1 = el('figure');
+    if (id === 'baseline') f1.appendChild(appIcon(id, 'current', 120));
+    else f1.appendChild(appIcon(id, 'mac', 120));
+    f1.appendChild(el('figcaption', '', id === 'baseline' ? 'App icon · today' : 'macOS · 1024 grid'));
+    host.appendChild(f1);
+
+    var f2 = el('figure');
+    var r = el('div', 'ico-row');
+    if (id === 'baseline') {
+      [64, 32, 24, 16].forEach(function (css) { r.appendChild(appIcon(id, 'current', css)); });
+    } else {
+      [64, 32, 24, 16].forEach(function (css) { r.appendChild(appIcon(id, 'win', css)); });
+    }
+    f2.appendChild(r);
+    f2.appendChild(el('figcaption', '', 'Windows · 64 32 24 16'));
+    host.appendChild(f2);
+
+    var f3 = el('figure', 'lockfig');
+    var L = el('div', 'lockups');
+    var d = el('div', 'lk d', lockupHTML(id, 40, true));
+    var l = el('div', 'lk l', lockupHTML(id, 40, false));
+    L.appendChild(d); L.appendChild(l);
+    f3.appendChild(L);
+    f3.appendChild(el('figcaption', '', 'Lockup'));
+    host.appendChild(f3);
+  });
+
+  /* ------------------------------------------------ inline pixel counts */
+  document.querySelectorAll('[data-count]').forEach(function (n) {
+    var p = n.dataset.count.split(':'), c = count(p[0], +p[1]);
+    n.textContent = c.part + ' of ' + (c.full + c.part) + ' inked pixels partial';
+  });
+
+  /* ------------------------------------------------ pixel truth grid */
+  var pg = document.getElementById('pgrid');
+  if (pg) {
+    pg.appendChild(el('div', 'hd', ''));
+    [['16 px', '100 %'], ['20 px', '125 %'], ['24 px', '150 %'], ['32 px', '200 %']].forEach(function (h) {
+      pg.appendChild(el('div', 'hd', h[0] + ' · ' + h[1]));
+    });
+    ALL.forEach(function (id) {
+      pg.appendChild(el('div', 'nm' + (id === 'ligature' ? ' rec' : ''), '<b>' + NAME[id] + '</b>' + (id === 'ligature' ? 'recommended' : '')));
+      [[16, 12], [20, 10], [24, 8], [32, 6]].forEach(function (nz) {
+        var pc = el('div', 'pc');
+        pc.appendChild(zoom(id, nz[0], nz[1], '#F4F5F7', '#08090B', 'rgba(255,255,255,.07)'));
+        var c = count(id, nz[0]);
+        pc.appendChild(el('span', '', c.full + ' solid · ' + c.part + ' partial'));
+        pg.appendChild(pc);
+      });
+    });
+  }
+  var ct = document.getElementById('counts');
+  if (ct) {
+    var h = '<tr><th>Mark</th><th>16 px solid</th><th>16 px partial</th><th>partial / ink</th><th>24 px solid</th><th>24 px partial</th><th>partial / ink</th></tr>';
+    ALL.forEach(function (id) {
+      var a = count(id, 16), b = count(id, 24);
+      var pa = Math.round(100 * a.part / (a.full + a.part)), pb = Math.round(100 * b.part / (b.full + b.part));
+      h += '<tr' + (id === 'ligature' ? ' class="rec"' : '') + '><td>' + NAME[id] + '</td><td class="mono">' + a.full + '</td><td class="mono">' + a.part +
+           '</td><td class="mono">' + pa + ' %</td><td class="mono">' + b.full + '</td><td class="mono">' + b.part + '</td><td class="mono">' + pb + ' %</td></tr>';
+    });
+    ct.innerHTML = h;
+  }
+
+  /* ------------------------------------------------ taskbars */
+  function sys(sym, color) {
+    return '<div class="slot"><svg width="16" height="16" viewBox="0 0 16 16" style="color:' + color + '"><use href="#' + sym + '"/></svg></div>';
+  }
+  document.querySelectorAll('.taskbar[data-strip]').forEach(function (bar) {
+    var dark = bar.classList.contains('dark');
+    var sc = dark ? '#FFFFFF' : '#171717', ink = dark ? INK.dark : INK.light;
+    var ids = bar.dataset.strip === 'all' ? ALL : [bar.dataset.strip];
+    var html = '<div class="apps"><div class="app ghost"></div><div class="app ghost"></div><div class="app ghost"></div><div class="app ghost"></div></div>';
+    html += sys('sys-chevron', sc);
+    if (ids.length === 1) html += sys('sys-cloud', sc);
+    ids.forEach(function (id) { html += '<div class="slot" data-mark="' + id + '"></div>'; });
+    html += sys('sys-wifi', sc) + sys('sys-volume', sc) + sys('sys-battery', sc);
+    html += '<div class="div"></div><div class="clock">20:14<br>09/10/2026</div>';
+    bar.innerHTML = html;
+    bar.querySelectorAll('[data-mark]').forEach(function (s) { s.appendChild(mk(s.dataset.mark, 16, ink)); });
+  });
+
+  /* ------------------------------------------------ menu bar template grid */
+  var tg = document.getElementById('tgrid');
+  if (tg) {
+    tg.appendChild(el('div', 'hd', ''));
+    ['16 pt @1x', '16 pt @2x', '18 pt @1x', '18 pt @2x', '22 pt @1x', '22 pt @2x'].forEach(function (t) { tg.appendChild(el('div', 'hd', t)); });
+    ALL.forEach(function (id) {
+      tg.appendChild(el('div', 'nm' + (id === 'ligature' ? ' rec' : ''), NAME[id]));
+      [[16, 4], [32, 2], [18, 4], [36, 2], [22, 4], [44, 2]].forEach(function (nz) {
+        tg.appendChild(zoom(id, nz[0], nz[1], 'rgba(0,0,0,.86)', '#ECECEE', null));
+      });
+    });
+  }
+
+  /* ------------------------------------------------ menu bar mocks */
+  function macSys(sym, w, color) {
+    return '<span class="st"><svg width="' + w + '" height="16" viewBox="0 0 ' + w + ' 16" style="color:' + color + '"><use href="#' + sym + '"/></svg></span>';
+  }
+  document.querySelectorAll('[data-menubar]').forEach(function (desk) {
+    var dark = desk.dataset.menubar === 'dark';
+    var ink = dark ? 'rgba(255,255,255,.9)' : 'rgba(0,0,0,.86)';
+    var ids = dark ? NEW : ['ligature'];
+    var html = '<div class="menubar"><b>Notes</b><span>File</span><span>Edit</span><span>Format</span><span>View</span><span>Window</span><span>Help</span><span class="sp"></span>';
+    ids.forEach(function (id) { html += '<span class="st ours" data-mark="' + id + '"></span>'; });
+    html += macSys('mac-battery', 26, ink) + macSys('sys-wifi', 16, ink) + macSys('mac-search', 16, ink) + macSys('mac-cc', 16, ink);
+    html += '<span style="font-variant-numeric:tabular-nums">Thu 9 Oct&nbsp;&nbsp;20:14</span></div>';
+    html += '<div class="below">' + (dark ? '' :
+      '<div class="popover" style="margin-right:90px"><div>Dictate <span>Right Alt</span></div><div>Revise <span>select text first</span></div><hr><div>Copy last dictation</div><hr><div>Settings…</div><div>Quit Typd</div></div>') + '</div>';
+    desk.innerHTML = html;
+    desk.querySelectorAll('[data-mark]').forEach(function (s) { s.appendChild(mk(s.dataset.mark, 16, ink)); });
+  });
+
+  /* ------------------------------------------------ the Dock */
+  var dock = document.getElementById('dock');
+  if (dock) {
+    var d = el('div', 'dock');
+    var ph = ['#4D7FD9', '#E9E7E2', '#F0B23A', '#5BBF6A'];
+    ph.forEach(function (c) { var p = el('div', 'ph'); p.innerHTML = '<i style="background:' + c + '"></i>'; d.appendChild(p); });
+    d.appendChild(el('div', 'sep'));
+    ['baseline', 'selection', 'pasttense', 'ligature', 'apostrophe', 'omission'].forEach(function (id) {
+      var di = el('div', 'di');
+      var a;
+      if (id === 'baseline') { a = el('div', 'ai'); a.innerHTML = B.CURRENT_ICON; var s = a.firstChild; s.setAttribute('width', 52); s.setAttribute('height', 52); s.style.display = 'block'; s.style.margin = '6px'; }
+      else a = appIcon(id, 'mac', 64);
+      di.appendChild(a);
+      if (id === 'ligature') di.appendChild(el('span', 'lab', 'Typd'));
+      d.appendChild(di);
+    });
+    d.appendChild(el('div', 'sep'));
+    var t = el('div', 'ph'); t.innerHTML = '<i style="background:rgba(255,255,255,.28)"></i>'; d.appendChild(t);
+    dock.appendChild(d);
+    document.getElementById('dock-key').innerHTML =
+      '<span>After the divider, left to right:</span><span>current</span><span>01 Selection</span><span>02 Past tense</span><span style="color:var(--ink)">03 Ligature</span><span>04 Apostrophe</span><span>05 Omission</span>';
+  }
+
+  /* ------------------------------------------------ construction on the grid */
+  var cons = document.getElementById('construct');
+  if (cons) {
+    cons.innerHTML = B.appIconMac('ligature', uid());
+    var sq = B.squircle(100, 100, 824, 824, 185.4);
+    var b = B.BOX.ligature, k = B.TILE_SCALE.ligature * 824 / 16;
+    var bw = (b[2] - b[0]) * k, bh = (b[3] - b[1]) * k;
+    var bx = 512 - bw / 2, by = 512 - bh / 2;
+    var ov = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" fill="none" font-family="Cascadia Mono, Consolas, monospace" font-size="22">' +
+      '<rect x="1" y="1" width="1022" height="1022" stroke="#6C727B" stroke-width="2" stroke-dasharray="8 8"/>' +
+      '<path d="' + sq + '" stroke="#9DA3AC" stroke-width="2"/>' +
+      '<path d="M100,0V1024M924,0V1024M0,100H1024M0,924H1024" stroke="#E8695C" stroke-opacity=".45" stroke-width="2"/>' +
+      '<path d="M512,100V924M100,512H924" stroke="#9DA3AC" stroke-opacity=".35" stroke-width="2"/>' +
+      '<circle cx="512" cy="512" r="' + (824 * 0.3) + '" stroke="#9DA3AC" stroke-opacity=".35" stroke-width="2"/>' +
+      '<rect x="' + bx + '" y="' + by + '" width="' + bw + '" height="' + bh + '" stroke="#F4F5F7" stroke-opacity=".7" stroke-width="2" stroke-dasharray="6 6"/>' +
+      '<text x="108" y="90" fill="#E8695C" fill-opacity=".8">100</text><text x="760" y="1010" fill="#9DA3AC">824 · r 185.4</text>' +
+      '</svg>';
+    cons.insertAdjacentHTML('beforeend', ov);
+    var dims = document.getElementById('cons-dims');
+    if (dims) dims.textContent = 'one unit is ' + k.toFixed(1) + ' px, so the stems are ' + (2 * k).toFixed(0) + ' px and the counter is a ' +
+      (8 * k).toFixed(0) + ' × ' + (4 * k).toFixed(0) + ' stadium';
+    cons.firstChild.setAttribute('width', '100%'); cons.firstChild.setAttribute('height', '100%');
+  }
+
+  /* ------------------------------------------------ Start menu + taskbar */
+  var st = document.getElementById('start');
+  if (st) {
+    var pins = [['Mail', '#2F6FDB'], ['Calendar', '#3A86E8'], ['Edge', '#2B9C8F'], ['Photos', '#5E7FD6'], ['Files', '#E4B43C'], ['Settings', '#8A8F98']];
+    var ours = [['baseline', 'Typd (now)'], ['selection', 'Selection'], ['pasttense', 'Past tense'], ['ligature', 'Typd'], ['apostrophe', 'Apostrophe'], ['omission', 'Omission']];
+    var html = '<div class="start"><div class="search">Search for apps, settings and documents</div><div class="sh">Pinned <span>All ›</span></div><div class="pins">';
+    pins.forEach(function (p) { html += '<div class="pin"><i class="ph" style="background:' + p[1] + '"></i><span>' + p[0] + '</span></div>'; });
+    ours.forEach(function (o) { html += '<div class="pin ours" data-pin="' + o[0] + '"><span>' + o[1] + '</span></div>'; });
+    html += '</div></div><div class="taskbar dark"><div class="apps">';
+    html += '<div class="app"><i class="ph" style="display:block;width:22px;height:22px;border-radius:5px;background:#3A86E8"></i></div>';
+    html += '<div class="app"><i class="ph" style="display:block;width:22px;height:22px;border-radius:5px;background:#E4B43C"></i></div>';
+    html += '<div class="app open" data-tb="ligature"></div>';
+    html += '<div class="app"><i class="ph" style="display:block;width:22px;height:22px;border-radius:5px;background:#2B9C8F"></i></div>';
+    html += '</div></div>';
+    st.innerHTML = html;
+    st.querySelectorAll('[data-pin]').forEach(function (p) {
+      var id = p.dataset.pin;
+      p.insertBefore(appIcon(id, id === 'baseline' ? 'current' : 'win', 32), p.firstChild);
+    });
+    st.querySelectorAll('[data-tb]').forEach(function (p) { p.appendChild(appIcon(p.dataset.tb, 'win', 24)); });
+  }
+
+  /* ------------------------------------------------ every .ico frame */
+  var ig = document.getElementById('icogrid');
+  if (ig) {
+    ig.appendChild(el('div', 'hd', ''));
+    ['16 · hinted', '24 · hinted', '32 · hinted', '48', '64', '128 · from the 256 master'].forEach(function (t) { ig.appendChild(el('div', 'hd', t)); });
+    NEW.forEach(function (id) {
+      ig.appendChild(el('div', 'nm' + (id === 'ligature' ? ' rec' : ''), NAME[id]));
+      [16, 24, 32, 48, 64, 128].forEach(function (css) { ig.appendChild(appIcon(id, 'win', css)); });
+    });
+  }
+
+  /* ------------------------------------------------ wordmark construction */
+  var con = document.getElementById('construction');
+  if (con) {
+    var L = B.logotypeSVG('typd', '#F4F5F7');
+    var W = L.w;
+    var lines = [[0, 'ascender'], [4, 'x-height'], [12, 'baseline'], [16, 'descender']];
+    var svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="-2 -1.5 ' + (W + 13) + ' 20" width="100%" style="display:block;max-width:980px">';
+    lines.forEach(function (ln) {
+      svg += '<line x1="-2" x2="' + (W + 1.5) + '" y1="' + ln[0] + '" y2="' + ln[0] + '" stroke="#6C727B" stroke-width=".05"/>';
+      svg += '<text x="' + (W + 2.2) + '" y="' + (ln[0] + 0.3) + '" font-size=".85" fill="#9DA3AC" font-family="Cascadia Mono, Consolas, monospace">' + ln[1] + ' · ' + ln[0] + '</text>';
+    });
+    svg += L.svg;
+    svg += '<line x1="1" x2="3" y1="17.2" y2="17.2" stroke="#E8695C" stroke-width=".08"/><text x="3.4" y="17.5" font-size=".85" fill="#E8695C" font-family="Cascadia Mono, Consolas, monospace">stem 2</text>';
+    svg += '</svg>';
+    con.innerHTML = svg;
+  }
+
+  /* ------------------------------------------------ all lockups */
+  var lk = document.getElementById('lockups');
+  if (lk) {
+    NEW.forEach(function (id) {
+      lk.appendChild(el('div', 'lockname' + (id === 'ligature' ? ' rec' : ''), NAME[id] + (id === 'ligature' ? ' · recommended' : '')));
+      var row = el('div', 'lockrow');
+      var d = el('div', 'plate'); d.style.color = INK.dark; d.innerHTML = B.wordmarkSVG(id).svg(72);
+      var l = el('div', 'plate light'); l.style.color = INK.light; l.innerHTML = B.wordmarkSVG(id).svg(72);
+      row.appendChild(d); row.appendChild(l);
+      lk.appendChild(row);
+      if (id === 'ligature' || id === 'apostrophe') {
+        var row2 = el('div', 'lockrow'); row2.style.marginTop = '14px';
+        var d2 = el('div', 'plate'); d2.style.color = INK.dark; d2.style.minHeight = '96px';
+        d2.innerHTML = B.wordmarkSVG(id, { plain: true }).svg(40);
+        var l2 = el('div', 'plate light'); l2.style.color = INK.light; l2.style.minHeight = '96px';
+        l2.innerHTML = B.wordmarkSVG(id, { plain: true }).svg(40);
+        row2.appendChild(d2); row2.appendChild(l2);
+        lk.appendChild(row2);
+        lk.appendChild(el('p', 'bar-note', 'Fallback · wordmark-plain.svg'));
+      }
+    });
+  }
+
+  /* ------------------------------------------------ site header */
+  document.querySelectorAll('[data-site]').forEach(function (bar) {
+    var dark = bar.dataset.site === 'd';
+    bar.style.color = dark ? '#ECEEF1' : '#14161B';
+    bar.innerHTML = '<span style="display:flex">' + B.wordmarkSVG('ligature').svg(26) + '</span>' +
+      '<nav><span>How it works</span><span>Results</span><span>Research</span><span>Roadmap</span><b>Private beta</b></nav>';
+  });
+
+  /* ------------------------------------------------ the recommended mark, per size */
+  var ls = document.getElementById('ligspec');
+  if (ls) {
+    var rows = '<tr><th>Size</th><th>Used for</th><th>Stem</th><th>Asc. / desc.</th><th>Bowl</th><th>Counter</th><th>Partial px</th></tr>';
+    var use = { 16: 'tray 100 % · menu bar @1x', 18: 'menu bar 18 pt', 20: 'tray 125 %', 22: 'menu bar 22 pt', 24: 'tray 150 %', 32: 'tray 200 % · menu bar @2x', 36: '18 pt @2x', 44: '22 pt @2x' };
+    [16, 18, 20, 22, 24, 32, 36, 44].forEach(function (N) {
+      var w = Math.max(1, Math.round(N / 8)), a = Math.round(N / 4);
+      var Wd = B.sameParity(N * 12 / 16, N);
+      var c = count('ligature', N);
+      rows += '<tr><td class="mono">' + N + ' px</td><td>' + use[N] + '</td><td class="mono">' + w + '</td><td class="mono">' + a + '</td><td class="mono">' + Wd + ' × ' + (N - 2 * a) +
+        '</td><td class="mono">' + (Wd - 2 * w) + ' × ' + (N - 2 * a - 2 * w) + '</td><td class="mono">' + c.part + '</td></tr>';
+    });
+    ls.innerHTML = rows;
+  }
+})();
+</script>
+</html>

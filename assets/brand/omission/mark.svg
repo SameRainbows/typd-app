@@ -1,0 +1,3 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Typd · identity study 02 · 05 Omission · mark, 16 x 16 master. fill is currentColor: #F4F5F7 on a dark taskbar, #14161B on a light one; macOS template images use alpha only. Generated from design/identity-study-02.html geometry. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16"><path fill="currentColor" fill-rule="nonzero" d="M1,1H5V3H3V13H5V15H1ZM15,1V15H11V13H13V3H11V1ZM4,10H6V12H4ZM7,10H9V12H7ZM10,10H12V12H10Z"/></svg>

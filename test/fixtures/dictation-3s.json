@@ -1,0 +1,10 @@
+{
+  "file": "dictation-3s.wav",
+  "source": "dictation-research/data/gold_eval/gold_eval/audio/a122.flac, converted to 16 kHz mono 16-bit PCM",
+  "voice": "Kokoro-82M (Apache-2.0), voice am_onyx -- synthetic, no real person's voice",
+  "duration_s": 3.625,
+  "spoken": "can you remind me what time the the train to the airport leaves on sunday",
+  "clean": "Can you remind me what time the train to the airport leaves on Sunday?",
+  "smoke_expect": "airport",
+  "used_by": "scripts/smoke-llama.js, .github/workflows/mac.yml, and the app itself: the self-test after every warm start (src/main/pipeline/local.js; shipped in app.asar)"
+}

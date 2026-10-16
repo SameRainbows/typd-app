@@ -1,0 +1,41 @@
+// Synthetic key presses for the macOS CI check (mac.yml, "Close the Typd window, stay running").
+// JavaScript for Automation, not Node:
+//
+//   osascript -l JavaScript scripts/mac-post-keys.jxa f19 [count] [gapMs]   F19, a key nothing uses
+//   osascript -l JavaScript scripts/mac-post-keys.jxa rightcmd               one tap of Right ⌘, Typd's key
+//
+// Posted at the HID level, so they pass through Typd's event tap like a real keyboard's.
+// macOS drops them without a word when the poster may not post events; the check reads
+// Typd's own count of keys heard to tell.
+
+ObjC.import('CoreGraphics');
+
+const HID_TAP = 0;                     // kCGHIDEventTap
+const F19 = 80;                        // kVK_F19
+const RIGHT_COMMAND = 54;              // kVK_RightCommand
+const COMMAND_RIGHT = 0x100000 | 0x10; // kCGEventFlagMaskCommand | NX_DEVICERCMDKEYMASK
+
+function post(code, down, flags) {
+  const e = $.CGEventCreateKeyboardEvent(null, code, down);
+  if (flags !== undefined) $.CGEventSetFlags(e, flags);
+  $.CGEventPost(HID_TAP, e);
+}
+
+function run(argv) {
+  const what = argv[0] || 'f19';
+  const count = Number(argv[1] || 1);
+  const gap = Number(argv[2] || 400) / 1000;
+  for (let i = 0; i < count; i++) {
+    if (what === 'rightcmd') {
+      post(RIGHT_COMMAND, true, COMMAND_RIGHT);
+      delay(0.08);
+      post(RIGHT_COMMAND, false, 0);
+    } else {
+      post(F19, true);
+      delay(0.03);
+      post(F19, false);
+    }
+    if (i < count - 1) delay(gap);
+  }
+  return 'posted ' + count + ' x ' + what;
+}
