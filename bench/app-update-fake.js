@@ -38,6 +38,10 @@ function main() {
     child.on('error', (e) => log('fake llama-server:', e.message));
   }
 
+  // What Typd does first (local.js loads before the updater starts): keep what a macOS update left
+  // out of the new app, from the app it replaced (src/main/carried.js). Windows: nothing to do.
+  require('../src/main/carried').create({ resourcesPath: res, userData, appVersion: version, log: (...a) => log('carried:', ...a.map(String)) }).rescue();
+
   const { createAppUpdater } = require('../src/main/appUpdate');
   const env = (k, d) => (process.env[k] !== undefined ? Number(process.env[k]) : d);
   const u = createAppUpdater({

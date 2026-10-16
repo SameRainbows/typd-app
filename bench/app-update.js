@@ -608,13 +608,18 @@ async function installTests() {
     }
     if (mac) spawnSync('pkill', ['-f', 'app-update-fake.js'], { stdio: 'ignore' });
   }
+  // macOS from 0.2.2: nothing is carried into the new app (it stays as signed); the new version keeps
+  // the model and tester.json in <userData>/carried/ itself (carried.js; the stand-in calls it too).
+  const kept = (rel) => path.join(userData, 'carried', ...rel.split('/'));
   const carried = () => mac
-    ? { model: exists(path.join(installed, 'Contents/Resources/models/typd-dictate/m.gguf')), tester: exists(path.join(installed, 'Contents/Resources/tester.json')) }
+    ? { model: exists(kept('models/typd-dictate/m.gguf')), tester: exists(kept('tester.json')),
+      bundleUntouched: !exists(path.join(installed, 'Contents/Resources/models')) && !exists(path.join(installed, 'Contents/Resources/tester.json')) }
     : { model: exists(path.join(installed, 'resources/models/typd-dictate/m.gguf')), tester: exists(path.join(installed, 'resources/tester.json')),
       llama: exists(path.join(installed, 'resources/llama/llama-server.exe')), uninstaller: exists(path.join(installed, 'Uninstall Typd.exe')) };
   const installedVersion = () => (readJson(path.join(installed, mac ? 'Contents/Resources/fake.json' : 'resources/fake.json')) || {}).version;
   const leftovers = () => fs.readdirSync(path.dirname(installed)).filter((n) => n !== path.basename(installed));
   const helperLog = () => { try { return fs.readFileSync(path.join(userData, 'app-update', 'helper.log'), 'utf8'); } catch { return ''; } };
+  const designated = (app) => { const r = spawnSync('codesign', ['-d', '-r-', app], { encoding: 'utf8' }); const m = /designated => (.+)/.exec((r.stdout || '') + (r.stderr || '')); return m ? m[1].trim() : null; };
 
   try {
     // A is installed (a tester build, with an uninstaller on Windows), B is published.
@@ -632,14 +637,22 @@ async function installTests() {
       r && r.version === '2.0.0' && r.state === 'updated' && r.line && r.line.label === 'Updated to 2.0.0', { r, log: helperLog().slice(-1500) });
     check('the installed app is now B', installedVersion() === '2.0.0');
     const c = carried();
-    check('the model, tester.json' + (win ? ', llama.cpp and the uninstaller' : '') + ' were carried over', Object.values(c).every(Boolean), c);
+    check(mac ? "A's model and tester.json were kept for B in userData/carried/, and nothing was put into B's bundle"
+      : 'the model, tester.json, llama.cpp and the uninstaller were carried over', Object.values(c).every(Boolean), c);
     check('the model is the one A was installed with (an app update never changes it)',
-      fs.readFileSync(path.join(installed, mac ? 'Contents/Resources/models/typd-dictate/m.gguf' : 'resources/models/typd-dictate/m.gguf'), 'utf8') === bundledModel);
+      fs.readFileSync(mac ? kept('models/typd-dictate/m.gguf') : path.join(installed, 'resources/models/typd-dictate/m.gguf'), 'utf8') === bundledModel);
     check('no backup or staging folder left next to the app', leftovers().length === 0, leftovers());
     const left = fs.readdirSync(path.join(userData, 'app-update')).filter((n) => !['state.json', 'helper.log', 'helper.started', 'helper.json', 'helper.ps1', 'helper.sh', 'helper.vars'].includes(n));
     check('nothing left in app-update/ but its state and the helper\'s log', left.length === 0, left);
     check('the helper waited for the app and its llama-server, then reported ok', /result: ok/.test(helperLog()), helperLog().slice(-800));
-    if (mac) check('B is validly signed after the model was carried in', spawnSync('codesign', ['--verify', '--strict', installed]).status === 0);
+    if (mac) {
+      check('B is validly signed', spawnSync('codesign', ['--verify', '--deep', '--strict', installed]).status === 0);
+      // The package is signed ad hoc here (no certificate in this step), so its requirement is its own
+      // cdhash: the same after the swap means the helper did not sign it again.
+      check("B is exactly as packaged: its designated requirement is the package's (the helper did not sign it again)",
+        Boolean(B.signature && B.signature.designated) && designated(installed) === B.signature.designated, { installed: designated(installed), pkg: B.signature });
+      check('the helper carried nothing and did not sign anything', !/carried /.test(helperLog()), helperLog().slice(-800));
+    }
     killAll();
     await sleep(1500);
 
