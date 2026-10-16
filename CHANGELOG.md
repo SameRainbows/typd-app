@@ -1,5 +1,16 @@
 # What's new
 
+## 0.2.0 · October 2026
+
+- **Share your dictations, only if you choose.** On its first start Typd asks once. Nothing is shared unless you pick **Share my dictations to improve Typd**. Change it any time in Settings, where **Delete what I've shared** removes what you sent.
+- **That was wrong.** When a dictation comes out wrong, pick **That was wrong…** in the tray, or press Alt + Shift + Backspace (Ctrl + Shift + Backspace on a Mac), and add a note if you like. If you don't share, Typd asks before sending that one dictation.
+- **Typd updates itself.** A new version downloads in the background and installs while you are away. If it fails its first start, the version you had comes back. The tray says when Typd was updated.
+- **Typd stays running on the Mac.** Closing the Typd window no longer quits Typd or stops its key, and Typd no longer hangs at launch once its permissions are on. **Show Typd in the Dock** in Settings keeps its icon in the Dock.
+- **Long dictations** are cut at real pauses, so sentences no longer break where a piece ended.
+- **Revising** a reply highlighted in a chat app or browser works on Windows, and long speech over a selection is typed as dictation.
+- **Your microphone** is found by name when its id changes, instead of falling back to the default one.
+- **A new mark** for the tray, the menu bar and the app icon.
+
 ## 0.1.0 · October 2026
 
 - **One window for Typd.** Open it from the tray (the menu bar on a Mac), or by starting Typd again: Home, History, Dictionary and Settings in one place. It never opens by itself unless Typd cannot work without you.
