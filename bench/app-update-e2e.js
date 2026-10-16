@@ -1,15 +1,22 @@
 'use strict';
 
 /**
- * The Mac CI's app-update test on real builds (.github/workflows/mac.yml, job "app-update").
+ * App updates end to end on real builds: the Mac CI's test (.github/workflows/mac.yml, job
+ * "app-update"), and a local update server for trying one by hand (README "App updates").
  *
- *   node bench/app-update-mac.js key
- *       A throwaway Ed25519 key: the private half to $RUNNER_TEMP/app-update-ci.pem, the public half
- *       into src/main/appUpdateKey.js, so the builds made after it (A, B, C) trust it and nothing
- *       else. Never the real key; nothing is published anywhere.
+ *   node bench/app-update-e2e.js key
+ *       A throwaway Ed25519 key: the private half to $RUNNER_TEMP (or the temp folder)/app-update-ci.pem,
+ *       the public half into src/main/appUpdateKey.js, so builds made after it trust it and nothing
+ *       else. Never the real key (put appUpdateKey.js back with git checkout); nothing is published.
  *
- *   node bench/app-update-mac.js run <A.app> <packages dir>
- *       <packages dir> holds B's and C's update packages (scripts/app-update-package.js).
+ *   node bench/app-update-e2e.js serve <packages dir> [port]
+ *       Serve the newest update package in <packages dir> (scripts/app-update-package.js), with a
+ *       manifest signed by that throwaway key, on 127.0.0.1 (port 8749 by default), until Ctrl+C.
+ *       A build made after `key`, started with TYPD_APP_UPDATE_URL=http://127.0.0.1:<port>, updates
+ *       itself from it.
+ *
+ *   node bench/app-update-e2e.js run <A.app> <packages dir>          (macOS)
+ *       <packages dir> holds B's and C's update packages.
  *       1. Install A in a temp folder, serve B's signed manifest on 127.0.0.1, start A with fast
  *          timers and no input threshold, as nobody is at a CI runner's keyboard.
  *       2. Wait until A has updated itself to B: B relaunched by the helper through `open`, passed
@@ -45,7 +52,7 @@ function key() {
   const kid = 'ci-' + crypto.randomBytes(4).toString('hex');
   const pem = kp.publicKey.export({ type: 'spki', format: 'pem' });
   fs.writeFileSync(path.join(ROOT, 'src', 'main', 'appUpdateKey.js'),
-    "'use strict';\n\n// A throwaway key for the Mac CI's app-update test (bench/app-update-mac.js key). Never committed.\n" +
+    "'use strict';\n\n// A throwaway key for an app-update test (bench/app-update-e2e.js key). Never committed.\n" +
     `module.exports = { keys: { ${JSON.stringify(kid)}: ${JSON.stringify(pem)} } };\n`);
   console.log(`throwaway app-update key ${kid}: private half in ${KEY_FILE}, public half in src/main/appUpdateKey.js`);
 }
@@ -54,23 +61,19 @@ const plistVersion = (app) => sh('plutil', ['-extract', 'CFBundleShortVersionStr
 const rx = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const pids = (pattern) => sh('pgrep', ['-f', pattern]).stdout.split('\n').filter(Boolean).map(Number);
 
-async function run(aApp, pkgDir) {
+/** The packages in `pkgDir`, oldest first, and a server that offers one of them, signed. */
+async function localServer(pkgDir, port = 0) {
   const priv = crypto.createPrivateKey(fs.readFileSync(KEY_FILE));
   const keys = require(path.join(ROOT, 'src', 'main', 'appUpdateKey.js')).keys;
   const kid = Object.keys(keys)[0];
-  const recs = fs.readdirSync(pkgDir).filter((n) => /-update-mac-(arm64|x64)\.zip\.json$/.test(n)).map((n) => readJson(path.join(pkgDir, n)))
+  const recs = fs.readdirSync(pkgDir).filter((n) => /-update-(mac|win)-(arm64|x64)\.zip\.json$/.test(n)).map((n) => readJson(path.join(pkgDir, n)))
     .sort((a, b) => a.version.localeCompare(b.version, 'en', { numeric: true }));
-  if (recs.length !== 2) throw new Error('expected two update packages (B and C) in ' + pkgDir);
-  const [B, C] = recs;
-  const A = plistVersion(aApp);
-  console.log(`A ${A} (installed), B ${B.version} (published first), C ${C.version} (fails its self-test)`);
-
   let manifest = null, seq = Math.floor(Date.now() / 1000);
   const requests = [];
   const publish = (rec) => {
     const payload = {
-      schema: 1, seq: ++seq, version: rec.version, min_version: '0.0.1', downgrade: false, notes: 'CI', published_at: new Date().toISOString(),
-      platforms: { [rec.platform]: { file: rec.file, size: rec.size, sha256: rec.sha256, app: rec.app, carry: rec.carry } }
+      schema: 1, seq: ++seq, version: rec.version, min_version: '0.0.1', downgrade: false, notes: 'test', published_at: new Date().toISOString(),
+      platforms: { [rec.platform]: { file: rec.file, size: rec.size, sha256: rec.sha256, app: rec.app, carry: rec.carry, ...(rec.requires ? { requires: rec.requires } : {}) } }
     };
     const text = JSON.stringify(payload);
     manifest = JSON.stringify({ typd_app_update: 1, key: kid, payload: text, sig: crypto.sign(null, Buffer.from(text), priv).toString('base64') });
@@ -92,8 +95,30 @@ async function run(aApp, pkgDir) {
     res.writeHead(r ? 206 : 200, { 'Content-Length': String(size - start), 'Accept-Ranges': 'bytes', ...(r ? { 'Content-Range': `bytes ${start}-${size - 1}/${size}` } : {}) });
     fs.createReadStream(file, { start }).pipe(res);
   });
-  await new Promise((r) => server.listen(0, '127.0.0.1', r));
-  const endpoint = `http://127.0.0.1:${server.address().port}`;
+  await new Promise((r) => server.listen(port, '127.0.0.1', r));
+  return { recs, publish, requests, endpoint: `http://127.0.0.1:${server.address().port}`, close: () => server.close() };
+}
+
+async function serve(pkgDir, port) {
+  const s = await localServer(pkgDir, port);
+  if (!s.recs.length) throw new Error('no update packages (Typd-<v>-update-*.zip and .json) in ' + pkgDir);
+  const rec = s.recs[s.recs.length - 1];
+  s.publish(rec);
+  console.log(`serving Typd ${rec.version} (${rec.platform}, ${rec.file}) at ${s.endpoint}, signed with the throwaway key`);
+  console.log(`start the installed app with TYPD_APP_UPDATE_URL=${s.endpoint} (README "App updates", by hand); Ctrl+C stops`);
+  let seen = 0;
+  setInterval(() => { for (; seen < s.requests.length; seen++) console.log(`  ${new Date().toISOString()} GET ${s.requests[seen]}`); }, 1000);
+}
+
+async function run(aApp, pkgDir) {
+  const srv = await localServer(pkgDir);
+  const recs = srv.recs.filter((r) => r.platform.startsWith('darwin'));
+  if (recs.length !== 2) throw new Error('expected two macOS update packages (B and C) in ' + pkgDir);
+  const [B, C] = recs;
+  const A = plistVersion(aApp);
+  console.log(`A ${A} (installed), B ${B.version} (published first), C ${C.version} (fails its self-test)`);
+  const { publish, requests, endpoint } = srv;
+  const server = srv;
 
   const T = fs.mkdtempSync(path.join(process.env.RUNNER_TEMP || os.tmpdir(), 'typd-update-'));
   const apps = path.join(T, 'Applications');
@@ -181,8 +206,9 @@ async function run(aApp, pkgDir) {
 (async () => {
   const [cmd, ...rest] = process.argv.slice(2);
   if (cmd === 'key') return key();
+  if (cmd === 'serve') { await serve(path.resolve(rest[0]), Number(rest[1] || 8749)); return; }
   if (cmd === 'run') { await run(path.resolve(rest[0]), path.resolve(rest[1])); return; }
-  console.error('usage: app-update-mac.js key | run <A.app> <packages dir>');
+  console.error('usage: app-update-e2e.js key | serve <packages dir> [port] | run <A.app> <packages dir>');
   process.exit(2);
 })().then(() => {
   if (process.argv[2] === 'run') {
