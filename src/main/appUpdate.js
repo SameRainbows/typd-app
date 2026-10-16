@@ -610,7 +610,9 @@ function createAppUpdater(o) {
 
   /* ------------------------------------------------------------------ check */
 
-  async function run() {
+  // Not `run`: that is the module's command runner (stage() calls it for xattr). Up to 0.2.2 this was
+  // called run too, so on a Mac staging ran a second whole check (bench/app-update.js "macOS staging").
+  async function checkOnce() {
     if (stopped) return { state: 'off' };
     if (!online()) throw new Retry('offline');
     let res;
@@ -667,7 +669,7 @@ function createAppUpdater(o) {
     if (running) return running;
     running = (async () => {
       try {
-        const r = await run();
+        const r = await checkOnce();
         failures = 0;
         return { ...r, next: everyMs };
       } catch (err) {

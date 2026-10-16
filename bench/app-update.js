@@ -687,6 +687,46 @@ async function installTests() {
   }
 }
 
+/* ------------------------------- 2b. macOS staging never runs the update check again */
+
+/**
+ * Up to 0.2.2, stage() cleared the quarantine mark with `run('/usr/bin/xattr', ...)` -- but inside the
+ * updater `run` was the update check itself, so on a Mac staging ran a whole second check, which
+ * applied (a helper, a quit) before the first one did. Harmless in Typd only because the update's
+ * quit is forced within 8 s while a second apply waits 10 s of idle first. One check: one manifest
+ * request, one helper, one quit, on any OS (the xattr call itself just fails off a Mac).
+ */
+async function macStageTest() {
+  section('macOS staging clears the quarantine mark, and does not run the update check a second time');
+  const s = await fakeServer();
+  try {
+    const root = path.join(tmp, 'mac-stage');
+    const app = path.join(root, 'Applications', 'Typd.app');
+    fs.mkdirSync(path.join(app, 'Contents', 'Resources'), { recursive: true });
+    const zip = crypto.randomBytes(5000), file = 'Typd-9.0.0-update-mac-arm64.zip';
+    s.files['9.0.0/' + file] = zip;
+    s.manifest = signed(payload('9.0.0', { 'darwin-arm64': { file, size: zip.length, sha256: sha(zip), app: 'Typd.app', carry: [] } }));
+    let quits = 0, helpers = 0;
+    const u = au.createAppUpdater({
+      keys: KEYS, appVersion: '8.0.0', platform: 'darwin-arm64', dir: path.join(root, 'app-update'), endpoint: s.endpoint, app,
+      rate: 0, idleMs: 10, systemIdleS: 0, warmWaitMs: 0, helperStartMs: 1500,
+      extract: async (z, dest) => {
+        fs.mkdirSync(path.join(dest, 'Typd.app', 'Contents'), { recursive: true });
+        fs.writeFileSync(path.join(dest, 'Typd.app', 'Contents', 'Info.plist'), '<plist/>');
+        fs.writeFileSync(path.join(dest, 'typd-update.json'), JSON.stringify({ version: '9.0.0', platform: 'darwin-arm64', app: 'Typd.app' }));
+      },
+      launchHelper: async ({ dir: d }) => { helpers++; setTimeout(() => fs.writeFileSync(path.join(d, 'helper.started'), '1'), 20); return {}; },
+      quit: () => { quits++; }
+    });
+    s.requests = [];
+    const r = await u.check();
+    const manifests = s.requests.filter((q) => q.url === '/v1/app/manifest').length;
+    check('one check on a Mac: one manifest request, one helper, one quit', r.state === 'applying' && manifests === 1 && helpers === 1 && quits === 1, { state: r.state, manifests, helpers, quits });
+  } finally {
+    s.server.close();
+  }
+}
+
 /* ------------------------------------- 4. what the app keeps for itself (carried.js) */
 
 function carriedTests() {
@@ -787,6 +827,7 @@ function finish() {
 
 (async () => {
   await updaterTests();
+  await macStageTest();
   carriedTests();
   if (!process.argv.includes('--no-install')) await installTests();
 })().catch((e) => { failures++; console.log('  FAIL  ' + (e && e.stack)); }).finally(finish);
