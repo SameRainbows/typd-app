@@ -129,7 +129,7 @@ the targets: with `--arm64` alone, electron-builder still builds every arch list
   - **Why:** macOS remembers a privacy permission for an app's *designated requirement*
     (`codesign -d -r- Typd.app`). Ad hoc, that is the build's own hash, so every update was a new
     app to macOS and lost its switches. Signed with the certificate, every build's requirement is
-    `identifier "ai.typd.app" and certificate leaf = H"b5868f3c…"`, so the switches survive updates.
+    `identifier "ai.typd.app" and certificate root = H"b5868f3c…"`, so the switches survive updates.
     The Mac CI checks it on every build, and its update test (job `app-update`) checks that three
     builds, and the installed app after the update helper's swap, have one requirement, and that
     an Accessibility grant made for the old version holds for the new one.
@@ -140,8 +140,8 @@ the targets: with `--arm64` alone, electron-builder still builds every arch list
     `~/Library/Application Support/typd/carried/` at its first start (`src/main/carried.js`; an
     APFS clone, no extra disk).
   - **Gatekeeper is unchanged:** the certificate is not an Apple Developer ID and the app is not
-    notarized, so a downloaded dmg is blocked on its first open exactly as before (`spctl --assess`
-    rejects it, as it did the ad-hoc app; "Open it the first time" above). That needs a paid Apple
+    notarized, so a downloaded dmg is blocked on its first open exactly as before (`spctl --assess
+    --type execute` says `rejected`, `origin=Typd Code Signing`, as it rejected the ad-hoc app; "Open it the first time" above). That needs a paid Apple
     Developer ID and notarization.
   - **If the certificate is lost:** make a new one (the script refuses to overwrite the old one;
     move it away first). Every Mac then switches the permissions on once more after the update

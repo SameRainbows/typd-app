@@ -253,7 +253,7 @@ async function run(aApp, pkgDir) {
     console.log('\nB -> C, which fails its self-test');
     if (tcc) {
       // The control: a grant for another certificate. The B that comes back must not be trusted.
-      const bad = grantAx('identifier "ai.typd.app" and certificate leaf = H"' + '0'.repeat(40) + '"', T);
+      const bad = grantAx('identifier "ai.typd.app" and certificate root = H"' + '0'.repeat(40) + '"', T);
       check('the grant now names another certificate (the control)', !bad, bad);
     }
     const before = requests.length;
