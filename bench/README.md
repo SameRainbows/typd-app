@@ -115,14 +115,16 @@ reuses as it would the real one, and are built from the dogfood audit's failures
 - **revise-guards.js**: no-ops, the instruction pasted back, silent deletions and empty
   results are refused, with the note the pill shows; every reference in
   `eval/revise_gold.jsonl` still passes (when `../dictation-research` is there); selections
-  up to 12,000 characters, the output budget, and an answer cut off by it.
+  up to 6,000 characters, the output budget, and an answer cut off by it; a result under 40 % of
+  a selection of 20+ words is refused unless the instruction asks to shorten or delete.
 - **long.js**: the causal splitter settles each cut by 79 s into its piece, and the cuts it
   settles while the user talks are the ones the whole recording gives; the audit's bad joins
   (an invented "high.", a repeated "Mistaken", a garbled clause, a dropped opening, missing
   full stops and stray capitals); synthetic speech whose tones name their words, written
   after release and while talking, must give the same, canonical text, one request at a
   time, with only the tail left after release.
-- **vocab.js**: "Kerem" written as "Aysel" (a dictionary term) is put back; a term the
+- **vocab.js**: the dictionary check is off unless `TYPD_VOCAB_CHECK=1`; on, a term written in place
+  of a different word is put back ("Aysel" for a name the model heard otherwise); a term the
   model heard is kept; a dictation with no term in it makes the same requests as before.
 
 ## Reference

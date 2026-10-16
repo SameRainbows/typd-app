@@ -15,6 +15,9 @@
  *   deleted  "Format the stuff I listed as a list" returned the first 57 % of the selection: the
  *            rest silently gone, twice.
  *   empty    nothing came back.
+ *   short    under 40 % of a selection of 20+ words, when the instruction did not ask to shorten,
+ *            summarize, cut or delete (on the real model "clean up the grammar" over 1,000 words
+ *            once came back as one line; results/revise_long_check.log, 2026-10-17).
  *
  * None of these is pasted. The selection stays as it was, the pill says why, and a deletion's
  * result goes to the clipboard in case it was wanted after all.
@@ -159,6 +162,7 @@ function measure(span, out) {
     recall: sc.length ? keep / sc.length : 1,          // how much of the selection's content is still there
     precision: oc.length ? shared(oc, sc) / oc.length : 1,   // how much of the result came from the selection
     ratio: sw.length ? ow.length / sw.length : 1,
+    chars: span.length ? out.length / span.length : 1,   // the result's length against the selection's
     sw, ow
   };
 }
@@ -169,12 +173,19 @@ const LOST_LAYOUT = 0.3;      // layout / targeted: more than 30 % of the conten
 const LOST_REWRITE = 0.5;     // rewrite: more than half gone, and nothing new in its place
 const LOST_OTHER = 0.55;      // unknown instruction: only gross losses
 const MIN_DELETION_WORDS = 20;   // the deletion guard judges selections of 20 words and more
+// Under 40 % of the selection's length is a shortening, and only an instruction to shorten,
+// summarize, cut or delete asks for one. On the real model (results/revise_long_check.log,
+// 2026-10-17) "clean up the grammar" over 1,000 and 1,800 words came back as a few words
+// (0.3-0.6 % of the length) and was pasted.
+const MIN_SHARE = 0.4;
+const MIN_SHARE_WORDS = 20;      // a sentence or two may rightly shrink ("make me sound more confident": 19 words to 6 in revise_gold)
 
 const MESSAGES = {
   empty: "Couldn't revise that — text kept",
   noop: "Couldn't revise that — nothing changed",
   echo: "Couldn't revise that — text kept",
   deleted: 'Revise dropped text — kept yours, result copied',
+  short: "Couldn't revise that — text kept",
   truncated: 'Too long to revise — text kept'
 };
 
@@ -189,6 +200,7 @@ function check(span, out) {
   const m = measure(s, o);
   const near = wordEdits(m.sw, m.ow, Math.max(1, Math.round(NEAR_SHARE * m.spanWords)) + 1) <= Math.max(1, Math.round(NEAR_SHARE * m.spanWords));
   if (near && m.spanWords >= 8) return { verdict: 'ask', reason: 'near' };
+  if (m.chars < MIN_SHARE && m.spanWords >= MIN_SHARE_WORDS) return { verdict: 'ask', reason: 'short' };
   // Shorter, with much of the selection gone: a cut (what is left came from the selection) or an
   // echo (far shorter). A rewrite in other words of about the same length is neither.
   if (1 - m.recall > LOST_LAYOUT && m.ratio < 0.85 && (m.precision >= 0.7 || m.ratio < 0.5)) return { verdict: 'ask', reason: 'shrunk' };
@@ -204,11 +216,14 @@ function verdict(span, out, instruction) {
   const s = String(span || '').trim(), o = String(out || '').trim();
   const first = check(s, o);
   const m = o ? measure(s, o) : null;
-  const metrics = m ? { spanWords: m.spanWords, outWords: m.outWords, recall: round(m.recall), precision: round(m.precision), ratio: round(m.ratio) } : {};
+  const metrics = m ? { spanWords: m.spanWords, outWords: m.outWords, recall: round(m.recall), precision: round(m.precision), ratio: round(m.ratio), chars: round(m.chars) } : {};
   if (first.verdict === 'refuse') return { refuse: true, reason: first.reason, kind: kindOf(instruction), metrics };
   if (first.verdict === 'pass') return { refuse: false, kind: kindOf(instruction), metrics };
   const kind = kindOf(instruction);
-  if (!kind) return { refuse: false, kind, metrics };
+  // Far shorter than the selection: only an instruction that asks to shorten or delete may do that.
+  // Unheard, it is not known to have asked.
+  const tooShort = first.reason === 'short' && kind !== 'shorten' && kind !== 'delete';
+  if (!kind) return tooShort ? { refuse: true, reason: 'short', kind, metrics } : { refuse: false, kind, metrics };
 
   if (first.reason === 'near') {
     // Changed almost nothing. Fine for a fix or a rename; a no-op for "make it simpler".
@@ -232,6 +247,7 @@ function verdict(span, out, instruction) {
     const covers = shared(iw, oc) / iw.length;
     if (fromInstruction >= 0.7 && covers >= 0.6 && m.recall < 0.5) return { refuse: true, reason: 'echo', kind, metrics };
   }
+  if (tooShort) return { refuse: true, reason: 'short', kind, metrics };
   const lost = 1 - m.recall;
   if (kind === 'shorten' || kind === 'delete' || kind === 'translate' || kind === 'transform') return { refuse: false, kind, metrics };
   // A sentence or two: too few words to tell a deletion from a rewording, and little to lose.

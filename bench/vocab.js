@@ -10,8 +10,9 @@
  *      reports/dogfood_audit_2026-10-16.md); a term the model heard (alike in spelling or sound,
  *      a known mishearing, or the model was sure) stays.
  *   2. suspects(): only terms the prompt showed, whole words, at most three.
- *   3. Through local.dictate: the requests made (one token with probabilities, then the term's
- *      first token barred), the text that comes out, and that nothing is asked when no term is in
+ *   3. Through local.dictate: off unless TYPD_VOCAB_CHECK=1; the requests made (one token with its
+ *      top alternatives, then the best word-starting alternative -- never the model's "language"
+ *      tag -- continued), the text that comes out, and that nothing is asked when no term is in
  *      the text -- a dictation's requests are then exactly what they were.
  *
  *   node bench/vocab.js
@@ -99,18 +100,25 @@ async function flow() {
   check('the prompt carries the dictionary line', /Aysel, Typd/.test(system), system);
 
   // What the "model" says. The dictation: a sentence with the term in it. The check's requests:
-  // one token with probabilities, then the continuation with that token barred.
+  // one token with its top alternatives, then the best alternative that starts a word, continued.
   let said = '';
   let scenario = {};
   const pick = (assistant) => scenario[Object.keys(scenario).find((k) => String(assistant || '').endsWith(k))];
+  const continuation = (assistant) => {
+    for (const k of Object.keys(scenario)) {
+      for (const a of scenario[k].alts || []) if (String(assistant || '').endsWith(k + a.token)) return a.cont;
+    }
+    return null;
+  };
   const fake = await fakeLlama({
     answer: (req) => {
       const b = req.body;
       if (b.max_tokens === 1 && b.logprobs) {
         const s = pick(req.assistant);
-        return { text: s.tok, logprobs: [{ id: 4242, token: s.tok, logprob: Math.log(s.p), top_logprobs: [{ id: 4242, token: s.tok, logprob: Math.log(s.p) }] }] };
+        const top = [{ id: 4242, token: s.tok, logprob: Math.log(s.p) }, ...(s.alts || []).map((a, i) => ({ id: 5000 + i, token: a.token, logprob: Math.log(a.p) }))];
+        return { text: s.tok, logprobs: [{ id: 4242, token: s.tok, logprob: Math.log(s.p), top_logprobs: top }] };
       }
-      if (b.logit_bias) return { text: pick(req.assistant).alt };
+      if (!b.stream) return { text: continuation(req.assistant) || '' };
       return 'language English<asr_text>' + said;
     }
   });
@@ -126,27 +134,45 @@ async function flow() {
   const log = [];
   local.setVocabLog((e) => log.push(e));
 
-  // The audit's case.
+  // Off unless TYPD_VOCAB_CHECK=1 (2026-10-17: the first real run replaced nothing it should have).
   said = "Let's get the release for Aysel ready and I'll send it to him.";
-  scenario = { for: { tok: ' Ays', p: 0.62, alt: ' Kerem ready and I' } };
+  scenario = { for: { tok: ' Ays', p: 0.62, alts: [{ token: 'language', p: 0.2, cont: ' English<asr_text>Let' }, { token: ' Ker', p: 0.1, cont: 'em ready and I' }] } };
   let n = fake.requests.length;
+  delete process.env.TYPD_VOCAB_CHECK;
   let text = await collect(local.dictate(audio, 16000, null, system, 200));
   let reqs = fake.requests.slice(n);
+  check('off by default: one request, the text as the model wrote it', text === said && reqs.length === 1, { text, n: reqs.length });
+  process.env.TYPD_VOCAB_CHECK = '1';
+
+  // The audit's case.
+  n = fake.requests.length;
+  text = await collect(local.dictate(audio, 16000, null, system, 200));
+  reqs = fake.requests.slice(n);
   check('"…the release for Aysel ready…" said as Kerem: "…the release for Kerem ready…"', text === "Let's get the release for Kerem ready and I'll send it to him.", text);
-  check('three requests: the dictation, one token with probabilities, the term barred', reqs.length === 3 && reqs[1].body.max_tokens === 1 && reqs[1].body.logprobs === true &&
-    JSON.stringify(reqs[2].body.logit_bias) === '[[4242,false]]', reqs.map((r) => Object.keys(r.body).join(',')));
-  check('both continue the dictation\'s own answer up to the term (its language tag included), with its audio and prompt',
-    reqs.slice(1).every((r) => r.assistant === "language English<asr_text>Let's get the release for" && r.system === system && r.seconds === reqs[0].seconds), reqs.slice(1).map((r) => r.assistant));
+  check('three requests: the dictation, one token with its alternatives, the best word-starting one continued', reqs.length === 3 && reqs[1].body.max_tokens === 1 && reqs[1].body.logprobs === true &&
+    reqs[2].assistant === "language English<asr_text>Let's get the release for Ker", reqs.map((r) => r.assistant));
+  check("both continue the dictation's own answer up to the term (its language tag included), with its audio and prompt",
+    reqs[1].assistant === "language English<asr_text>Let's get the release for" && reqs.slice(1).every((r) => r.system === system && r.seconds === reqs[0].seconds), reqs.slice(1).map((r) => r.assistant));
+  check('the language tag is never the other word (the first real run replaced "Typd" with it)',
+    !reqs.some((r) => /for(language| language)$/.test(r.assistant || '')), reqs.map((r) => r.assistant));
+
+  // Only the tag, or the term's own pieces, as alternatives: nothing to put back.
+  said = 'The new Typd build is ready.';
+  scenario = { new: { tok: ' Typ', p: 0.7, alts: [{ token: 'language', p: 0.2, cont: ' English' }, { token: ' Ty', p: 0.05, cont: 'pd build' }] } };
+  n = fake.requests.length;
+  text = await collect(local.dictate(audio, 16000, null, system, 200));
+  reqs = fake.requests.slice(n);
+  check('only the tag or a piece of the term as alternatives: kept, no continuation asked', text === said && reqs.length === 2, { text, n: reqs.length });
 
   // Aysel really said: the model's other spelling is the known mishearing.
   said = 'Aysel said she can test it tonight.';
-  scenario = { '<asr_text>': { tok: 'Ays', p: 0.55, alt: 'Ayşe said she' } };
+  scenario = { '<asr_text>': { tok: 'Ays', p: 0.55, alts: [{ token: 'Ay', p: 0.3, cont: 'şe said she' }] } };
   text = await collect(local.dictate(audio, 16000, null, system, 200));
   check('Aysel said (the other word is her name misheard): kept', text === said, text);
 
   // Typd, the model sure of it: one extra token, no second request.
   said = 'The new Typd build is ready.';
-  scenario = { new: { tok: ' Typ', p: 0.99, alt: ' typed build' } };
+  scenario = { new: { tok: ' Typ', p: 0.99, alts: [{ token: ' typed', p: 0.01, cont: ' build' }] } };
   n = fake.requests.length;
   text = await collect(local.dictate(audio, 16000, null, system, 200));
   reqs = fake.requests.slice(n);
@@ -162,7 +188,6 @@ async function flow() {
 
   // A server that does not give probabilities (an older build): the text is kept as written.
   said = "Let's get the release for Aysel ready and I'll send it to him.";
-  scenario = { for: { tok: ' Ays', p: 0.62, alt: ' Kerem ready and I' } };
   const plainFake = await fakeLlama({ answer: (req) => (req.body.stream ? 'language English<asr_text>' + said : { text: ' Ays' }) });
   const l2 = freshLocal({ TYPD_MODEL_DIR: dir, TYPD_LLAMA_PORT: String(plainFake.port), TYPD_LLAMA_SERVER: server, TYPD_SELFTEST: '0' });
   await l2.warm();
@@ -171,6 +196,7 @@ async function flow() {
   check('every decision is logged for the eval tools', log.length >= 3 && log.some((e) => !e.keep && e.alt === 'Kerem'), log);
   await plainFake.close();
   await fake.close();
+  delete process.env.TYPD_VOCAB_CHECK;
 }
 
 (async () => {

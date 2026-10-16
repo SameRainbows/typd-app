@@ -306,19 +306,21 @@ const gpuMemory = {
 const modelId = () => VERSION || path.basename(MODEL);
 
 /*
- * The server's window, in tokens. 8,192 since 0.2.3, for revisions of whole long dictations
- * (pipeline/index.js takes up to 12,000 characters, ~2,000 words): the selection is in the prompt
- * and written again in the answer. Dictation never needs more than ~2,000 (the worst real piece,
- * 71 s plus the longest screen context, is ~1,350 prompt tokens plus its output cap).
+ * The server's window, in tokens. 4,096 since 0.2.3 (2,048 before), for revisions of whole
+ * dictations up to ~1,000 words (pipeline/index.js takes up to 6,000 characters): the selection is
+ * in the prompt and written again in the answer. Dictation never needs more than ~2,000 (the worst
+ * real piece, 71 s plus the longest screen context, is ~1,350 prompt tokens plus its output cap).
+ * 8,192 was tried: on the real model, revisions past ~500 words came back as echoes or a few words
+ * (dictation-research results/revise_long_check.log, 2026-10-17), so the room was not worth it.
  *
  * What it costs is the KV cache, allocated whole at start-up: both model sizes (Qwen3 0.6B and
  * 1.7B) have 28 layers with 8 KV heads of 128, so a token holds 2 x 28 x 8 x 128 = 57,344 values,
- * 60,928 bytes at q8_0 (34 bytes per 32 values): 119 MiB at 2,048 tokens, 476 MiB at 8,192, so
- * +357 MiB of VRAM (of RAM on the CPU path). Measured before at 2,048 -> 3,072: +60 MiB
- * (dictation-research LOG.md, 2026-10-05), the same 58.5 KiB a token. Flash attention (on by
- * default with CUDA and Metal) keeps the compute buffer from growing with the window.
+ * 60,928 bytes at q8_0 (34 bytes per 32 values): 119 MiB at 2,048 tokens, 238 MiB at 4,096, so
+ * +119 MiB of VRAM (of RAM on the CPU path). Measured: 2,048 -> 3,072 +60 MiB (LOG.md,
+ * 2026-10-05), 2,048 -> 8,192 +376 MiB on the 1.7B (results/revise_long_check.log), ~61 KiB a
+ * token. Flash attention (on by default with CUDA and Metal) keeps the compute buffer flat.
  */
-const CONTEXT = 8192;
+const CONTEXT = 4096;
 
 function launch(layers) {
   const child = spawn(SERVER, [
@@ -731,13 +733,20 @@ function complete(payload, signal, timeoutMs = 4000) {
 
 /**
  * The dictionary's terms in `text`, checked against what the model would have written without
- * them (vocab.js). For each, two short requests that continue the dictation's own answer up to
- * the term, so the server reuses its cached prompt: one token with its probabilities, then -- if
- * the model was not sure of the term -- a few tokens with the term's first token barred. Returns
- * `text`, with any term the hint put in place of a different word put back. Any failure keeps
- * `text` as it is.
+ * them (vocab.js). OFF unless TYPD_VOCAB_CHECK=1: on the user's 15 long dictations (first real run,
+ * 2026-10-17) the model's next word with the term barred was mostly its own "language English"
+ * tag starting over, one replacement of 44 was that tag, and the Aysel case was not caught.
+ *
+ * For each term, two short requests that continue the dictation's own answer up to the term, so
+ * the server reuses its cached prompt: one token with its probabilities and the top alternatives;
+ * then -- if the model was not sure of the term -- the best alternative that starts a word (never
+ * the language tag, never the term itself) continued for a few tokens. Returns `text`, with any
+ * term the hint put in place of a different word put back. Any failure keeps `text` as it is.
  */
+const TAG_START = /^(l|la|lan|lang|langu|langua|languag|language)$/i;
+
 async function checkTerms(parts, system, info, text, signal) {
+  if (process.env.TYPD_VOCAB_CHECK !== '1') return text;
   let found;
   try { found = vocab.suspects(text, system); } catch { return text; }
   if (!found.length) return text;
@@ -751,7 +760,7 @@ async function checkTerms(parts, system, info, text, signal) {
     if (signal && signal.aborted) return text;
     const before = (echoed ? '' : PREFILL) + raw.slice(0, lead + occ.index).replace(/\s+$/, '');
     const t0 = Date.now();
-    const first = await complete(body(parts, system, { max_tokens: 1, logprobs: true, top_logprobs: 5 }, false, before), signal);
+    const first = await complete(body(parts, system, { max_tokens: 1, logprobs: true, top_logprobs: 10 }, false, before), signal);
     const lp = first && first.choices && first.choices[0] && first.choices[0].logprobs && first.choices[0].logprobs.content && first.choices[0].logprobs.content[0];
     if (!lp || typeof lp.id !== 'number') { debug('vocab:', occ.term, 'no token probabilities; kept'); continue; }
     const tok = String(lp.token || '').trim().toLowerCase();
@@ -759,15 +768,36 @@ async function checkTerms(parts, system, info, text, signal) {
     const p = Math.exp(lp.logprob);
     let alt = null, altNext = null;
     if (p < vocab.SURE) {
-      const n = occ.term.split(/\s+/).length;
-      const second = await complete(body(parts, system, { max_tokens: 6 + 3 * n, logit_bias: [[lp.id, false]] }, false, before), signal);
-      const content = second && second.choices && second.choices[0] && second.choices[0].message && second.choices[0].message.content;
-      if (typeof content === 'string') ({ alt, next: altNext } = vocab.firstWords(content, n));
+      // The best other token that starts a word where the term starts: spaced as the term's
+      // token is, not the term (or a piece of it), not the language tag the model opens with.
+      const spaced = /^\s/.test(String(lp.token));
+      const other = (Array.isArray(lp.top_logprobs) ? lp.top_logprobs : [])
+        .filter((c) => c && typeof c.token === 'string' && c.id !== lp.id)
+        .filter((c) => /^\s/.test(c.token) === spaced && /^\p{L}/u.test(c.token.trim()) && !/[<>]/.test(c.token))
+        .filter((c) => !TAG_START.test(c.token.trim()) && !occ.term.toLowerCase().startsWith(c.token.trim().toLowerCase()))
+        .sort((x, y) => y.logprob - x.logprob)[0];
+      if (other) {
+        const n = occ.term.split(/\s+/).length;
+        const second = await complete(body(parts, system, { max_tokens: 6 + 3 * n }, false, before + other.token), signal);
+        let content = second && second.choices && second.choices[0] && second.choices[0].message && second.choices[0].message.content;
+        // llama-server answers with the opening it was given and then its own tokens (the first
+        // real run took that echo, "language English<asr_text>...", for the other word).
+        const opening = before + other.token;
+        if (typeof content === 'string' && content.startsWith(opening)) content = content.slice(opening.length);
+        else if (typeof content === 'string' && content.startsWith(before)) content = content.slice(before.length).replace(other.token, '');
+        debug('vocab:', occ.term, 'other token', JSON.stringify(other.token), 'went on as', JSON.stringify(String(content).slice(0, 80)));
+        if (typeof content === 'string' && !/<asr_text>/.test(content)) {
+          ({ alt, next: altNext } = vocab.firstWords(other.token + content, n));
+        }
+      }
     }
     const origNext = vocab.firstWords(text.slice(occ.index + occ.length), 1).alt || null;
     const d = vocab.decide({ term: occ.term, heardAs: occ.heardAs, p, alt, altNext, origNext });
     debug('vocab:', occ.term, 'p=' + p.toFixed(3), 'instead:', JSON.stringify(alt), '->', d.keep ? 'kept' : 'replaced', '(' + d.why + ')', (Date.now() - t0) + ' ms');
-    if (vocabLog) vocabLog({ term: occ.term, p, alt, keep: d.keep, why: d.why, ms: Date.now() - t0 });
+    if (vocabLog) {
+      const top = (Array.isArray(lp.top_logprobs) ? lp.top_logprobs : []).map((c) => [c.token, Math.round(Math.exp(c.logprob) * 1000) / 1000]);
+      vocabLog({ term: occ.term, p, alt, keep: d.keep, why: d.why, ms: Date.now() - t0, top });
+    }
     if (!d.keep) {
       const at = { index: occ.index + shift, length: occ.length };
       const next = vocab.replace(out, at, alt);
@@ -966,7 +996,7 @@ async function* ask(parts, signal, system = '', maxTokens = 1024, asRevise = fal
   let text = '';
   let last = Date.now();
   let shownSoFar = '';
-  // loopCut scans the whole text; on a 12,000-character revise that is every chunk times the
+  // loopCut scans the whole text; on a 6,000-character revise that is every chunk times the
   // text. Checked every chunk while short, then every 200 characters (a loop is cut where it
   // began either way, so a later check loses nothing).
   let checkedAt = 0;

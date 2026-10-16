@@ -195,7 +195,8 @@ const JOINS = [
   { name: 'missing full stop ("R&D That"), seam reworded',
     a: 'Right now we are basically doing R&D', b: 'That might not be the best option for us.',
     seam: 'we\'re basically doing R&D. And that might not be the best option', at: 0.45,
-    want: 'basically doing R&D. That might not be the best option for us.' },
+    // The seam heard the "And" the piece dropped as an opener: it comes back, from the seam.
+    want: 'basically doing R&D. And that might not be the best option for us.' },
   { name: 'capital mid-sentence ("should not Overuse"), seam reworded',
     a: 'I think that we should not', b: 'Overuse them for this kind of work.',
     seam: 'I think we should not overuse them for this kind', at: 0.5,
@@ -215,6 +216,27 @@ const JOINS = [
   { name: 'a name after "to" keeps its capital, no seam',
     a: 'I will send the notebook to', b: 'Kaggle tomorrow morning.', seam: '', at: 0.5,
     want: 'I will send the notebook to Kaggle tomorrow morning.' },
+  // From the first real replay (2026-10-17): what the stitching must not do.
+  { name: 'a short seam that skipped words never takes them out of the pieces',
+    a: 'When the connection is good, it should check whether it should refresh its model.',
+    b: 'What I mean is, keep the old model for now, but look for a newer one.',
+    seam: 'Good connection or something. It should keep the old model.', at: 0.58,
+    wantIncludes: ['refresh its model', 'What I mean is'] },
+  { name: 'a piece\'s own word the seam wrote a little otherwise stays ("looked" / "look")',
+    a: 'Can you believe how odd that is?', b: 'I looked through the whole list again and found two.',
+    seam: 'how odd that is? I look through the whole list again', at: 0.5,
+    wantIncludes: ['how odd that is?', 'I looked through the whole list again and found two.'], wantNot: ['I look through'] },
+  { name: 'a question the piece ended on stays, though the seam wrote a comma',
+    a: 'So should we launch this early?', b: 'With this rough a product, we learn faster.',
+    seam: 'should we launch this early, with this rough a product', at: 0.5,
+    want: 'So should we launch this early? With this rough a product, we learn faster.' },
+  { name: 'a restart the pieces left out is not put back ("I\'m not, and")',
+    a: 'They should look into it.', b: 'If you think that is enough, we can stop.',
+    seam: 'should look into it. I\'m not, and if you think that is enough', at: 0.45,
+    wantIncludes: ['look into it.', 'If you think that is enough'], wantNot: ["I'm not"] },
+  { name: 'a piece begun in lower case runs on after the cut\'s full stop, no seam',
+    a: 'The compute we have is astronomical.', b: 'is still not much next to the big labs.', seam: '', at: 0.5,
+    want: 'The compute we have is astronomical is still not much next to the big labs.' },
   { name: 'a name after a verb is not a sentence start, no seam',
     a: 'Before we ship it we should ask', b: 'Kerem about the installer.', seam: '', at: 0.5,
     want: 'Before we ship it we should ask Kerem about the installer.' },
@@ -237,13 +259,41 @@ function joinTests() {
   for (const j of JOINS) {
     const got = long.stitch(j.a, j.b, j.seam, j.at);
     const old = long.joinPieces(j.a, j.b, j.seam ? long.readSeam(j.a, j.seam, j.at) : null);
-    const good = (t) => (j.want ? t.endsWith(j.want) : j.wantIncludes.every((w) => t.includes(w)));
+    const good = (t) => (j.want ? t.endsWith(j.want) : j.wantIncludes.every((w) => t.includes(w))) && !(j.wantNot || []).some((w) => t.includes(w));
     if (good(old)) oldOk++;
     if (good(got.text)) newOk++;
     check(j.name + '  [' + got.how + ']', good(got.text), { got: got.text.slice(-140), want: j.want });
   }
   console.log(`  joins right: 0.2.2 ${oldOk}/${JOINS.length}, now ${newOk}/${JOINS.length}`);
   check('every audit failure shape fixed, and nothing 0.2.2 got right lost', newOk === JOINS.length);
+
+  // A join never writes a word of its own: every word comes from one of the pieces or the seam.
+  // 3,000 random joins: a sentence cut somewhere, each piece's edge damaged as the model damages
+  // it (a word invented, dropped, doubled, re-cased, a full stop added), the seam reworded.
+  const bag = (t) => new Set((String(t).match(/[\p{L}\p{N}]+/gu) || []).map((w) => w.toLowerCase()));
+  const r = rng(99);
+  const vocabWords = ('we the a and of to it is that model data compute power quality really should could ' +
+    'month week Kaggle Typd release crucial extremely high mistaken AMD credits upload optional PDF think').split(' ');
+  const pick = () => vocabWords[Math.floor(r() * vocabWords.length)];
+  let own = 0, cases = 0;
+  for (let n = 0; n < 3000; n++) {
+    const words = Array.from({ length: 30 + Math.floor(r() * 20) }, pick);
+    const cut = 10 + Math.floor(r() * 10);
+    let A = words.slice(0, cut), B = words.slice(cut);
+    if (r() < 0.3) A = A.concat(pick());                    // invented completion
+    if (r() < 0.3) B = B.slice(1 + Math.floor(r() * 3));   // dropped opening
+    if (r() < 0.2) B = [A[A.length - 1]].concat(B);         // doubled word
+    let S = words.slice(Math.max(0, cut - 8), cut + 8);
+    if (r() < 0.3) S.splice(Math.floor(r() * S.length), 1, pick());   // the seam words it otherwise
+    if (r() < 0.2) S.splice(Math.floor(r() * S.length), 0, 'um');
+    const a = A.join(' ') + (r() < 0.6 ? '.' : ''), b = B[0][0].toUpperCase() + B.join(' ').slice(1) + '.';
+    const seam = S.join(r() < 0.5 ? ' ' : ', ');
+    const got = long.stitch(a, b, seam, r());
+    const allowed = new Set([...bag(a), ...bag(b), ...bag(seam)]);
+    own += [...bag(got.text)].filter((w) => !allowed.has(w)).length;
+    cases++;
+  }
+  check(`no word of its own in ${cases} random joins (every word from a piece or the seam)`, own === 0, own);
 }
 
 /* ------------------------------------------------ 3. a fake model, end to end */

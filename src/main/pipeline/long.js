@@ -178,7 +178,7 @@ function pairAt(X, x, S, j) {
   return x + 2 < X.length && j + 2 < S.length && same(X[x + 2].w, S[j + 2].w);
 }
 
-const MAX_DROP = 4;      // words of a piece's edge the seam may replace
+const MAX_DROP = 4;      // words of a piece's edge the seam may replace (if they are accounted for)
 const MAX_BRIDGE = 10;   // words the seam may supply between the two anchors
 
 const capital = (w) => /^\p{Lu}/u.test(w);
@@ -189,6 +189,45 @@ const ends = (between, next = '') => /[.!?]/.test(between.replace(ELLIPSIS, ''))
   (/\.{2,}|…/.test(between) && /^\p{Lu}/u.test(next) && !/^I(?![\p{L}])/u.test(next));
 /** `text` with a capital first letter, unless its first word is cased on purpose ("iPhone"). */
 const upper = (text) => (/^\p{Ll}[\p{Ll}'’-]*(?![\p{L}])/u.test(text) ? text[0].toUpperCase() + text.slice(1) : text);
+// Fillers a piece may lose at a cut without losing anything.
+const FILLER = new Set('um uh er ah yeah yep okay ok so well like oh right actually basically anyway'.split(' '));
+
+/** The same word, or one the seam wrote a little otherwise ("looked" / "look", "an" / "a" not). */
+function loose(x, y) {
+  if (same(x, y)) return true;
+  const n = Math.min(x.length, y.length);
+  if (n >= 3 && (x.startsWith(y) || y.startsWith(x)) && Math.abs(x.length - y.length) <= 3) return true;
+  return n >= 4 && editDistance(x, y) <= 1;
+}
+
+/**
+ * Is every word the seam would take out of the pieces accounted for -- found again in what the
+ * seam puts there, or next to the junction in either piece (a doubled word)? A filler may go, and
+ * so may one word a piece ended on (the model finishing a phrase the cut left open: "extremely
+ * high."). Anything else lost, and the pieces' text is kept ("…update its model. What I mean is"
+ * once went because a short seam skipped it).
+ */
+function accounted(A, anchorA, B, anchorB, S) {
+  const pool = [
+    ...S.slice(anchorA.j + 1, anchorB.j),
+    ...A.slice(Math.max(0, anchorA.x - 7), anchorA.x + 1),
+    ...B.slice(anchorB.x, anchorB.x + 8)
+  ].map((t) => t.w);
+  const lost = (words) => words.filter((t) => !FILLER.has(t.w) && !pool.some((w) => loose(t.w, w)));
+  const aDropped = A.slice(anchorA.x + 1), bDropped = B.slice(0, anchorB.x);
+  const aLost = lost(aDropped), bLost = lost(bDropped);
+  return bLost.length === 0 && (aLost.length === 0 || (aDropped.length <= 1 && aLost.length === 1));
+}
+
+/** `word` with `model`'s first-letter case -- never lower-casing a name, never "AMD", "iPhone" or "I". */
+const casedFrom = (word, model) => {
+  if (!model || !loose(word.toLowerCase(), model.toLowerCase())) return word;
+  if (word.length > 1 && word.slice(1) !== word.slice(1).toLowerCase()) return word;
+  if (word === 'I' || /^I['’]/.test(word)) return word;
+  // The seam's own spelling of the word decides; a word it wrote otherwise only lends its capital.
+  if (word.toLowerCase() !== model.toLowerCase() && capital(word) && !capital(model) && !ordinary(word.toLowerCase())) return word;
+  return (capital(model) ? word[0].toUpperCase() : word[0].toLowerCase()) + word.slice(1);
+};
 const casedLike = (word, model) => {
   if (!model || word.toLowerCase() !== model.toLowerCase()) return word;
   // Only the first letter's case: "AMD", "iPhone" and the like keep their own.
@@ -211,9 +250,14 @@ const casedLike = (word, model) => {
  * starts a paragraph, as the pieces' own breaks do; one that runs on loses the full stop the
  * model put at the cut and its next word takes the seam's case.
  *
- * At most MAX_DROP words of either piece are replaced and MAX_BRIDGE supplied; nothing across a
- * line break or a list marker. When the seam cannot be lined up, see fallback().
- * Returns {text, how}.
+ * The pieces' own words come first (measured on the user's 15 long dictations, 2026-10-17): the
+ * anchors grow over words the seam wrote a little otherwise; a word is taken out of a piece only
+ * if it is accounted for -- written again by the seam, or doubled across the cut -- or is a filler,
+ * or is the one word a piece ended on; a restart the pieces left out ("I'm not, and") is not put
+ * back; a question or exclamation a piece ended on stays. At most MAX_DROP words of either piece
+ * are replaced and MAX_BRIDGE supplied; nothing across a line break or a list marker, nothing
+ * next to a number. Every word of the result is a word of a piece or of the seam (bench/long.js).
+ * When the seam cannot be lined up, see fallback(). Returns {text, how}.
  */
 function stitch(a, b, seam, at = 0.5) {
   if (!a) return { text: b || '', how: 'first' };
@@ -261,31 +305,53 @@ function stitch(a, b, seam, at = 0.5) {
 
   const lineBreakIn = (s) => /\n/.test(s) || /^\s*(?:[-*•]|\d{1,2}[.)])\s/m.test(s);
 
-  if (anchorA && anchorB && anchorB.j - anchorA.j - 1 <= MAX_BRIDGE) {
+  if (anchorA && anchorB) {
+    // The pieces' own words first: an anchor grows over words the seam wrote alike ("looked" /
+    // "look"), so the seam replaces only what is really missing, doubled or invented.
+    while (anchorA.x + 1 < A.length && anchorA.j + 1 < anchorB.j && loose(A[anchorA.x + 1].w, S[anchorA.j + 1].w)) {
+      anchorA = { x: anchorA.x + 1, j: anchorA.j + 1, dropped: anchorA.dropped - 1 };
+    }
+    while (anchorB.x > 0 && anchorB.j - 1 > anchorA.j && loose(B[anchorB.x - 1].w, S[anchorB.j - 1].w)) {
+      anchorB = { x: anchorB.x - 1, j: anchorB.j - 1, dropped: anchorB.dropped - 1 };
+    }
+  }
+
+  // Light words the seam has between two pieces that dropped nothing: a single "and" the second
+  // piece left off as an opener comes back; two or more ("I'm not, and") are a restart the
+  // pieces rightly left out.
+  const bridgeWords = anchorA && anchorB ? S.slice(anchorA.j + 1, anchorB.j) : [];
+  const fragment = anchorA && anchorB && !anchorA.dropped && !anchorB.dropped && bridgeWords.length >= 2 &&
+    bridgeWords.every((t) => LIGHT.has(t.w) || FILLER.has(t.w) || /^(i'm|it's|that's|we're|you're|they're|i've|don't|didn't)$/.test(t.w));
+
+  if (anchorA && anchorB && !fragment && anchorB.j - anchorA.j - 1 <= MAX_BRIDGE && accounted(A, anchorA, B, anchorB, S)) {
     const aKeepEnd = A[anchorA.x].end;
     const aDropped = a.slice(aKeepEnd);
     // b's opening up to its anchor -- with anything before its first word (a quote, a marker).
     const bDropped = b.slice(0, B[anchorB.x].i) + (B[0].i > 0 ? '\n' : '');
     const closer = /["”’)\]]/.test(aDropped);
     // Numbers, amounts, addresses: the seam may write them otherwise ("$300" / "300 dollars");
-    // what a piece wrote of them, or next to them, is never replaced.
+    // what a piece wrote of them, or next to them, is never replaced. ("R&D" is a word.)
     const near = a.slice(A[Math.max(0, anchorA.x - 2)].i, aKeepEnd) + b.slice(B[anchorB.x].i, B[Math.min(B.length - 1, anchorB.x + 2)].end);
-    const exact = /[\d$€£%@#/\\&]/.test(aDropped + bDropped + near) ||
+    const exact = /[\d$€£%@#/]/.test(aDropped + bDropped + near) ||
       (anchorA.dropped + anchorB.dropped > 0 && /\d/.test(seam.slice(S[Math.max(0, anchorA.j - 2)].i, S[Math.min(S.length - 1, anchorB.j + 2)].end)));
     if (!lineBreakIn(aDropped) && !lineBreakIn(bDropped) && !closer && !exact) {
       let mid = seam.slice(S[anchorA.j].end, S[anchorB.j].i).replace(/\s+/g, ' ');
       let rest = b.slice(B[anchorB.x].i);
-      rest = casedLike(B[anchorB.x].raw, S[anchorB.j].raw) + rest.slice(B[anchorB.x].raw.length);
+      rest = casedFrom(B[anchorB.x].raw, S[anchorB.j].raw) + rest.slice(B[anchorB.x].raw.length);
       const bridged = anchorB.j - anchorA.j - 1;
       const edits = anchorA.dropped + anchorB.dropped + bridged;
-      const sentenceEnd = ends(mid, S[anchorB.j].raw);
+      let sentenceEnd = ends(mid, S[anchorB.j].raw);
+      // A question or an exclamation the piece ended on is the model's choice, not the cut's full
+      // stop: it stays ("should we launch this early? With this raw...").
+      const asked = !anchorA.dropped && /^[?!]/.test(aDropped);
       if (!edits && sentenceEnd && /[.!?:]$/.test(a)) {
         // A sentence that ends at the cut ended the piece too: a new paragraph, as before.
         return { text: a + '\n\n' + rest, how: 'seam: paragraph' };
       }
       if (!bridged) {
         // Nothing between the anchors but punctuation: a sentence end, or the seam's comma, or a space.
-        const mark = sentenceEnd ? (/[.!?]/.exec(mid.replace(ELLIPSIS, '')) || ['.']) : /[,;:—–]/.exec(mid.replace(ELLIPSIS, ''));
+        let mark = sentenceEnd ? (/[.!?]/.exec(mid.replace(ELLIPSIS, '')) || ['.']) : /[,;:—–]/.exec(mid.replace(ELLIPSIS, ''));
+        if (asked) { mark = [aDropped[0]]; sentenceEnd = true; }
         mid = mark ? mark[0] + ' ' : ' ';
         if (sentenceEnd) rest = upper(rest);
       } else if (!/\s$/.test(mid)) {
@@ -323,8 +389,16 @@ function join(a, b, sentenceEnd, next, how) {
     if (first && !capital(first[0])) b = first[0][0].toUpperCase() + b.slice(1);
     return { text: a.replace(/[,;]$/, '') + '. ' + b, how };
   }
+  // A question or exclamation the piece ended on stays, and what follows starts a sentence.
+  if (/[?!]$/.test(a)) return { text: a + ' ' + upper(b), how: how + ', kept ' + a.slice(-1) };
   if (/[^.]\.$/.test(a)) a = a.slice(0, -1);
-  if (first && next) b = casedLike(first[0], next) + b.slice(first[0].length);
+  if (first && next) b = casedFrom(first[0], next) + b.slice(first[0].length);
+  // The sentence runs on but the seam does not say how the next word is written: an ordinary word
+  // the model capitalised only because its piece began there loses the capital ("R&D That").
+  else if (first && capital(first[0]) && first[0] !== 'I' && !/^I['’]/.test(first[0]) &&
+    first[0].slice(1) === first[0].slice(1).toLowerCase() && ordinary(first[0].toLowerCase())) {
+    b = first[0].toLowerCase() + b.slice(first[0].length);
+  }
   return { text: a + ' ' + b, how };
 }
 
@@ -377,6 +451,12 @@ function fallback(a, b, why) {
   if (!first) return { text: a + ' ' + b, how: 'fallback: ' + why };
   const word = first[0];
   if (ended) {
+    // A piece the model began in lower case is, to the model, the same sentence going on: the
+    // full stop at the cut was the cut's ("is astronomical. is relatively" -> one sentence). After
+    // a question or an exclamation, a capital.
+    if (/[^.]\.$/.test(a) && !/\.\.$/.test(a) && /^\p{Ll}/u.test(word) && word === word.toLowerCase()) {
+      return { text: a.slice(0, -1) + ' ' + b, how: 'fallback: ' + why + ', runs on' };
+    }
     if (!capital(word) && word === word.toLowerCase()) b = word[0].toUpperCase() + b.slice(1);
     return { text: a + ' ' + b, how: 'fallback: ' + why };
   }

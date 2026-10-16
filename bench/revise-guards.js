@@ -13,7 +13,7 @@
  *      which leaves the selection as the reference does.
  *   3. Through run() with a fake model: the 'refused' event and its message, the instruction
  *      transcribed only when the result alone cannot decide, the local log (no selection text in
- *      it); selections up to 12,000 characters, an output budget that grows with them, a span
+ *      it); selections up to 6,000 characters, an output budget that grows with them, a span
  *      whose tokens do not fit refused up front, and an answer cut off by the budget never pasted.
  *
  *   node bench/revise-guards.js
@@ -65,7 +65,7 @@ const FORMAL =
   'Driving, however, would give us the car on arrival, so that we could visit the lake on the second day without renting one. ' +
   'I am retiring for the night, so let us decide tomorrow and discuss the budget in the morning.';
 
-// About 12,000 characters of distinct sentences, as a long dictation is.
+// Thousands of characters of distinct sentences, as a long dictation is.
 function longText(chars) {
   const A = ['schedule', 'budget', 'draft', 'review', 'migration', 'rollout', 'survey'];
   const B = ['design', 'data', 'support', 'sales', 'research', 'mobile', 'platform', 'finance', 'legal', 'hiring', 'infra'];
@@ -81,6 +81,7 @@ function longText(chars) {
 }
 
 const words = (s) => s.split(/\s+/);
+const LONG = longText(5600);   // ~1,000 words
 const firstShare = (s, share) => words(s).slice(0, Math.round(words(s).length * share)).join(' ');
 
 const CASES = [
@@ -117,7 +118,16 @@ const CASES = [
   ['a sentence dictated over a short selection, replacing it (#8)', 'Lets cook test it.', 'Smoke test', "Let's smoke test it.", 'pass'],
   ['"make it a table": fewer words, the same facts', SHARES, 'make this a table',
     '| testers | use |\n|---|---|\n| 40 % | every day |\n| 25 % | a few times a week |\n| rest | tried it once |', 'pass'],
-  ['"bold the second bullet" on plain text: unchanged, the "nothing changed" note', 'Two eggs and some milk.', 'bold the second bullet point', 'Two eggs and some milk.', 'noop']
+  ['"bold the second bullet" on plain text: unchanged, the "nothing changed" note', 'Two eggs and some milk.', 'bold the second bullet point', 'Two eggs and some milk.', 'noop'],
+  // -- the real model on long selections (results/revise_long_check.log, 2026-10-17), rebuilt --
+  ['"clean up the grammar" over ~1,000 words came back as one line (pasted in the first round)', LONG, 'uh can you clean up the grammar',
+    'Sure, here is the text with the grammar cleaned up.', 'short'],
+  ['"make it casual like a slack message" kept 15 %', TRIP, 'um make it casual like a slack message', firstShare(TRIP, 0.15), 'short'],
+  ['"turn this into a bulleted list" kept a third', STATUS, 'turn this into a bulleted list', '- ' + firstShare(STATUS, 0.33), 'short'],
+  ['"fix the grammar" kept 35 %', TRIP, 'fix the grammar', firstShare(TRIP, 0.35), 'short'],
+  ['"make this a lot shorter" to 15 %: asked for', TRIP, 'um make this a lot shorter', "Driving is nine hours with the kids; the train is pricier but near the hotel.", 'pass'],
+  ['"delete everything after the first sentence" to 20 %: asked for', TRIP, 'delete everything after the first sentence', TRIP.slice(0, TRIP.indexOf('.') + 1), 'pass'],
+  ['"Summarize" to a tenth: asked for', LONG, 'Summarize', 'Notes on schedules, budgets and reviews across teams, most waiting on approvals or vendors before the next release.', 'pass']
 ];
 
 function unitTests() {
@@ -136,6 +146,9 @@ function unitTests() {
   check('a rewrite of about the same length passes without the instruction (no extra decode)', guards.check(TRIP, FORMAL).verdict === 'pass');
   check('a much shorter one needs the instruction first ("compact" may; "list" may not)', guards.check(TRIP, CASES[10][3]).verdict === 'ask');
   check('without the instruction (it could not be transcribed), a suspicious result is pasted', guards.verdict(STATUS, firstShare(STATUS, 0.57), null).refuse === false);
+  check('...but one under 40 % of the selection is not: nothing said it may be that short', guards.verdict(LONG, 'Sure, here it is.', null).reason === 'short');
+  check('a sentence or two may shrink under 40 % (revise_gold "make me sound more confident")',
+    guards.verdict('Hi, I was just wondering if you could maybe look at my draft at some point?', 'Please review my draft.', 'uh make me sound more confident').refuse === false);
 }
 
 function goldSweep() {
@@ -242,24 +255,27 @@ async function throughRun() {
     log.map((e) => e.reason).join(',') === 'noop,deleted,echo' && log[1].instruction === 'Format the stuff I listed as a list.' && log[1].spanChars === STATUS.length, log);
   check('the log holds no selection text', !fs.readFileSync(process.env.TYPD_GUARD_LOG, 'utf8').includes('research credits program'));
 
-  section('   longer selections (8,192-token window)');
-  // 12,000 characters: accepted; the budget grows with the span.
-  const big = longText(12000);
+  section('   longer selections (4,096-token window)');
+  // 6,000 characters: accepted; the budget grows with the span, within the window.
+  const big = longText(6000);
   reviseOut = big.replace(/ the /g, ' '); instruction = 'Clean this up.';
   n = fake.requests.length;
   ev = await run(big);
   last = ev[ev.length - 1];
   const rq = fake.requests.slice(n).find((r) => /^Revise/.test(r.system));
-  check('12,000 characters (~2,000 words): revised', last.type === 'done', last);
-  check(`its output budget is the span's tokens and half again plus 256: ${rq && rq.body.max_tokens}`, rq && rq.body.max_tokens === Math.round(3000 * 1.5) + 256, rq && rq.body.max_tokens);
+  const spanTok = 1500, promptTok = spanTok + Math.ceil(13 * 2) + 96, room = 4096 - promptTok - 16;
+  const want = Math.min(room, Math.max(1024, Math.round(spanTok * 1.5) + 256));
+  check('6,000 characters (~1,000 words): revised', last.type === 'done', last);
+  check(`its output budget: the span's tokens and half again plus 256, within what the window has left (${rq && rq.body.max_tokens} = ${want})`,
+    rq && rq.body.max_tokens === want && promptTok + rq.body.max_tokens <= 4096, rq && rq.body.max_tokens);
   ev = await run(big + 'x');
-  check('12,001 characters: "Too much selected — up to ~2,000 words"', ev[ev.length - 1].message === 'Too much selected — up to ~2,000 words', ev[ev.length - 1]);
+  check('6,001 characters: "Too much selected — up to ~1,000 words"', ev[ev.length - 1].message === 'Too much selected — up to ~1,000 words', ev[ev.length - 1]);
   // A span whose tokens do not fit (Turkish or code runs ~3 characters a token or fewer).
   const dense = await fakeLlama({ tokenChars: 1.5, answer: () => 'language English<asr_text>x' });
   const p2 = freshPipeline({ TYPD_MODEL_DIR: dir, TYPD_LLAMA_PORT: String(dense.port), TYPD_LLAMA_SERVER: server, TYPD_SELFTEST: '0' });
   n = dense.requests.length;
   ev = await events(p2.run({ mode: 'revise', audio, span: big, signal: null, contextBlock: null }));
-  check('a span of 8,000 tokens: refused up front, nothing sent to the model', ev[ev.length - 1].message === 'Too much selected — up to ~2,000 words' && dense.requests.length === n, ev[ev.length - 1]);
+  check('a span of 4,000 tokens: refused up front, nothing sent to the model', ev[ev.length - 1].message === 'Too much selected — up to ~1,000 words' && dense.requests.length === n, ev[ev.length - 1]);
   await dense.close();
   // Cut off by the budget: the end is missing, so it is never pasted.
   const p3 = freshPipeline({ TYPD_MODEL_DIR: dir, TYPD_LLAMA_PORT: String(fake.port), TYPD_LLAMA_SERVER: server, TYPD_SELFTEST: '0' });

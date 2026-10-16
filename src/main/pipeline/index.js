@@ -137,11 +137,12 @@ const REVISE_MAX_SECONDS = 20;
  */
 const MAX_CLOUD_SPAN = 8000;
 
-// The local model's: what fits its 8,192-token window with the instruction and the rewrite
+// The local model's: what fits its 4,096-token window with the instruction and the rewrite
 // (local.js CONTEXT). 3,000 characters / ~450 words in a 2,048-token window until 0.2.3; the
-// user's revisions are mostly whole dictations of 500-700 characters, and longer ones were refused.
-const MAX_LOCAL_SPAN = 12000;
-const TOO_MUCH_LOCAL = 'Too much selected — up to ~2,000 words';
+// user's revisions are mostly whole dictations of 500-700 characters. Past ~1,000 words the model
+// is unreliable anyway (echoes, a few words; results/revise_long_check.log, 2026-10-17).
+const MAX_LOCAL_SPAN = 6000;
+const TOO_MUCH_LOCAL = 'Too much selected — up to ~1,000 words';
 
 /*
  * Guard log: every refused revision, one JSON line in <userData>/revise-guards.jsonl -- which guard,
@@ -261,8 +262,8 @@ async function* run(opts = {}) {
     // The same model hears the instruction and edits the span itself: nothing
     // leaves the machine for revision either.
     if (!span) throw new Error('Nothing selected — highlight some text first');
-    // The span is both prompt and answer inside the server's 8,192-token window (see local.js):
-    // ~12,000 characters is the most that fits with a spoken instruction and room for the
+    // The span is both prompt and answer inside the server's 4,096-token window (see local.js):
+    // ~6,000 characters is the most that fits with a spoken instruction and room for the
     // rewrite. Say so instead of failing; local.revise also refuses a span whose tokens do not
     // fit (Turkish or code runs more tokens per character than English prose).
     if (spanTruncated || span.length > MAX_LOCAL_SPAN) throw new Error(TOO_MUCH_LOCAL);
