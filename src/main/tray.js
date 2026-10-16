@@ -26,12 +26,15 @@ function preview40(text) {
  * @param {object} deps
  * @param {(section: string, opts?: object) => void} deps.open  the Typd window
  * @param {(text: string) => void} deps.copy                  out of clipboard history
+ * @param {() => {label: string, action?: string}|null} [deps.updateLine]   app-update line (appUpdate.js)
+ * @param {(action: string) => void} [deps.updateAction]       a click on it (the download page)
  * @param {(id: string) => void} deps.statusAction             a click on the status line
  * @param {(term: string) => void} deps.forget                 undo a learned word
  * @param {() => string|null} [deps.modelLine]                 model-update line (modelUpdate.js)
  * @param {() => void} [deps.flag]                             "That was wrong" on the last dictation
  * @param {() => 'ready'|'none'|null} [deps.canFlag]           null: sharing is not in this build
  * @param {() => string|null} [deps.flagKey]                   its shortcut, shown beside it
+ * @param {() => void} [deps.quit]                             quit, saying it was the tray (index.js)
  */
 function createTray(deps) {
   let tray = null;
@@ -81,6 +84,8 @@ function createTray(deps) {
   function menu() {
     const s = status.describe();
     const last = lastDictation();
+    // Packaged builds: a new Typd downloading, waiting to install, or just installed.
+    const update = deps.updateLine ? deps.updateLine() : null;
     // Tester builds and the developer's machines: which model, and whether it is updating.
     const model = deps.modelLine ? deps.modelLine() : null;
     // Where sharing exists (sharing.js): flag the last dictation, with its shortcut beside it.
@@ -92,6 +97,9 @@ function createTray(deps) {
     return Menu.buildFromTemplate([
       s.action ? { label: s.line, click: () => deps.statusAction(s.action.id) } : { label: s.line, enabled: false },
       ...(model ? [{ label: model, enabled: false }] : []),
+      ...(update ? [update.action && deps.updateAction
+        ? { label: update.label, click: () => deps.updateAction(update.action) }
+        : { label: update.label, enabled: false }] : []),
       { type: 'separator' },
       { label: 'Open Typd', click: () => deps.open('home') },
       last
@@ -105,7 +113,7 @@ function createTray(deps) {
       { label: "What's new", click: () => deps.open('news') },
       { label: 'Send feedback', click: feedback },
       { type: 'separator' },
-      { label: 'Quit Typd', click: () => app.quit() }
+      { label: 'Quit Typd', click: () => (deps.quit ? deps.quit() : app.quit()) }
     ]);
   }
 

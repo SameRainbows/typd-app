@@ -24,7 +24,10 @@ const DEFAULTS = {
   // Nothing is shared unless it is 'on'.
   share: '',
   // "That was wrong": a combination (globalShortcut) that flags the last dictation; '' = none.
-  flagHotkey: hotkeyLogic.flagDefaultFor(process.platform)
+  flagHotkey: hotkeyLogic.flagDefaultFor(process.platform),
+  // macOS only: keep the Dock icon while Typd runs. Off, Typd lives in the menu bar and the
+  // Dock icon shows only while the Typd window is open (home-window.js, syncDock).
+  showInDock: false
 };
 
 /** Two good choices, for anything that wants to suggest one: the default key and a chord. */

@@ -6,7 +6,7 @@ const {
 } = require('electron');
 
 const { createOverlayWindow, positionOverlay, showOverlay } = require('./overlay-window');
-const { registerHotkeys, registerFlagHotkey } = require('./hotkeys');
+const { registerHotkeys, registerFlagHotkey, stopHook } = require('./hotkeys');
 const hotkeyLogic = require('./hotkey-logic');
 const settings = require('./settings');
 const home = require('./home-window');
@@ -21,6 +21,7 @@ const dictionary = require('./dictionary');
 const sharing = require('./sharing');   // only with consent: the public beta's choice, or a tester build's key
 const ask = require('./ask-window');    // sharing's two questions: consent, and "That was wrong"
 const modelUpdate = require('./modelUpdate');   // tester builds and the developer's machines; inert without a key
+const appUpdate = require('./appUpdate');       // packaged builds: a newer signed Typd, installed while you are away
 
 const MAC = process.platform === 'darwin';
 
@@ -122,10 +123,30 @@ let flagKey = null;         // "That was wrong" (registerFlagHotkey); null when 
 let session = null;
 let firstRunNote = false;   // the pill says "Ready — tap … and talk" once, on the very first launch
 
-// Two copies fighting over one global hotkey is a confusing failure that looks
-// like the hotkey is simply broken.
-if (!app.requestSingleInstanceLock()) {
+/* -------------------------------------------------------------------- quit */
+
+/*
+ * Who asked Typd to quit, for the log: the tray's "Quit Typd", or (unset) macOS itself --
+ * ⌘Q, the Dock's Quit, logging out, a quit Apple event, SIGTERM. Closing a window is never
+ * on that list: window-all-closed below keeps Typd running.
+ */
+let quitBy = null;
+
+function quit(by) {
+  quitBy = by;
   app.quit();
+}
+
+const debugLife = (...args) => { if (process.env.TYPD_DEBUG) console.log('[typd:quit]', ...args); };
+app.on('before-quit', () => debugLife('before-quit, asked by ' + (quitBy || 'macOS or a signal (⌘Q, the Dock, logout, kill)')));
+process.on('exit', (code) => debugLife('process exit, code ' + code));
+
+// Two copies fighting over one global hotkey is a confusing failure that looks
+// like the hotkey is simply broken. The second copy quits at once and does nothing
+// else on the way out (whenReady below checks `primary`); the first opens its window.
+const primary = app.requestSingleInstanceLock();
+if (!primary) {
+  quit('a second copy of Typd (the first keeps running)');
 }
 
 /* ------------------------------------------------------------------ plumbing */
@@ -152,6 +173,20 @@ function markRendererReady() {
     const [channel, payload] = queued.shift();
     overlay.webContents.send(channel, payload);
   }
+}
+
+/**
+ * The overlay, made again if it is gone. Nothing closes it on purpose, but a key press that
+ * found it destroyed would throw inside the hotkey's native callback (hotkeys.js, guard), and
+ * every later dictation would find it destroyed too.
+ */
+function ensureOverlay() {
+  if (overlay && !overlay.isDestroyed()) return overlay;
+  if (overlay) console.log('[typd] the overlay was gone; making it again');
+  rendererReady = false;
+  overlay = createOverlayWindow({ dev });
+  overlay.webContents.on('did-finish-load', markRendererReady);
+  return overlay;
 }
 
 /** Restore full click-through. Anything else leaves a dead rectangle on screen. */
@@ -230,6 +265,7 @@ function beginSession() {
       pipeline.wake(current.contextBlock);
     });
 
+  ensureOverlay();
   positionOverlay(overlay);
   passThrough();
   showOverlay(overlay);   // on top of everything, never takes focus from the app being dictated into
@@ -383,7 +419,8 @@ function cancelSession() {
 
 /** A short note in the pill between sessions -- a learned word, or the first-run hello. */
 function note(message, ms) {
-  if (session || !overlay || overlay.isDestroyed()) return;
+  if (session || !overlay) return;
+  ensureOverlay();
   positionOverlay(overlay);
   passThrough();
   showOverlay(overlay);
@@ -416,6 +453,8 @@ function statusAction(id) {
 const trayUi = createTray({
   open: (section, opts) => home.open(section, opts),
   copy: (text) => inject.copy(text),
+  updateLine: () => appUpdate.line(),
+  updateAction: () => require('electron').shell.openExternal(appUpdate.DOWNLOAD_PAGE).catch(() => {}),
   statusAction,
   forget: (term) => forget(term),
   modelLine: () => modelUpdate.line(),
@@ -424,7 +463,8 @@ const trayUi = createTray({
     const s = sharing.get();
     return s ? (s.lastInfo() ? 'ready' : 'none') : null;
   },
-  flagKey: () => (flagKey && flagKey.binding) || null
+  flagKey: () => (flagKey && flagKey.binding) || null,
+  quit: () => quit('the tray menu (Quit Typd)')
 });
 
 const refreshTray = () => trayUi.refresh();
@@ -511,6 +551,51 @@ function switchModel() {
   });
 }
 
+/* -------------------------------------------------------------- app updates */
+
+let appUpdater = null;
+
+/** Leave so appUpdate.js's helper can swap the app; forced if anything holds the quit up. */
+function quitForUpdate() {
+  const t = setTimeout(() => app.exit(0), 8000);
+  if (t.unref) t.unref();
+  quit('an app update (appUpdate.js)');
+}
+
+/**
+ * Packaged builds only (appUpdate.js). Started as soon as the overlay exists, so the first start
+ * of a just-installed version says at once that it is alive; its verdict follows the overlay's
+ * page and the model's start-up self-test, and a failure hands the helper back the old version.
+ */
+function startAppUpdate() {
+  const { BrowserWindow } = require('electron');
+  const visible = () => BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed() && w.isVisible());
+  const asking = () => MAC && require('./permissions-mac').isAsking();
+  const local = require('./pipeline/local');
+  const away = () => { try { return powerMonitor.getSystemIdleTime() >= 1800; } catch { return false; } };
+  appUpdater = appUpdate.start({
+    // Never while dictating; not while a Typd window is open, unless nobody has touched the
+    // computer for half an hour (a window left open must not hold updates back for days).
+    busy: () => Boolean(session) || (visible().length > 0 && !away()),
+    onWarm: local.onWarm,
+    changed: () => refreshTray(),
+    quit: quitForUpdate,
+    reportExtra: () => ({ windows: visible().map((w) => w.getTitle() || 'untitled'), dock: MAC && app.dock ? app.dock.isVisible() : null, tray: Boolean(trayUi.tray), asking: asking() })
+  });
+  if (!appUpdater) return;
+  // "Updated to x": the tray says it; on Windows the pill too, briefly. A Mac relaunch shows nothing.
+  appUpdater.onUpdated(({ to }) => { if (!MAC) note('Updated to ' + to, 4000); refreshTray(); });
+  if (!appUpdater.firstStart) return;
+  let loaded = false, warm = null;
+  const decide = () => {
+    if (!loaded || !warm) return;
+    appUpdater.settle({ windowOk: true, modelOk: warm.ok, why: warm.ok ? '' : String((warm.error && warm.error.message) || '') })
+      .then((v) => { if (v === 'failed') setTimeout(() => { pipeline.stop(); app.exit(1); }, 500); });
+  };
+  overlay.webContents.once('did-finish-load', () => { loaded = true; decide(); });
+  local.onWarm((r) => { if (!warm) { warm = r; decide(); } });
+}
+
 /**
  * Windows: is the microphone switched off for desktop apps in Privacy settings? Read
  * without opening it. A blocked microphone is the one launch-time problem that opens the
@@ -538,10 +623,12 @@ function checkMacPermissions() {
 /* -------------------------------------------------------------------- start */
 
 app.whenReady().then(() => {
-  // macOS: a menu-bar utility -- no Dock icon, no app menu, not in the app switcher. Before
-  // the overlay exists, so it is created as the accessory window it will stay. The Typd
-  // window brings the Dock icon back while it is open.
-  if (MAC && app.dock) app.dock.hide();
+  if (!primary) return;   // the second copy is on its way out (see requestSingleInstanceLock)
+
+  // macOS: a menu-bar utility -- no Dock icon, no app menu, not in the app switcher -- unless
+  // "Show Typd in the Dock" is on. Before the overlay exists, so it is created as the window
+  // it will stay. The Typd window brings the Dock icon back while it is open (syncDock).
+  home.syncDock();
 
   // The windows follow the system's light or dark theme. The pill does not: it keeps the
   // dark palette it has always had, pinned in overlay.html (data-scheme), because it sits
@@ -561,6 +648,7 @@ app.whenReady().then(() => {
 
   overlay = createOverlayWindow({ dev });
   overlay.webContents.on('did-finish-load', markRendererReady);
+  if (!stub) startAppUpdate();
 
   // Warm the injector during launch so the first paste does not pay the ~450 ms
   // shell start, and the speech model so the first dictation does not pay for
@@ -677,6 +765,7 @@ app.whenReady().then(() => {
   settings.onChange((key) => {
     if (key === 'sounds' || key === 'mic' || key === 'micLabel') send('settings:changed', { sounds: settings.get('sounds'), mic: settings.get('mic'), micLabel: settings.get('micLabel') });
     if (key === 'mic') refreshTray();
+    if (key === 'showInDock') home.syncDock();
   });
 
   // Launching Typd again (Start, Windows search) while it runs opens the window: the tray
@@ -710,16 +799,26 @@ app.whenReady().then(() => {
 
   // macOS: microphone, Accessibility and Input Monitoring are asked for together, in one
   // dialog, and again whenever one goes missing (permissions-mac.js). Open at login is the
-  // system's own login item, added on the first run of the installed app. Opening Typd
-  // again from Finder, Spotlight or Launchpad -- the way to reach it when the menu bar hides
-  // its icon behind the notch -- opens the window, as a second launch does on Windows.
+  // system's own login item, added on the first run of the installed app.
   if (MAC) {
-    require('./permissions-mac').ensure('startup').then(checkMacPermissions);
+    // After a quiet update relaunch the dialog waits until someone is at the keyboard (a new
+    // ad-hoc build is a new app to macOS, so its switches may need turning on again).
+    const askPermissions = () => require('./permissions-mac').ensure('startup').then(checkMacPermissions);
+    if (appUpdater && appUpdater.firstStart) { checkMacPermissions(); appUpdate.whenUserActive(askPermissions); } else askPermissions();
     require('./mac/login-item').sync(settings.get('startAtLogin'));
     setInterval(checkMacPermissions, 15000);
-    const launched = Date.now();
-    app.on('activate', () => { if (Date.now() - launched > 3000) home.open('home'); });
   }
+
+  // macOS: a click on the Dock icon, or opening Typd again from Finder, Spotlight or
+  // Launchpad while it runs -- the way to reach it when the menu bar hides its icon behind
+  // the notch -- opens the window, as a second launch does on Windows. The overlay is made
+  // again first if it is gone. The one handler for 'activate'; not in the first seconds,
+  // when macOS can send one as Typd launches.
+  const launched = Date.now();
+  app.on('activate', () => {
+    ensureOverlay();
+    if (Date.now() - launched > 3000) home.open('home');
+  });
 
   if (preview) {
     // The pill is pinned dark (overlay.html); TYPD_PREVIEW_THEME=light shows its light palette.
@@ -845,18 +944,61 @@ app.whenReady().then(() => {
     if (overlay && !overlay.isDestroyed()) overlay.hide();
   });
 
-  app.on('activate', () => {
-    if (!overlay || overlay.isDestroyed()) {
-      rendererReady = false;
-      overlay = createOverlayWindow({ dev });
-      overlay.webContents.on('did-finish-load', markRendererReady);
-    }
-  });
+  if (process.env.TYPD_TEST_CLOSE_HOME) testCloseHome(process.env.TYPD_TEST_CLOSE_HOME);
 });
 
+/*
+ * CI only (mac.yml, "Close the Typd window, stay running"). TYPD_TEST_CLOSE_HOME=<file>: open
+ * the Typd window 5 s after launch, close it 3 s after it shows with win.close() -- the close
+ * button's own path -- and from 10 s after that write <file> once a second: the pid, "alive",
+ * and whether the key is still heard. Nothing here runs without the variable.
+ */
+function testCloseHome(file) {
+  const { BrowserWindow } = require('electron');
+  const heard = () => (hotkeys ? hotkeys.keysHeard : 0);
+  let atOpen = 0, atClose = 0, closedAt = 0, last = 0, late = 0;
+  const write = () => {
+    // How late this 1 s timer fires: App Nap, among others, coalesces a background app's timers.
+    const now = Date.now();
+    if (last) late = Math.max(late, now - last - 1000);
+    last = now;
+    const lines = [
+      'pid: ' + process.pid,
+      'alive',
+      'window: closed ' + Math.round((Date.now() - closedAt) / 1000) + ' s ago' + (home.isOpen() ? ', but still open' : ''),
+      'hotkey: ' + (hotkeys ? hotkeys.state() : 'none'),
+      'keys heard: ' + atOpen + ' before the window opened, ' + (atClose - atOpen) + ' while open, ' + (heard() - atClose) + ' since it closed',
+      'dictation: ' + (session ? session.mode + ', open' : 'none open'),
+      'dock: ' + (app.dock ? (app.dock.isVisible() ? 'shown' : 'hidden') : 'none'),
+      'overlay: ' + (overlay && !overlay.isDestroyed() ? 'alive' : 'gone') + ', windows: ' + BrowserWindow.getAllWindows().length,
+      'timer: up to ' + late + ' ms late'
+    ];
+    try { require('fs').writeFileSync(file, lines.join('\n') + '\n'); } catch (err) { console.log('[typd:test]', err.message); }
+  };
+  setTimeout(() => {
+    atOpen = heard();
+    home.open('home');
+    const opened = Date.now();
+    const waitShown = setInterval(() => {
+      const shown = BrowserWindow.getAllWindows().some((w) => w !== overlay && w.isVisible());
+      if (!shown && Date.now() - opened < 15000) return;
+      clearInterval(waitShown);
+      setTimeout(() => {
+        atClose = heard();
+        closedAt = Date.now();
+        console.log('[typd:test] closing the Typd window; ' + (hotkeys ? hotkeys.state() : 'no hotkey'));
+        home.close();
+        setTimeout(() => { write(); setInterval(write, 1000); }, 10000);
+      }, 3000);
+    }, 250);
+  }, 5000);
+}
+
 app.on('will-quit', () => {
+  debugLife('will-quit');
   if (hotkeys) hotkeys.close();
   if (flagKey) flagKey.close();
+  stopHook();
   inject.stop();
   pipeline.stop();
 });
@@ -864,3 +1006,8 @@ app.on('will-quit', () => {
 // A dictation overlay is a background utility. Closing its only window is not a
 // reason to exit -- it lives in the tray until asked to leave.
 app.on('window-all-closed', (e) => e.preventDefault());
+
+// Anything that dies under Typd, for the log: a renderer (the pill, the window) or a helper
+// process Electron runs (GPU, audio, network).
+app.on('render-process-gone', (_e, wc, d) => debugLife('a renderer is gone:', d && d.reason, d && d.exitCode));
+app.on('child-process-gone', (_e, d) => debugLife('a ' + (d && d.type) + ' process is gone:', d && d.reason, d && d.exitCode));

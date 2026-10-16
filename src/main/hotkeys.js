@@ -66,6 +66,41 @@ const label = (b) => logic.label(b, PLATFORM);
 /** The single-key entry a binding names, or null for a combination (kept for permissions-mac.js). */
 const tapKey = (b) => logic.single(b, PLATFORM);
 
+/*
+ * uiohook calls its listeners from native code, and it treats an exception coming back as
+ * fatal: its callback hands the pending exception to napi_fatal_error, which aborts the
+ * process. No dialog, no log line -- Typd, its menu-bar icon and its key are simply gone.
+ * Everything a key press sets off (a dictation starting, the Typd window hearing the key)
+ * runs inside these listeners, so each one is wrapped: a bug there costs one key press,
+ * never the app.
+ */
+function guard(fn) {
+  return (e) => {
+    try {
+      fn(e);
+    } catch (err) {
+      console.log('[typd:hotkey] a key handler threw (Typd keeps running):', (err && err.stack) || err);
+    }
+  };
+}
+
+/*
+ * macOS: the event tap is started once and kept until Typd quits, even when the key
+ * changes (the listeners are swapped instead). Stopping it joins libuiohook's thread from
+ * this one, and on a Mac that thread waits on this one (dispatch_sync to the main queue)
+ * for every key press: a press at that moment hangs Typd for good. Windows restarts its
+ * hook freely (rearm), so there close() still stops it.
+ */
+let macTap = null;
+
+/** Stop the shared hook for good: at quit only. */
+function stopHook() {
+  if (!macTap) return;
+  const tap = macTap;
+  macTap = null;
+  try { tap.stop(); } catch { /* already stopped */ }
+}
+
 /** macOS: may the event tap start? Never prompts -- see permissions-mac.js. */
 function macTrusted() {
   try {
@@ -112,7 +147,15 @@ function registerHotkeys({ onPress, onRelease, onCancel, onAltDown, binding, int
       releaseEscape();
       onCancel();
     });
-    onPress();
+    try {
+      onPress();
+    } catch (err) {
+      // No dictation started, so none is open: the next press starts one rather than
+      // "finishing" nothing. guard() logs it.
+      open = false;
+      releaseEscape();
+      throw err;
+    }
   };
 
   const finish = () => {
@@ -122,9 +165,11 @@ function registerHotkeys({ onPress, onRelease, onCancel, onAltDown, binding, int
     onRelease();
   };
 
+  let seen = 0;   // key events this binding's listeners heard, for state() (the CI check reads it)
+
   const act = (what) => {
     if (!what || paused) return;
-    if (process.env.TYPD_DEBUG) console.log('[typd:hotkey]', what, open ? '(open)' : '(closed)');
+    if (process.env.TYPD_DEBUG) console.log('[typd:hotkey]', what, open ? '(open)' : '(closed)', 'at', (Date.now() / 1000).toFixed(3));
     if (what === 'toggle') { if (open) finish(); else start(); }
     else if (what === 'start') start();
     else if (what === 'finish') finish();
@@ -156,10 +201,11 @@ function registerHotkeys({ onPress, onRelease, onCancel, onAltDown, binding, int
     waiting = setInterval(() => {
       if (!macTrusted()) return;
       try {
-        uIOhook.start();
+        uIOhook.start();   // a no-op when the tap already runs
         clearInterval(waiting);
         waiting = null;
         hook = uIOhook;
+        macTap = uIOhook;
         trigger.reset();
         console.log('[typd:hotkey] ' + label(BOUND) + ' is listening');
       } catch (err) {
@@ -190,7 +236,8 @@ function registerHotkeys({ onPress, onRelease, onCancel, onAltDown, binding, int
       const KEY = UiohookKey[ONE.key];
       const IGNORE = new Set([...(ONE.ignore || []).map((k) => UiohookKey[k]), 0]);
 
-      onDown = (e) => {
+      onDown = guard((e) => {
+        seen++;
         if (e.keycode === KEY) {
           const fresh = !trigger.isDown();
           const what = trigger.down(Date.now());
@@ -199,11 +246,12 @@ function registerHotkeys({ onPress, onRelease, onCancel, onAltDown, binding, int
           return;
         }
         if (!IGNORE.has(e.keycode)) trigger.other();
-      };
-      onUp = (e) => {
+      });
+      onUp = guard((e) => {
+        seen++;
         if (e.keycode === KEY) act(trigger.up(Date.now()));
-      };
-      onMouse = () => trigger.other();
+      });
+      onMouse = guard(() => trigger.other());
 
       uIOhook.on('keydown', onDown);
       uIOhook.on('keyup', onUp);
@@ -216,8 +264,11 @@ function registerHotkeys({ onPress, onRelease, onCancel, onAltDown, binding, int
         // throw; wait quietly instead and let permissions-mac.js do the asking.
         startWhenAllowed(uIOhook, 'Accessibility is not on for Typd yet');
       } else {
-        uIOhook.start();
+        const already = MAC && macTap === uIOhook;
+        uIOhook.start();   // macOS: a no-op when the tap already runs (kept across key changes)
         hook = uIOhook;
+        if (MAC) macTap = uIOhook;
+        if (MAC && !already) console.log('[typd:hotkey] ' + label(BOUND) + ' is listening');
       }
     } catch (err) {
       if (process.env.TYPD_DEBUG) console.log('[typd:hotkey]', err);
@@ -246,6 +297,17 @@ function registerHotkeys({ onPress, onRelease, onCancel, onAltDown, binding, int
     failed: ok ? [] : [label(BOUND)],
     reason: why,
     isOpen: () => open,
+
+    /** Key events this binding has heard (the CI check in mac.yml compares them). */
+    get keysHeard() { return seen; },
+
+    /** One line on whether the key can be heard right now (debug logs, the CI check). */
+    state() {
+      const how = !ok ? 'failed (' + why + ')'
+        : !NATIVE ? 'shortcut' + (globalShortcut.isRegistered(BOUND) ? ' registered' : ' not registered')
+        : hook ? 'listening' : waiting ? 'waiting for Accessibility' : attached ? 'not started' : 'closed';
+      return label(BOUND) + ': ' + how + (paused ? ', paused' : '') + (NATIVE ? ', ' + seen + ' key events heard' : '');
+    },
 
     /**
      * The key picker is listening: ignore the key meanwhile. A combination is
@@ -318,7 +380,8 @@ function registerHotkeys({ onPress, onRelease, onCancel, onAltDown, binding, int
       detach();
       attached = null;
       if (hook) {
-        try { hook.stop(); } catch { /* already stopped */ }
+        // macOS keeps the tap for the next binding (see macTap); stopHook() ends it at quit.
+        if (!MAC) { try { hook.stop(); } catch { /* already stopped */ } }
         hook = null;
       }
     }
@@ -343,7 +406,7 @@ function registerFlagHotkey(binding, dictationKey, onFlag) {
   const main = logic.validate(dictationKey, PLATFORM);
   if (main.ok && main.binding.toLowerCase() === want.toLowerCase()) return none;
   let ok = false;
-  try { ok = globalShortcut.register(want, () => onFlag()); } catch { ok = false; }
+  try { ok = globalShortcut.register(want, guard(() => onFlag())); } catch { ok = false; }
   if (process.env.TYPD_DEBUG) console.log('[typd:hotkey] flag', want, ok ? 'registered' : 'taken by another app');
   return {
     binding: ok ? want : null,
@@ -353,4 +416,4 @@ function registerFlagHotkey(binding, dictationKey, onFlag) {
   };
 }
 
-module.exports = { registerHotkeys, registerFlagHotkey, BINDING: label(BINDING), label, tapKey, DEFAULT_BINDING };
+module.exports = { registerHotkeys, registerFlagHotkey, stopHook, BINDING: label(BINDING), label, tapKey, DEFAULT_BINDING };

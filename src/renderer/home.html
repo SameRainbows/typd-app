@@ -181,6 +181,15 @@
           <label class="switch"><input type="checkbox" id="startAtLogin" aria-labelledby="loginTitle" /><span></span></label>
         </div>
 
+        <!-- macOS only: off, Typd lives in the menu bar and its Dock icon shows only while this window is open -->
+        <div class="row" id="dockRow" hidden>
+          <div class="label">
+            <h2 id="dockTitle">Show Typd in the Dock</h2>
+            <p>Keep its icon in the Dock while Typd runs; click it to open this window. Off, Typd lives in the menu bar.</p>
+          </div>
+          <label class="switch"><input type="checkbox" id="showInDock" aria-labelledby="dockTitle" /><span></span></label>
+        </div>
+
         <div class="row">
           <div class="label">
             <h2 id="recTitle">Keep recordings</h2>

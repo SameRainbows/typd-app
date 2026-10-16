@@ -15,6 +15,8 @@
  *   node bench/hotkeys.js
  */
 
+const fs = require('fs');
+const path = require('path');
 const logic = require('../src/main/hotkey-logic');
 
 let failures = 0;
@@ -202,6 +204,134 @@ check('another combination can be chosen', logic.validFlag('Ctrl+Shift+F9', 'win
   check('Right Alt + Shift + Backspace does not toggle dictation', t.up(120) === null);
   t.down(1000);
   check('a clean Right Alt tap still does', t.up(1100) === 'toggle');
+}
+
+/* ------------------------------------------------- hotkeys.js, with fakes */
+
+/*
+ * hotkeys.js itself, with Electron and uiohook replaced by fakes. uiohook calls its listeners
+ * from native code and aborts the whole process if one throws (napi_fatal_error), so nothing
+ * a key press sets off may ever reach it; and on a Mac the event tap must survive a change of
+ * key (stopping it can hang Typd: see hotkeys.js, macTap).
+ */
+section('hotkeys.js: a key press can never take Typd down');
+{
+  const Module = require('module');
+  const { EventEmitter } = require('events');
+  const realLoad = Module._load;
+  const realPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+
+  const load = (platform) => {
+    const hook = Object.assign(new EventEmitter(), { starts: 0, stops: 0 });
+    hook.start = () => { hook.starts++; };
+    hook.stop = () => { hook.stops++; };
+    const codes = new Proxy({}, { get: (_, k) => (typeof k === 'string' ? 1000 + [...k].reduce((a, c) => a + c.charCodeAt(0), 0) : undefined) });
+    const shortcuts = new Map();   // globalShortcut's registrations: accelerator -> callback
+    const fakes = {
+      electron: {
+        globalShortcut: {
+          register: (acc, fn) => { shortcuts.set(acc, fn); return true; },
+          unregister: (acc) => { shortcuts.delete(acc); },
+          isRegistered: (acc) => shortcuts.has(acc)
+        },
+        systemPreferences: { isTrustedAccessibilityClient: () => true }
+      },
+      'uiohook-napi': { uIOhook: hook, UiohookKey: codes }
+    };
+    Module._load = function (request, ...rest) {
+      return Object.prototype.hasOwnProperty.call(fakes, request) ? fakes[request] : realLoad.call(this, request, ...rest);
+    };
+    Object.defineProperty(process, 'platform', { value: platform });
+    const file = require.resolve('../src/main/hotkeys');
+    delete require.cache[file];
+    try { return { hk: require(file), hook, codes, shortcuts }; } finally { Object.defineProperty(process, 'platform', realPlatform); }
+  };
+
+  try {
+    const { hk, hook, codes, shortcuts } = load('darwin');
+    let presses = 0;
+    const quiet = console.log;
+    const keys = hk.registerHotkeys({
+      binding: 'RightMeta',
+      onPress: () => { presses++; throw new Error('a dictation that cannot start'); },
+      onRelease: () => {}, onCancel: () => {}
+    });
+    let threw = null;
+    console.log = () => {};
+    try {
+      hook.emit('keydown', { keycode: codes.MetaRight });
+      hook.emit('keyup', { keycode: codes.MetaRight });
+    } catch (err) { threw = err; } finally { console.log = quiet; }
+    check('a throwing press never reaches uiohook', !threw && presses === 1, threw ? threw.message : 'presses ' + presses);
+    check('the state line says it listens and counts keys', /Right ⌘.*: listening, 2 key events heard$/.test(keys.state()), keys.state());
+    check('and keysHeard agrees', keys.keysHeard === 2);
+
+    keys.close();
+    check('macOS: a change of key keeps the event tap running', hook.stops === 0, 'stops ' + hook.stops);
+    let after = 0;
+    const next = hk.registerHotkeys({ binding: 'RightAlt', onPress: () => { after++; }, onRelease: () => {}, onCancel: () => {} });
+    hook.emit('keydown', { keycode: codes.AltRight });
+    hook.emit('keyup', { keycode: codes.AltRight });
+    hook.emit('keydown', { keycode: codes.MetaRight });
+    hook.emit('keyup', { keycode: codes.MetaRight });
+    check('the new key works, the old one is gone', after === 1 && presses === 1, 'new ' + after + ', old ' + presses);
+
+    // "That was wrong" is a globalShortcut beside the hook (sharing.js). Binding it, a flag that
+    // throws, and binding it again as index.js does on every change of key (bindFlag) must never
+    // stop or restart the event tap, nor take the dictation key with them.
+    const tap0 = { starts: hook.starts, stops: hook.stops };
+    const throwingFlag = () => { throw new Error('a flag that cannot open'); };
+    let flag = hk.registerFlagHotkey(logic.flagDefaultFor('darwin'), 'RightAlt', throwingFlag);
+    check('macOS: the flag shortcut registers beside the key', flag.ok && shortcuts.has(flag.binding), flag.binding);
+    let flagThrew = null;
+    console.log = () => {};
+    try { shortcuts.get(flag.binding)(); } catch (err) { flagThrew = err; } finally { console.log = quiet; }
+    check('a flag that throws is caught (guarded, like the key)', !flagThrew, flagThrew && flagThrew.message);
+    flag.close();
+    flag = hk.registerFlagHotkey(logic.flagDefaultFor('darwin'), 'RightAlt', throwingFlag);
+    check('macOS: binding the flag again never stops or restarts the event tap',
+      flag.ok && hook.stops === tap0.stops && hook.starts === tap0.starts, 'starts ' + (hook.starts - tap0.starts) + ', stops ' + (hook.stops - tap0.stops));
+    // The tap above started a dictation; this one finishes it.
+    const wasOpen = next.isOpen();
+    hook.emit('keydown', { keycode: codes.AltRight });
+    hook.emit('keyup', { keycode: codes.AltRight });
+    check('and the dictation key still works beside it', wasOpen && !next.isOpen(), 'open before ' + wasOpen + ', after ' + next.isOpen());
+    const flagBinding = flag.binding;
+    flag.close();
+    check('closed, the flag shortcut is gone', !shortcuts.has(flagBinding));
+    next.close();
+    hk.stopHook();
+    check('macOS: the tap stops at quit (stopHook)', hook.stops === 1, 'stops ' + hook.stops);
+    hk.stopHook();
+    check('and only once', hook.stops === 1);
+  } finally {
+    Module._load = realLoad;
+  }
+
+  // The Mac build of uiohook-napi is patched so its start can never hang Typd's main thread
+  // (scripts/build-uiohook-mac.js). The patch is exact text: say so here, on any platform,
+  // the day an update to uiohook-napi stops it fitting.
+  {
+    const { patched, MARK } = require('../scripts/build-uiohook-mac.js');
+    const dir = path.join(__dirname, '..', 'node_modules', 'uiohook-napi');
+    let ok = false, why = '';
+    try {
+      const src = fs.readFileSync(path.join(dir, 'src', 'lib', 'uiohook_worker.c'), 'utf8');
+      const out = patched(src, require(path.join(dir, 'package.json')).version);
+      ok = out === null || (out.includes(MARK) && /while \(hook_state == 0\) \{\s*uv_cond_wait/.test(out) && patched(out) === null);
+    } catch (err) { why = err.message; }
+    check('the Mac start-handshake fix fits the installed uiohook-napi', ok, why);
+  }
+
+  try {
+    const { hk, hook } = load('win32');
+    const keys = hk.registerHotkeys({ binding: 'RightAlt', onPress: () => {}, onRelease: () => {}, onCancel: () => {} });
+    keys.close();
+    check('Windows: close() still stops its hook', hook.stops === 1, 'stops ' + hook.stops);
+  } finally {
+    Module._load = realLoad;
+    delete require.cache[require.resolve('../src/main/hotkeys')];
+  }
 }
 
 console.log('\n' + (failures ? failures + ' FAILED' : 'all hotkey checks passed') + '\n');
