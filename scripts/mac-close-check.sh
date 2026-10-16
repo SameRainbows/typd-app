@@ -1,7 +1,7 @@
 #!/bin/bash
 # The macOS CI check "Close the Typd window, stay running" (mac.yml), one pass.
 #
-#   scripts/mac-close-check.sh exec|open <Typd.app>
+#   scripts/mac-close-check.sh exec|open <Typd.app> [label]
 #
 # exec  starts Typd's binary from this shell: it runs with the runner's privacy rights, so its
 #       event tap works and synthetic keys reach it.
@@ -18,8 +18,9 @@
 # keys whenever it heard them before its window opened -- and quit cleanly at the end.
 
 set -u
-MODE="${1:?exec or open}"
+HOW="${1:?exec or open}"
 APP="${2:?the Typd.app to test}"
+MODE="${3:-$HOW}"   # the label in the log
 BIN="$APP/Contents/MacOS/Typd"
 MARK="$RUNNER_TEMP/typd-close-home-$MODE.txt"
 LOG="$PWD/close-home-$MODE.log"
@@ -44,7 +45,7 @@ for i in $(seq 1 20); do pgrep -f "$BIN" >/dev/null || break; sleep 0.5; done
 rm -f "$MARK" "$LOG" "$LOG.err" "$KEYS"
 touch "$STARTED"
 
-if [ "$MODE" = open ]; then
+if [ "$HOW" = open ]; then
   if ! open "$APP" --env TYPD_DEBUG=1 --env "TYPD_TEST_CLOSE_HOME=$MARK" --stdout "$LOG" --stderr "$LOG.err"; then
     echo "open --env failed; passing the variables through launchd instead"
     launchctl setenv TYPD_DEBUG 1
@@ -66,6 +67,13 @@ poster=$!
 for i in $(seq 1 60); do [ -s "$MARK" ] && break; alive || break; sleep 1; done
 kill $poster 2>/dev/null || true
 sleep 2
+if [ ! -s "$MARK" ] && alive; then
+  # Running but silent: where is it stuck? Every thread's stack, main thread first.
+  echo "--- [$MODE] no marker yet Typd runs: its threads, sampled"
+  sample "$pid" 3 -file "$RUNNER_TEMP/sample-$MODE.txt" > /dev/null 2>&1 || true
+  sed -n '/^Call graph:/,/^Total number in stack/p' "$RUNNER_TEMP/sample-$MODE.txt" 2>/dev/null | cut -c1-220 | head -300 || true
+  echo "--- [$MODE] the start of its log"; head -60 "$LOG" "$LOG.err" 2>/dev/null | cut -c1-220 || true
+fi
 
 show "marker, 12 s after the close"
 [ -s "$MARK" ] || bad "no marker: Typd did not get 10 s past closing its window"
