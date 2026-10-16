@@ -101,19 +101,23 @@ alive || bad "Typd died when its key finished a dictation after the window close
 show "marker, after two taps of Right ⌘"
 threads
 
-# Then left alone for a minute, as a person's Mac would leave it, and pressed again.
-sleep 60
-show "marker, after a minute alone"
-threads
-idle=$(field 's/^keys heard: .*, \([0-9]*\) since it closed$/\1/p')
-f19 10 300
-tap; sleep 4
-alive || bad "Typd died when its key was pressed a minute after the window closed"
-tap; sleep 3
-again=$(field 's/^keys heard: .*, \([0-9]*\) since it closed$/\1/p')
-show "marker, after pressing again"
-if [ "${before:-0}" -gt 0 ]; then
-  [ "${again:-0}" -gt "${idle:-0}" ] || bad "a minute after the window closed the key layer no longer hears keys ($idle, then $again)"
+# Then left alone, as a person's Mac would leave it (IDLE seconds, default 60; 0 skips it),
+# and pressed again.
+IDLE="${IDLE:-60}"
+if [ "$IDLE" -gt 0 ]; then
+  sleep "$IDLE"
+  show "marker, after $IDLE s alone"
+  threads
+  idle=$(field 's/^keys heard: .*, \([0-9]*\) since it closed$/\1/p')
+  f19 10 300
+  tap; sleep 4
+  alive || bad "Typd died when its key was pressed $IDLE s after the window closed"
+  tap; sleep 3
+  again=$(field 's/^keys heard: .*, \([0-9]*\) since it closed$/\1/p')
+  show "marker, after pressing again"
+  if [ "${before:-0}" -gt 0 ]; then
+    [ "${again:-0}" -gt "${idle:-0}" ] || bad "$IDLE s after the window closed the key layer no longer hears keys ($idle, then $again)"
+  fi
 fi
 
 # Quit the way ⌘Q does (a quit Apple event); SIGTERM if that cannot be sent within 10 s.
