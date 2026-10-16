@@ -80,10 +80,10 @@ function createTray(deps) {
   function menu() {
     const s = status.describe();
     const last = lastDictation();
-    // Tester builds and the developer's machines: which model, and whether it is updating.
-    const model = deps.modelLine ? deps.modelLine() : null;
     // Packaged builds: a new Typd downloading, waiting to install, or just installed.
     const update = deps.updateLine ? deps.updateLine() : null;
+    // Tester builds and the developer's machines: which model, and whether it is updating.
+    const model = deps.modelLine ? deps.modelLine() : null;
     return Menu.buildFromTemplate([
       s.action ? { label: s.line, click: () => deps.statusAction(s.action.id) } : { label: s.line, enabled: false },
       ...(model ? [{ label: model, enabled: false }] : []),
