@@ -70,6 +70,7 @@
     if (section === 'history') loadHistory();
     if (section === 'dictionary') loadWords();
     if (section === 'news') loadNews();
+    if (section === 'settings') loadModel();
     meterWanted();
     document.querySelector('.main').scrollTop = 0;
   }
@@ -468,6 +469,68 @@
   $('openRec').addEventListener('click', function () { api.settings.openRecordings(); });
   $('feedback').addEventListener('click', function () { api.feedback(); });
   $('modelLicense').addEventListener('click', function () { api.license(); });
+  $('walkAgain').addEventListener('click', function () { walk.open(1); });
+
+  /* ------------------------------------------------------------ the model */
+
+  // Which published model this computer follows (Automatic / Full / Light), why Automatic picked
+  // what it picked, and a big download waiting for Update now / Later (modelUpdate.js). Shown only
+  // where model updates are followed (every installed Typd).
+  var M = null;
+
+  function loadModel() {
+    return api.model.get().then(function (info) {
+      M = info;
+      renderModel();
+    }).catch(function () {});
+  }
+
+  function variantName(v) { return v === 'light' ? 'Light' : 'Full'; }
+
+  function renderModel() {
+    var on = Boolean(M && M.following);
+    $('modelRow').hidden = !on;
+    $('askRow').hidden = !on;
+    if (!on) return;
+    var m = S.platform.machine;
+    $('modelVariant').value = M.setting || 'auto';
+    $('modelVariant').options[0].textContent = 'Automatic (' + variantName(M.auto) + ')';
+    var help = 'Automatic picks ' + variantName(M.auto) + ' on this ' + m + (M.why ? ': ' + M.why + '.' : '.');
+    var c = M.chosen;
+    if (c && c.want && c.got && c.want !== c.got) help += ' ' + variantName(c.want) + ' is not published yet, so Typd uses ' + variantName(c.got) + '.';
+    $('modelHelp').textContent = help + ' Full is the most accurate; Light is smaller and faster without a strong GPU.';
+    $('modelNowLine').textContent = M.line || '';
+    $('askBeforeModelDownload').checked = Boolean(S.settings.askBeforeModelDownload);
+    var p = M.pending;
+    $('modelAsk').hidden = !p;
+    if (p) {
+      $('modelAskText').textContent = 'New model available (' + p.size + ')' + (p.why === 'metered' ? ' — this connection is metered.' : p.why === 'unknown' ? ' — this connection may be metered.' : '.');
+      $('modelLater').hidden = Boolean(p.later);
+    }
+  }
+
+  $('modelVariant').addEventListener('change', function (e) {
+    var v = e.target.value;
+    api.settings.set('modelVariant', v).then(function (ok) {
+      if (!ok) { failSettings("Couldn't change the model."); loadModel(); return; }
+      S.settings.modelVariant = v;
+      toast(v === 'auto' ? 'Typd picks the model for this ' + S.platform.machine : variantName(v) + ' model chosen. Typd switches when it is ready');
+      setTimeout(loadModel, 400);
+    });
+  });
+  $('askBeforeModelDownload').addEventListener('change', function (e) {
+    var box = e.target;
+    api.settings.set('askBeforeModelDownload', box.checked).then(function (ok) {
+      if (!ok) { box.checked = !box.checked; failSettings("Couldn't change that setting."); return; }
+      S.settings.askBeforeModelDownload = box.checked;
+    });
+  });
+  $('modelUpdateNow').addEventListener('click', function () {
+    api.model.now().then(function () { toast('Downloading the new model'); setTimeout(loadModel, 400); });
+  });
+  $('modelLater').addEventListener('click', function () {
+    api.model.later().then(function () { toast('Typd asks again tomorrow'); setTimeout(loadModel, 400); });
+  });
 
   function renderRecordings() {
     var s = S.settings, m = S.platform.machine;
@@ -784,6 +847,7 @@
   });
 
   api.on('hotkey:heard', function (p) {
+    if (walk.step) walk.heard();
     if (hk.mode !== 'idle') return;
     S.hotkey = p.hotkey;
     var row = $('hotkeyRow');
@@ -822,15 +886,140 @@
     });
   }
 
+  /* ------------------------------------------------------------- walkthrough */
+
+  // Five short steps over the window: what Typd is, a dictation, a revision, "That was wrong", done.
+  // Shown once by itself on the first launch of an installed Typd (main decides: index.js
+  // startWalkthrough), and from Settings. Its practice box is the one place in this window where the
+  // Typd key dictates: main is told when the box has focus (walkthrough:practice) and lets the key
+  // through to a real dictation, pasted into the box.
+  var walk = (function () {
+    var STEPS = 5;
+    var step = 0;
+    var SAMPLE = 'Hi Sam, I just wanted to quickly reach out and let you know that I will most likely be running a little bit late to our meeting tomorrow morning, so sorry about that.';
+
+    function sharing() {
+      var sh = S.settings && S.settings.sharing;
+      if (!sh) return false;
+      if (sh.mode === 'tester') return sh.state !== 'stopped' && !S.settings.sharePaused;
+      return sh.state === 'on';
+    }
+
+    function flagParts() {
+      var fk = S.settings && S.settings.flagKey;
+      return fk ? fk.parts : (S.flagDefault ? S.flagDefault.parts : []);
+    }
+
+    function hint(text, ok) {
+      var h = $('walkHint');
+      h.textContent = text || '';
+      h.classList.toggle('ok-line', Boolean(ok));
+    }
+
+    function render() {
+      var h = S.hotkey, p = S.platform, pad = $('walkPad');
+      $('walk').setAttribute('data-step', String(step));
+      $('walkCount').textContent = step + ' of ' + STEPS;
+      var dots = $('walkDots');
+      dots.textContent = '';
+      for (var i = 1; i <= STEPS; i++) {
+        var d = el('i');
+        d.setAttribute('data-on', String(i === step));
+        dots.appendChild(d);
+      }
+      $('walkBack').hidden = step === 1;
+      $('walkNext').textContent = step === STEPS ? 'Done' : 'Next';
+      $('walkSkip').hidden = step === STEPS;
+      $('walkTry').hidden = step !== 2 && step !== 3;
+      var title, body, parts = h.parts;
+      if (step === 1) {
+        title = 'Typd writes what you say';
+        body = 'Talk, and finished text lands wherever you were typing, punctuation and all. It runs on this ' + p.machine +
+          (sharing() ? '; your dictations are also shared to improve Typd, as you chose (Settings changes that).' : ', so nothing you say is sent anywhere.');
+      } else if (step === 2) {
+        title = 'Try a dictation';
+        body = 'Click in the box, ' + h.verb + ' {key} and say a sentence, then ' + h.verb + ' {key} again.';
+        pad.value = '';
+        pad.placeholder = 'Your words land here…';
+        hint('Typd’s key types into this box while it has focus. Anywhere else, it works the same.');
+      } else if (step === 3) {
+        title = 'Change what you wrote';
+        body = 'Highlight text, ' + h.verb + ' {key} and say the change: “make this shorter”, “make it friendlier”, “turn this into a list”.';
+        pad.value = SAMPLE;
+        hint('Try it here: ' + (p.mac ? '⌘A' : 'Ctrl+A') + ' highlights the whole box.');
+      } else if (step === 4) {
+        title = 'Typd got it wrong? Say so';
+        body = '{key} flags your last dictation, or pick “That was wrong…” in Typd’s menu. ' +
+          (sharing() ? 'It goes to the developer with that dictation, to fix it.' : 'Typd asks before it sends that one dictation to the developer.');
+        parts = flagParts();
+      } else {
+        title = 'You’re set';
+        body = 'Typd waits in the ' + (p.mac ? 'menu bar' : 'tray, by the clock') + '. Its menu has your last dictation, the microphone and this window. ' +
+          'Highlight and talk to revise; talk with nothing highlighted to write.';
+      }
+      $('walkTitle').textContent = title;
+      withKeys($('walkBody'), body, parts);
+      if (step !== 2 && step !== 3) hint('');
+    }
+
+    function go(n) {
+      if (n < 1) n = 1;
+      if (n > STEPS) { close(); return; }
+      if (document.activeElement === $('walkPad')) $('walkPad').blur();
+      step = n;
+      render();
+      $('walkCard').focus();   // keys (Esc) reach the walkthrough; no button is preselected
+    }
+
+    function open(n) {
+      $('walk').hidden = false;
+      go(n || 1);
+      api.walkthrough.done();
+    }
+
+    function close() {
+      $('walk').hidden = true;
+      step = 0;
+      api.walkthrough.practice(false);
+    }
+
+    $('walkNext').addEventListener('click', function () { go(step + 1); });
+    $('walkBack').addEventListener('click', function () { go(step - 1); });
+    $('walkSkip').addEventListener('click', close);
+    $('walk').addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && hk.mode === 'idle') { e.preventDefault(); close(); }
+    });
+    $('walkPad').addEventListener('focus', function () { api.walkthrough.practice(true); });
+    $('walkPad').addEventListener('blur', function () { api.walkthrough.practice(false); });
+    // Typd pastes what it wrote (Ctrl+V / ⌘V): that is the dictation, or the revision, landing.
+    $('walkPad').addEventListener('input', function (e) {
+      if (e.inputType !== 'insertFromPaste') return;
+      if (step === 2) hint('✓ That’s it. It works the same in any app.', true);
+      if (step === 3) hint('✓ Revised. Highlight and talk works in any app.', true);
+    });
+
+    return {
+      open: open,
+      close: close,
+      get step() { return step; },
+      /** The key was heard here, outside the box: say where to click. */
+      heard: function () {
+        if (step === 2 || step === 3) hint('Click in the box first, then ' + S.hotkey.verb + ' ' + S.hotkey.label + '.');
+      }
+    };
+  })();
+
   /* ------------------------------------------------------------------ events */
 
   api.on('home:show', function (p) {
     show(p.section);
     if (p.capture) startCapture();
+    if (p.walkthrough) walk.open(1);
   });
 
   api.on('home:changed', function (p) {
     if (p.what === 'sharing' && S) reloadSettings();
+    if (p.what === 'model' && S && current === 'settings') loadModel();
     if (p.what === 'history' || p.what === 'counts') {
       api.get().then(function (st) { if (st) { S.counts = st.counts; renderCounts(st.counts); } });
       if (current === 'history') loadHistory();
@@ -862,6 +1051,7 @@
       var q = new URLSearchParams(location.search);
       show(q.get('section') || 'home');
       if (q.get('capture') === '1') startCapture();
+      if (q.get('walkthrough') === '1') walk.open(1);
     });
   }
 

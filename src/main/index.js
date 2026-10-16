@@ -22,6 +22,13 @@ const sharing = require('./sharing');   // only with consent: the public beta's 
 const ask = require('./ask-window');    // sharing's two questions: consent, and "That was wrong"
 const modelUpdate = require('./modelUpdate');   // every packaged build (no key: the public routes) and the developer's machines
 const appUpdate = require('./appUpdate');       // packaged builds: a newer signed Typd, installed while you are away
+const netcost = require('./netcost');           // a metered connection: big model downloads ask first
+
+// Which published model this machine follows (Settings: Automatic / Full / Light; hardware.js).
+const choice = require('./modelChoice').createChoice({
+  setting: () => settings.get('modelVariant'),
+  detect: () => require('./hardware').detect({ gpuInfo: () => app.getGPUInfo('basic') })
+});
 
 const MAC = process.platform === 'darwin';
 
@@ -460,6 +467,9 @@ const trayUi = createTray({
   statusAction,
   forget: (term) => forget(term),
   modelLine: () => modelUpdate.line(),
+  modelPrompt: () => modelUpdate.pending(),
+  modelNow: () => { modelUpdate.approve().catch(() => {}); },
+  modelLater: () => { modelUpdate.later().catch(() => {}); },
   flag: () => openFlag(),
   canFlag: () => {
     const s = sharing.get();
@@ -551,6 +561,63 @@ function switchModel() {
     status.set({ model: 'failed', modelWhy: String((err && err.message) || '') });
     throw err;
   });
+}
+
+/* ------------------------------------------------------------ walkthrough */
+
+/**
+ * The first-run walkthrough (renderer/home.js: what Typd is, a dictation, a revision, "That was
+ * wrong", done; under a minute, skippable) is due once per install: in a packaged build whose
+ * settings have never shown it -- a new install, or the first version that has it. Never with
+ * --stub or --preview, TYPD_NO_WALKTHROUGH=1, or the CI's window test (TYPD_TEST_CLOSE_HOME); from
+ * source only with TYPD_WALKTHROUGH=1. Settings opens it again any time.
+ */
+function walkthroughDue() {
+  if (stub || preview || process.env.TYPD_NO_WALKTHROUGH === '1' || process.env.TYPD_TEST_CLOSE_HOME) return false;
+  if (!app.isPackaged && process.env.TYPD_WALKTHROUGH !== '1') return false;
+  return settings.get('walkthrough') === '';
+}
+
+/**
+ * Show it when it is due: a few seconds after launch, one question at a time (it waits while the
+ * consent screen or the Mac permission dialog is open). After an app update's quiet relaunch it
+ * waits, as the consent screen does, until someone is at the keyboard (appUpdate.whenUserActive).
+ * It counts as shown once it opens: closing it early does not bring it back.
+ */
+function startWalkthrough(afterUpdate) {
+  if (!walkthroughDue()) return;
+  const show = () => {
+    if (!walkthroughDue()) return;
+    if (ask.isOpen('consent') || (MAC && require('./permissions-mac').isAsking())) { setTimeout(show, 1000); return; }
+    settings.set('walkthrough', 'done');
+    home.open('home', { walkthrough: true });
+  };
+  if (afterUpdate) appUpdate.whenUserActive(() => setTimeout(show, 1500));
+  else setTimeout(show, 3500);
+}
+
+/* ---------------------------------------------- model choice, asking first */
+
+/**
+ * The model updater's line changed: the tray, an open Typd window (Settings shows the model), and
+ * -- once each time a big download starts waiting for "Update now" -- a quiet note in the pill
+ * pointing at the menu that has the two buttons.
+ */
+let notedAsk = null;
+function modelChanged() {
+  refreshTray();
+  home.changed('model');
+  const p = modelUpdate.pending();
+  const asking = p && !p.later ? p.version : null;
+  if (asking && asking !== notedAsk) note('New model (' + p.size + '): see the menu', 8000);
+  notedAsk = asking;
+}
+
+/** For Settings: the model choice, Automatic's answer and why, and a download waiting for an answer. */
+async function modelInfo() {
+  let d = null;
+  try { d = await choice.describe(); } catch { d = null; }
+  return { following: modelUpdate.following(), ...(d || {}), chosen: modelUpdate.chosen(), pending: modelUpdate.pending(), line: modelUpdate.line() };
 }
 
 /* -------------------------------------------------------------- app updates */
@@ -668,7 +735,12 @@ app.whenReady().then(() => {
       busy: () => Boolean(session),
       switchModel,
       onWarm: local.onWarm,
-      changed: () => refreshTray()
+      changed: modelChanged,
+      // The 1.7B or the 0.6B, by the hardware unless Settings pins one; big downloads ask first
+      // on a metered connection, every download with "Ask before downloading new models".
+      variant: () => choice.variant(),
+      askFirst: () => settings.get('askBeforeModelDownload'),
+      networkCost: () => netcost.probe()
     });
   }
   warmModel();
@@ -698,9 +770,10 @@ app.whenReady().then(() => {
     onAltDown: () => inject.maskAlt(),
     binding,
     // With the Typd window in front, the key answers "heard it" there instead of starting a
-    // dictation that would have nowhere to land -- the key picker's check, and any time.
+    // dictation that would have nowhere to land -- the key picker's check, and any time. The
+    // walkthrough's practice box is the exception: there the key dictates, into that box.
     intercept: () => {
-      if (session || !home.isFocused()) return false;
+      if (session || !home.isFocused() || home.isPracticing()) return false;
       home.heard();
       return true;
     },
@@ -764,7 +837,12 @@ app.whenReady().then(() => {
     wordRemoved: (term) => trayUi.forgotten(term),
     askConsent: () => ask.open('consent'),
     chooseSharing,
-    flagKey: () => (flagKey && flagKey.binding) || null
+    flagKey: () => (flagKey && flagKey.binding) || null,
+    modelInfo,
+    modelNow: () => modelUpdate.approve(),
+    modelLater: () => modelUpdate.later(),
+    // Automatic / Full / Light, or the asking switch, changed: read the hardware again and check soon.
+    modelChanged: () => { choice.forget(); modelUpdate.recheck(); }
   });
 
   settings.onChange((key) => {
@@ -797,6 +875,10 @@ app.whenReady().then(() => {
       if (appUpdater && appUpdater.firstStart) appUpdate.whenUserActive(askConsent); else setTimeout(askConsent, 2500);
     }
   }
+
+  // The walkthrough: once, in the Typd window, on the first launch of an installed Typd (after the
+  // consent screen and the Mac permission dialog), and never into an app update's quiet relaunch.
+  startWalkthrough(Boolean(appUpdater && appUpdater.firstStart));
 
   // First run: start at login is on by default, so make it so -- the installed app's own
   // login entry, or the Startup shortcut when run from source.

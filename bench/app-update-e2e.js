@@ -158,16 +158,20 @@ async function run(aApp, pkgDir) {
   const report = path.join(T, 'report.json');
   const userData = path.join(os.homedir(), 'Library', 'Application Support', 'typd');
   const dir = path.join(userData, 'app-update');
-  // A person who has used Typd has answered the public beta's consent screen (sharing.js). A fresh
-  // runner has not: the screen would open, hold the update back (a Typd window is open, so busy)
-  // and be the window B must not show. Answered "off" here, as that person might have.
+  // A person who has used Typd has answered the public beta's consent screen (sharing.js) and seen
+  // the first-run walkthrough. A fresh runner has not: either would open a window, hold the update
+  // back (a Typd window is open, so busy) and be the window B must not show. Answered "off" and
+  // seen here, as that person might have.
   {
     const f = path.join(userData, 'settings.json');
     const saved = readJson(f) || {};
-    if (saved.share !== 'on' && saved.share !== 'off') {
+    const next = { ...saved };
+    if (saved.share !== 'on' && saved.share !== 'off') next.share = 'off';
+    if (saved.walkthrough !== 'done') next.walkthrough = 'done';
+    if (JSON.stringify(next) !== JSON.stringify(saved)) {
       fs.mkdirSync(userData, { recursive: true });
-      fs.writeFileSync(f, JSON.stringify({ ...saved, share: 'off' }, null, 2));
-      console.log('the consent screen answered "off" in ' + f);
+      fs.writeFileSync(f, JSON.stringify(next, null, 2));
+      console.log('the consent screen answered "off" and the walkthrough seen in ' + f);
     }
   }
   // One code identity for every build (docs/MAC.md "Code signing").

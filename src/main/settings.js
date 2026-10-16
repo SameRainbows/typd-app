@@ -27,8 +27,16 @@ const DEFAULTS = {
   flagHotkey: hotkeyLogic.flagDefaultFor(process.platform),
   // macOS only: keep the Dock icon while Typd runs. Off, Typd lives in the menu bar and the
   // Dock icon shows only while the Typd window is open (home-window.js, syncDock).
-  showInDock: false
+  showInDock: false,
+  // Which published model to follow (modelChoice.js): 'auto' (the hardware decides), 'full' or 'light'.
+  modelVariant: 'auto',
+  // Ask before every model download. Off: downloads over 300 MB ask first only on a metered connection.
+  askBeforeModelDownload: false,
+  // The first-run walkthrough (home window): '' until it has been shown once, then 'done'.
+  walkthrough: ''
 };
+
+const VARIANTS = ['auto', 'full', 'light'];
 
 /** Two good choices, for anything that wants to suggest one: the default key and a chord. */
 const HOTKEYS = [DEFAULTS.hotkey, process.platform === 'darwin' ? 'Command+Shift+Space' : 'Ctrl+Shift+Space'];
@@ -50,6 +58,8 @@ function read() {
   cache.hotkey = hotkeyLogic.normalize(cache.hotkey, process.platform, { sideButtons: true });
   if (!['', 'on', 'off'].includes(cache.share)) cache.share = '';
   if (cache.flagHotkey && !hotkeyLogic.validFlag(cache.flagHotkey, process.platform)) cache.flagHotkey = DEFAULTS.flagHotkey;
+  if (!VARIANTS.includes(cache.modelVariant)) cache.modelVariant = DEFAULTS.modelVariant;
+  if (!['', 'done'].includes(cache.walkthrough)) cache.walkthrough = 'done';
   return cache;
 }
 
@@ -74,6 +84,8 @@ function set(key, value) {
     value = v.binding;
   }
   if (key === 'share' && !['', 'on', 'off'].includes(value)) return false;
+  if (key === 'modelVariant' && !VARIANTS.includes(value)) return false;
+  if (key === 'walkthrough' && !['', 'done'].includes(value)) return false;
   if (key === 'flagHotkey' && value) {
     const v = hotkeyLogic.validFlag(value, process.platform);
     if (!v) return false;

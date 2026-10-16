@@ -39,6 +39,7 @@ const SURFACE = { dark: { bg: '#17191E', sym: '#E6E8EC' }, light: { bg: '#FBFBFC
 let win = null;
 let deps = null;
 let verify = null;          // { binding, previous, timer } while a new key waits to be heard
+let practicing = false;     // the walkthrough's practice box has focus: the key dictates into it
 const removedWords = new Map();
 
 function fromPage(e) {
@@ -152,7 +153,9 @@ function homeState() {
     platform: { mac: MAC, machine: MAC ? 'Mac' : 'PC', os: MAC ? 'macOS' : 'Windows' },
     version: app.getVersion(),
     settings: settingsState(),
-    mark: brand.windowMark()
+    mark: brand.windowMark(),
+    // The walkthrough names "That was wrong"'s shortcut: the one set, else the platform's default.
+    flagDefault: { parts: hotkeyLogic.parts(hotkeyLogic.flagDefaultFor(process.platform), process.platform) }
   };
 }
 
@@ -283,10 +286,25 @@ function register(d) {
       syncDock();
       return true;
     }
+    if (key === 'modelVariant' || key === 'askBeforeModelDownload') {
+      if (!settings.set(key, value)) return false;
+      if (deps.modelChanged) deps.modelChanged(key);
+      return true;
+    }
     if (!['mic', 'micLabel', 'sounds', 'keepRecordings', 'sharePaused'].includes(key)) return false;
     return settings.set(key, value);
   });
   handle('settings:state', () => settingsState());
+
+  // The model: which one (Automatic / Full / Light, and why), and a download waiting for "Update now".
+  handle('model:get', async () => (deps.modelInfo ? deps.modelInfo() : null));
+  handle('model:now', async () => (deps.modelNow ? deps.modelNow() : false));
+  handle('model:later', async () => (deps.modelLater ? deps.modelLater() : false));
+
+  // The walkthrough: its practice box takes the key while it has focus (index.js, intercept), and
+  // it is shown once by itself (index.js), then only from Settings.
+  handle('walkthrough:practice', (on) => { practicing = on === true; return true; });
+  handle('walkthrough:done', () => settings.set('walkthrough', 'done'));
 
   // Sharing (the public beta). Turning it on always goes through the consent screen; off is
   // immediate. Deleting empties the outbox and deletes what the server holds for this install.
@@ -401,12 +419,12 @@ function syncDock() {
 /**
  * Open the window, or bring it forward, on a section: 'home' | 'history' | 'dictionary' |
  * 'settings' | 'news'. `capture`: the hotkey row starts listening for a key at once
- * ("Change shortcut…").
+ * ("Change shortcut…"). `walkthrough`: the first-run walkthrough opens over it.
  */
 function open(section = 'home', opts = {}) {
   const s = SECTIONS.includes(section) ? section : 'home';
   if (win && !win.isDestroyed()) {
-    send('home:show', { section: s, capture: Boolean(opts.capture) });
+    send('home:show', { section: s, capture: Boolean(opts.capture), walkthrough: Boolean(opts.walkthrough) });
     bringForward();
     return;
   }
@@ -439,6 +457,7 @@ function open(section = 'home', opts = {}) {
   // leave the key deaf.
   win.on('closed', () => {
     win = null;
+    practicing = false;
     const step = (name, fn) => {
       try { fn(); } catch (err) { console.log('[typd:home] on close, ' + name + ' failed:', (err && err.stack) || err); }
     };
@@ -447,7 +466,12 @@ function open(section = 'home', opts = {}) {
     step('dock', () => syncDock());
     debug('window closed; Typd keeps running');
   });
-  win.loadFile(PAGE, { query: { section: s, capture: opts.capture ? '1' : '' } });
+  win.loadFile(PAGE, { query: { section: s, capture: opts.capture ? '1' : '', walkthrough: opts.walkthrough ? '1' : '' } });
+}
+
+/** The walkthrough's practice box has focus (and the window too): the key dictates into it. */
+function isPracticing() {
+  return Boolean(practicing && win && !win.isDestroyed() && win.isFocused());
 }
 
 /** Close the window the way its close button does (the CI check in mac.yml uses it). */
@@ -468,4 +492,4 @@ function changed(what) {
   send('home:changed', { what });
 }
 
-module.exports = { register, open, close, isOpen, isFocused, heard, changed, setLoginItem, loginItem, syncDock };
+module.exports = { register, open, close, isOpen, isFocused, isPracticing, heard, changed, setLoginItem, loginItem, syncDock };

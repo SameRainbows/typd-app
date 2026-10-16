@@ -31,6 +31,9 @@ function preview40(text) {
  * @param {(id: string) => void} deps.statusAction             a click on the status line
  * @param {(term: string) => void} deps.forget                 undo a learned word
  * @param {() => string|null} [deps.modelLine]                 model-update line (modelUpdate.js)
+ * @param {() => {size: string, later: boolean}|null} [deps.modelPrompt]   a model download waiting for "Update now"
+ * @param {() => void} [deps.modelNow]                         "Update now"
+ * @param {() => void} [deps.modelLater]                       "Later" (asked again after a day)
  * @param {() => void} [deps.flag]                             "That was wrong" on the last dictation
  * @param {() => 'ready'|'none'|null} [deps.canFlag]           null: sharing is not in this build
  * @param {() => string|null} [deps.flagKey]                   its shortcut, shown beside it
@@ -88,6 +91,13 @@ function createTray(deps) {
     const update = deps.updateLine ? deps.updateLine() : null;
     // Tester builds and the developer's machines: which model, and whether it is updating.
     const model = deps.modelLine ? deps.modelLine() : null;
+    // A big model download on a metered connection (or with "Ask before downloading new models"):
+    // "Update now" / "Later". After Later, only "Update now" stays until it asks again.
+    const prompt = deps.modelPrompt ? deps.modelPrompt() : null;
+    const promptItems = prompt
+      ? [{ label: `New model available (${prompt.size}) — Update now`, click: () => deps.modelNow() },
+        ...(prompt.later ? [] : [{ label: 'Later', click: () => deps.modelLater() }])]
+      : [];
     // Where sharing exists (sharing.js): flag the last dictation, with its shortcut beside it.
     const canFlag = deps.canFlag ? deps.canFlag() : null;
     const flagKey = deps.flagKey ? deps.flagKey() : null;
@@ -97,6 +107,7 @@ function createTray(deps) {
     return Menu.buildFromTemplate([
       s.action ? { label: s.line, click: () => deps.statusAction(s.action.id) } : { label: s.line, enabled: false },
       ...(model ? [{ label: model, enabled: false }] : []),
+      ...promptItems,
       ...(update ? [update.action && deps.updateAction
         ? { label: update.label, click: () => deps.updateAction(update.action) }
         : { label: update.label, enabled: false }] : []),

@@ -204,6 +204,36 @@
           <label class="switch"><input type="checkbox" id="keepRecordings" aria-labelledby="recTitle" /><span></span></label>
         </div>
 
+        <!-- The model this computer follows (modelChoice.js, modelUpdate.js): Automatic picks from the
+             hardware; a big download on a metered connection waits here for Update now / Later. -->
+        <div class="row model" id="modelRow" hidden>
+          <div class="label">
+            <h2 id="modelTitle">Model</h2>
+            <p id="modelHelp">Full is the most accurate. Light is smaller and faster on computers without a strong GPU.</p>
+            <p class="model-now" id="modelNowLine"></p>
+            <div class="model-ask" id="modelAsk" hidden>
+              <span id="modelAskText"></span>
+              <span class="model-ask-btns">
+                <button class="btn solid" type="button" id="modelUpdateNow">Update now</button>
+                <button class="btn ghost" type="button" id="modelLater">Later</button>
+              </span>
+            </div>
+          </div>
+          <select id="modelVariant" aria-labelledby="modelTitle">
+            <option value="auto">Automatic</option>
+            <option value="full">Full (1.7B)</option>
+            <option value="light">Light (0.6B)</option>
+          </select>
+        </div>
+
+        <div class="row" id="askRow" hidden>
+          <div class="label">
+            <h2 id="askTitle">Ask before downloading new models</h2>
+            <p>Off: new models download by themselves, and one over 300 MB asks first on a metered connection.</p>
+          </div>
+          <label class="switch"><input type="checkbox" id="askBeforeModelDownload" aria-labelledby="askTitle" /><span></span></label>
+        </div>
+
         <!-- The public beta (sharing.js): off until the person picks share on the consent screen.
              Turning it on opens that screen again; off is immediate. -->
         <div class="row" id="betaRow" hidden>
@@ -235,7 +265,7 @@
       <footer class="about">
         <p id="privacy"><strong id="privacyHead">Dictation runs on this PC.</strong> <span id="privacyRest">Your voice is never sent anywhere.</span></p>
         <p class="dim" id="aboutLine"></p>
-        <p><button class="text" type="button" id="feedback">Send feedback</button> · <button class="text" type="button" id="modelLicense">Model licence</button></p>
+        <p><button class="text" type="button" id="feedback">Send feedback</button> · <button class="text" type="button" id="modelLicense">Model licence</button> · <button class="text" type="button" id="walkAgain">Show the walkthrough</button></p>
       </footer>
     </section>
 
@@ -246,6 +276,66 @@
       <p class="dim small version" id="newsVersion"></p>
     </section>
   </main>
+
+  <!-- The walkthrough (home.js): five short steps over the window, on the first launch of an installed
+       Typd and from Settings. Its practice box takes the Typd key while it has focus. -->
+  <div class="walk" id="walk" role="dialog" aria-modal="true" aria-labelledby="walkTitle" hidden>
+    <div class="walk-card" id="walkCard" tabindex="-1">
+      <header class="walk-head">
+        <span class="walk-count" id="walkCount"></span>
+        <button class="text" type="button" id="walkSkip">Skip</button>
+      </header>
+      <div class="walk-art" aria-hidden="true">
+        <svg data-art="1" viewBox="0 0 160 64">
+          <rect class="ink" x="34" y="18" width="92" height="28" rx="14"/>
+          <circle class="red" cx="50" cy="32" r="4"/>
+          <rect class="on" x="62" y="29" width="3" height="6" rx="1.5"/><rect class="on" x="69" y="25" width="3" height="14" rx="1.5"/>
+          <rect class="on" x="76" y="22" width="3" height="20" rx="1.5"/><rect class="on" x="83" y="26" width="3" height="12" rx="1.5"/>
+          <rect class="on" x="90" y="23" width="3" height="18" rx="1.5"/><rect class="on" x="97" y="28" width="3" height="8" rx="1.5"/>
+          <rect class="on" x="104" y="25" width="3" height="14" rx="1.5"/><rect class="on" x="111" y="29" width="3" height="6" rx="1.5"/>
+        </svg>
+        <svg data-art="2" viewBox="0 0 160 64">
+          <rect class="field" x="22" y="6" width="116" height="34" rx="7"/>
+          <rect class="chip" x="32" y="15" width="58" height="6" rx="3"/><rect class="chip" x="32" y="26" width="38" height="6" rx="3"/>
+          <rect class="ink" x="74" y="24" width="1.6" height="10"/>
+          <rect class="ink" x="56" y="46" width="48" height="14" rx="7"/><circle class="red" cx="64" cy="53" r="2.4"/>
+          <rect class="on" x="71" y="51" width="2" height="4" rx="1"/><rect class="on" x="76" y="49" width="2" height="8" rx="1"/>
+          <rect class="on" x="81" y="50" width="2" height="6" rx="1"/><rect class="on" x="86" y="48" width="2" height="10" rx="1"/>
+          <rect class="on" x="91" y="51" width="2" height="4" rx="1"/>
+        </svg>
+        <svg data-art="3" viewBox="0 0 160 64">
+          <rect class="chip" x="14" y="13" width="78" height="6" rx="3"/>
+          <rect class="mark-sel" x="10" y="24" width="88" height="15" rx="3"/>
+          <rect class="ink" x="14" y="28.5" width="80" height="6" rx="3"/>
+          <rect class="chip" x="14" y="44" width="54" height="6" rx="3"/>
+          <path class="stroke" d="M107 31.5 h17 m-5 -5 l5 5 l-5 5"/>
+          <rect class="mark-sel" x="131" y="24" width="23" height="15" rx="3"/>
+          <rect class="ink" x="135" y="28.5" width="15" height="6" rx="3"/>
+        </svg>
+        <svg data-art="4" viewBox="0 0 160 64">
+          <path class="stroke" d="M66 58 V8"/>
+          <path class="red" d="M67 9 h30 l-7 9 l7 9 h-30 Z"/>
+        </svg>
+        <svg data-art="5" viewBox="0 0 160 64">
+          <circle class="stroke" cx="80" cy="32" r="22"/>
+          <path class="stroke thick" d="M70 32 l7 7 l14 -15"/>
+        </svg>
+      </div>
+      <h1 id="walkTitle"></h1>
+      <p class="walk-body" id="walkBody"></p>
+      <div class="walk-try" id="walkTry" hidden>
+        <textarea id="walkPad" rows="3" spellcheck="false" aria-label="Practice box"></textarea>
+        <p class="walk-hint" id="walkHint"></p>
+      </div>
+      <footer class="walk-foot">
+        <div class="walk-dots" id="walkDots" aria-hidden="true"></div>
+        <div class="walk-nav">
+          <button class="btn ghost" type="button" id="walkBack">Back</button>
+          <button class="btn solid" type="button" id="walkNext">Next</button>
+        </div>
+      </footer>
+    </div>
+  </div>
 
   <div class="toast" id="toast" role="status" hidden>
     <span id="toastText"></span>
