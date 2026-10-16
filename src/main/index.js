@@ -75,7 +75,9 @@ function keepRecording(current, text) {
       model: path.basename(require('./pipeline/local').MODEL),
       app: current.target ? current.target.process : null,
       context: current.contextBlock || null,
-      span: current.span || null
+      span: current.span || null,
+      // A revision the guards refused (never pasted): why. Absent on everything that landed.
+      ...(current.guard ? { guard: current.guard } : {})
     };
     fs.writeFileSync(path.join(dir, stamp + '.json'), JSON.stringify(meta, null, 1));
   } catch (err) {
@@ -404,6 +406,22 @@ async function endSession() {
         sharing.add(current, event.text);
         refreshTray();
         continue;
+      }
+
+      // A revision the guards stopped (pipeline/guards.js): nothing is pasted and the selection
+      // stays as it was. Kept with the recording (marked) so the failures can be studied; a
+      // deletion's result goes to the clipboard in case it was wanted after all.
+      if (event.type === 'refused') {
+        current.guard = event.reason;
+        keepRecording(current, event.text);
+        if (event.copy) {
+          remember(event.text);
+          keepHistory(current, event.text, 'copied');
+          await inject.copy(event.text);
+          if (session !== current) return;
+        }
+        send('session:error', { message: event.message });
+        break;
       }
 
       send('session:' + event.type, event);
@@ -965,9 +983,10 @@ app.whenReady().then(() => {
     trayUi.setDevices(devices);
   });
 
-  // Live PCM while the user talks, 256 ms at a time. Only a model trained on
-  // audio in pieces uses it (pipeline.openStream); revision never does -- the
-  // instruction is short and the span decides what it means.
+  // Live PCM while the user talks, 256 ms at a time (pipeline.openStream): a model
+  // trained on audio in pieces has them primed, any other has a long dictation's
+  // 45-70 s pieces written before the key is released. Revision never uses it --
+  // the instruction is short and the span decides what it means.
   ipcMain.on('overlay:chunk', (_e, payload) => {
     const current = session;
     if (!current || !payload || !payload.buffer || payload.sampleRate !== 16000) return;

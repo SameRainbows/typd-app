@@ -330,7 +330,8 @@ function fakeServer() {
     // Where the session's fields come from, in the app.
     const pipe = read('src/main/pipeline/index.js'), idx = read('src/main/index.js'), shs = read('src/main/sharing.js');
     check("pipeline: a local revision's 'done' says which adapter ran (local.REVISE_ADAPTER) or false",
-      /yield \{ type: 'done', text: lead \+ revised \+ tail, reviseAdapter: adapter \? require\('path'\)\.basename\(adapter\) : false \};/.test(pipe) && /const adapter = local\.REVISE_ADAPTER;/.test(pipe));
+      /const reviseAdapter = adapter \? require\('path'\)\.basename\(adapter\) : false;/.test(pipe) &&
+      /yield \{ type: 'done', text: lead \+ revised \+ tail, reviseAdapter \};/.test(pipe) && /const adapter = local\.REVISE_ADAPTER;/.test(pipe));
     check("index.js: the session takes it from 'done' before anything is shared", /current\.reviseAdapter = event\.reviseAdapter \|\| false;/.test(idx) &&
       idx.indexOf('current.reviseAdapter = event.reviseAdapter') < idx.indexOf('sharing.add(current, event.text)'));
     check('sharing.add: the exact model version (local.modelVersion) and the adapter go with every item',

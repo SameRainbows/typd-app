@@ -69,9 +69,13 @@ listens.forEach((c) => check(c + '  allowed by preload', pre.includes("'" + c + 
 // Anything main sends must also be allowed, or it lands nowhere.
 const sends = new Set();
 for (const m of main.matchAll(/send\('(session:[^']+)'/g)) sends.add(m[1]);
-// The generic forwarder covers whatever the pipeline yields.
-for (const m of pipe.matchAll(/type: '([a-z]+)'/g)) sends.add('session:' + m[1]);
+// The generic forwarder covers whatever the pipeline yields -- except what main handles itself and
+// never forwards: a refused revision becomes a session:error (pipeline/guards.js).
+const consumed = new Set([...main.matchAll(/if \(event\.type === '([a-z]+)'\) \{[^]*?\s+break;\s+\}/g)].map((m) => m[1]).filter((t) => t !== 'done'));
+for (const m of pipe.matchAll(/type: '([a-z]+)'/g)) if (!consumed.has(m[1])) sends.add('session:' + m[1]);
 [...sends].sort().forEach((c) => check(c + '  allowed by preload', pre.includes("'" + c + "'")));
+check('a refused revision is handled in main (never forwarded as is), and ends as a session:error', consumed.has('refused') &&
+  /event\.type === 'refused'[^]*?send\('session:error', \{ message: event\.message \}\);\s+break;/.test(main));
 
 /* ----------------------------------------------------------------- states */
 

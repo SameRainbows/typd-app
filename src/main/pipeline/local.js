@@ -6,6 +6,8 @@ const http = require('http');
 const { once } = require('events');
 const { spawn } = require('child_process');
 const { activeModel, versionOf } = require('../modelUpdate');
+const long = require('./long');
+const vocab = require('./vocab');
 
 /**
  * The single dictation model: audio in, finished writing out, on this machine.
@@ -303,16 +305,29 @@ const gpuMemory = {
 };
 const modelId = () => VERSION || path.basename(MODEL);
 
+/*
+ * The server's window, in tokens. 8,192 since 0.2.3, for revisions of whole long dictations
+ * (pipeline/index.js takes up to 12,000 characters, ~2,000 words): the selection is in the prompt
+ * and written again in the answer. Dictation never needs more than ~2,000 (the worst real piece,
+ * 71 s plus the longest screen context, is ~1,350 prompt tokens plus its output cap).
+ *
+ * What it costs is the KV cache, allocated whole at start-up: both model sizes (Qwen3 0.6B and
+ * 1.7B) have 28 layers with 8 KV heads of 128, so a token holds 2 x 28 x 8 x 128 = 57,344 values,
+ * 60,928 bytes at q8_0 (34 bytes per 32 values): 119 MiB at 2,048 tokens, 476 MiB at 8,192, so
+ * +357 MiB of VRAM (of RAM on the CPU path). Measured before at 2,048 -> 3,072: +60 MiB
+ * (dictation-research LOG.md, 2026-10-05), the same 58.5 KiB a token. Flash attention (on by
+ * default with CUDA and Metal) keeps the compute buffer from growing with the window.
+ */
+const CONTEXT = 8192;
+
 function launch(layers) {
   const child = spawn(SERVER, [
     '-m', MODEL, '--mmproj', MMPROJ,
     '--host', '127.0.0.1', '--port', String(PORT),
     '-ngl', String(layers),
-    // Under 1 GB of VRAM in total (1,011 MiB measured, 2026-10-05) with no measurable quality
-    // change: 8-bit KV cache, smaller micro-batches, and a 2,048-token window. The worst real
-    // dictation piece (71 s + the longest screen context) needs ~2,014 tokens; long revise
-    // selections are refused up front in pipeline/index.js instead of overflowing.
-    '-c', '2048', '-ctk', 'q8_0', '-ctv', 'q8_0', '-ub', '256', '-np', '1',
+    // Low memory with no measurable quality change (2026-10-05): 8-bit KV cache and smaller
+    // micro-batches. The window is CONTEXT, above.
+    '-c', String(CONTEXT), '-ctk', 'q8_0', '-ctv', 'q8_0', '-ub', '256', '-np', '1',
     '--cache-ram', '0',                           // no host prompt cache: every dictation is new audio
     // The built-in warm-up reserves ~550 MB for a 30 s audio window that a dictation never
     // needs at once; the self-test (or the silent request) warms it instead (1.76 -> 1.35 GB).
@@ -499,160 +514,273 @@ function toWav(samples, sampleRate) {
 }
 
 /**
- * Finished text for a recording, streamed. Yields cumulative text.
+ * Finished text for a recording, streamed. Yields cumulative text; the last value is the text.
+ * Over long.LONG_S the recording is written in pieces joined through their seams (long.js).
+ * `opts.hooks` -- {piece(i, text), seam(i, text, cut), join(i, how)} -- sees each piece, seam
+ * and join as it is made (the eval tools record them).
  *
  * @param {Float32Array} samples
  * @param {number} sampleRate
  * @param {AbortSignal} [signal]
  * @returns {AsyncGenerator<string>}
  */
-async function* dictate(samples, sampleRate, signal, system = '', maxTokens = 1024) {
+async function* dictate(samples, sampleRate, signal, system = '', maxTokens = 1024, opts = {}) {
   const sr = sampleRate || 16000;
-  if (samples.length / sr <= LONG_S) {
-    yield* dictateParts([toWav(samples, sampleRate).toString('base64')], signal, system, maxTokens);
+  if (samples.length / sr <= long.LONG_S) {
+    yield* decodeOne(samples, sr, signal, system, maxTokens);
     return;
   }
-  // Past what the model was trained on (90 s) it drops text silently: on a real 162 s
-  // dictation 3 of 4 runs lost ~40 %. So long recordings are written piece by piece.
-  // The model closes a sentence wherever its audio ends, and people pause mid-phrase
-  // ("their AI ... quota"), so a pause says nothing about punctuation. Each cut is also written
-  // once from the speech either side of it, and that text decides how the pieces join.
-  const { pieces, pauses } = splitLong(samples, sr);
+  yield* dictateLong(samples, sr, signal, system, null, opts.hooks || null);
+}
+
+/** One request's worth of audio to text, streamed, then the dictionary check (vocab.js). */
+async function* decodeOne(samples, sr, signal, system, maxTokens) {
+  const parts = [toWav(samples, sr).toString('base64')];
+  const info = {};
+  let text = '';
+  for await (const t of dictateParts(parts, signal, system, maxTokens, false, { info })) {
+    text = t;
+    yield t;
+  }
+  if (signal && signal.aborted) return;
+  const checked = await checkTerms(parts, system, info, text, signal);
+  if (checked !== text) yield checked;
+}
+
+const pieceKey = (c) => 'piece:' + c.start + ':' + c.end;
+const seamKey = (c) => 'seam:' + c.seamFrom + ':' + c.from + ':' + c.to + ':' + c.seamTo;
+
+/**
+ * A long recording, piece by piece. `cache` (openLong's) holds pieces and seams already written
+ * while the user talked, by audio range: those are awaited, never written twice; the rest are
+ * written here, after anything still in flight (one request on the server at a time). Seam i is
+ * written before piece i + 1, as the pieces arrive.
+ */
+async function* dictateLong(samples, sr, signal, system, cache, hooks) {
+  const { pieces, cuts } = long.splitLong(samples, sr);
+  let waited = false;
+  // Yields partial text while it writes; its last value is the whole text.
+  async function* textOf(key, kind, index, audio) {
+    const job = cache && cache.take(key, system);
+    if (job) {
+      const r = await job;
+      if (r && typeof r.text === 'string') { yield r.text; return; }
+      debug('early', kind, index, 'failed (' + (r && r.error) + '); writing it now');
+    }
+    if (cache && !waited) { await cache.idle(); waited = true; }
+    const t0 = Date.now();
+    let text = '';
+    for await (const t of decodeOne(audio, sr, signal, system, dictationBudget(audio, sr))) { text = t; yield t; }
+    if (cache) cache.timings.push({ kind, index, phase: 'finish', ms: Date.now() - t0 });
+    if (!text) yield '';
+  }
+
   let done = '';
   for (let p = 0; p < pieces.length; p++) {
     let seam = null;
     if (p > 0) {
-      const w = seamAudio(samples, sr, pauses[p - 1]);
-      let t = '';
-      for await (const x of dictateParts([toWav(w, sr).toString('base64')], signal, system, dictationBudget(w, sr))) t = x;
-      const { from, seamFrom, seamTo, to } = pauses[p - 1];
-      seam = readSeam(done, t, (from - seamFrom) / Math.max(1, from - seamFrom + seamTo - to));
-      debug('seam', p, seam ? JSON.stringify(seam) : 'unread', JSON.stringify(t.slice(0, 160)));
+      const c = cuts[p - 1];
+      for await (const t of textOf(seamKey(c), 'seam', p - 1, long.seamAudio(samples, sr, c))) seam = t;
+      if (signal && signal.aborted) return;
+      if (hooks && hooks.seam) hooks.seam(p - 1, seam, c);
     }
+    // Partials are progress for the pill only; the joins are made once each piece is whole.
+    const key = p < cuts.length ? pieceKey(cuts[p]) : 'piece:last';
     let part = '';
-    for await (const t of dictateParts([toWav(pieces[p], sr).toString('base64')], signal, system, dictationBudget(pieces[p], sr))) {
+    for await (const t of textOf(key, 'piece', p, pieces[p])) {
       part = t;
-      yield joinPieces(done, part, seam);
+      yield done ? done + ' ' + part : part;
     }
-    done = joinPieces(done, part, seam);
+    if (signal && signal.aborted) return;
+    if (hooks && hooks.piece) hooks.piece(p, part);
+    if (p === 0) {
+      done = part;
+    } else {
+      const j = long.stitch(done, part, seam, long.seamAt(cuts[p - 1]));
+      debug('join', p, j.how, JSON.stringify(seam ? seam.slice(0, 160) : null));
+      if (hooks && hooks.join) hooks.join(p - 1, j.how, j.text.length);
+      done = j.text;
+    }
+    yield done;
   }
 }
 
-const LONG_S = 75, PIECE_MIN_S = 45, PIECE_MAX_S = 70, FRAME_S = 0.02, SEAM_S = 6, KEEP_S = 0.3;
-
 /**
- * Cut at the longest pause between 45 and 70 s into each piece, until the rest is short.
- * The quietest 100 ms (the old rule) could fall in the gap between two words. A pause is a run
- * of 20 ms frames under 1/30 of the recording's median frame energy (about 15 dB below speech),
- * or under 3x its 10th percentile in a noisy room; with no pause of 60 ms or more, the quietest
- * frame. The pause itself is left out but for KEEP_S at each edge: a piece that starts or ends in
- * seconds of silence loses words (seen on a real 8 s pause). Returns the pieces and, per cut, the
- * pause ([from, to] in samples) and the seam: about SEAM_S of speech either side, from and to
- * the nearest pause of 100 ms+, so it starts and ends between phrases ([seamFrom, seamTo]).
+ * Write a long dictation while the user is still talking. The model takes pieces of 45-70 s
+ * (long.js); 0.2.2 wrote them all after the key was released, so a 600 s dictation waited 21.7 s
+ * for its text (dictation-research reports/dogfood_audit_2026-10-16.md). Now each cut is settled
+ * as soon as the audio passes its window and seam (70 + 9 s into the piece), and its piece and
+ * seam are written in the background, one request at a time; on release only what follows the
+ * last settled cut is left: at most ~79 s of audio and one seam.
+ *
+ * The cuts are long.splitLong's, made causally, so the pieces written early are exactly the
+ * pieces the whole recording gives; finish() looks them up by audio range and prompt and writes
+ * whatever it cannot find. Nothing is pasted until finish() has joined everything; a cancelled
+ * session's signal stops the request in flight and every one after it.
+ *
+ * @param {AbortSignal} signal   the session's
+ * @param {() => string} system  the prompt, read when each piece is sent
  */
-function splitLong(samples, sr) {
-  const f = Math.round(FRAME_S * sr), n = Math.floor(samples.length / f);
-  const e = new Float64Array(n);
-  for (let j = 0; j < n; j++) {
-    let s = 0;
-    for (let k = j * f, end = k + f; k < end; k++) s += samples[k] * samples[k];
-    e[j] = s;
-  }
-  const sorted = Float64Array.from(e).sort();
-  const quiet = Math.max(sorted[Math.floor(n / 2)] / 30, 3 * sorted[Math.floor(n / 10)]);
-  const isGap = (j) => {   // frame j ends a run of 5+ quiet frames (100 ms)
-    for (let k = j - 4; k <= j; k++) if (k < 0 || k >= n || e[k] >= quiet) return false;
-    return true;
-  };
-  const near = (fromS, toS, fallback, pickLast) => {
-    let hit = -1;
-    for (let j = Math.max(0, Math.floor(fromS / f)); j < Math.min(n, Math.floor(toS / f)); j++) {
-      if (isGap(j)) { hit = j * f; if (!pickLast) break; }
-    }
-    return hit < 0 ? fallback : hit;
-  };
-  const keep = Math.round(KEEP_S * sr);
-  const pieces = [], pauses = [];
-  let start = 0;
-  while (samples.length - start > LONG_S * sr) {
-    const lo = Math.ceil((start + PIECE_MIN_S * sr) / f), hi = Math.floor((start + PIECE_MAX_S * sr) / f);
-    let run = 0, longest = 0, first = lo, quietest = lo;
-    for (let j = lo; j < hi; j++) {
-      run = e[j] < quiet ? run + 1 : 0;
-      if (run > longest) { longest = run; first = j - run + 1; }
-      if (e[j] < e[quietest]) quietest = j;
-    }
-    const [from, to] = longest >= 3 ? [first * f, (first + longest) * f] : [quietest * f, quietest * f];
-    const cutA = Math.min(from + keep, Math.round((from + to) / 2)), cutB = Math.max(to - keep, cutA);
-    pieces.push(samples.subarray(start, cutA));
-    pauses.push({
-      from, to,
-      seamFrom: near(from - (SEAM_S + 3) * sr, from - (SEAM_S - 3) * sr, Math.max(0, from - SEAM_S * sr), true),
-      seamTo: near(to + (SEAM_S - 3) * sr, to + (SEAM_S + 3) * sr, Math.min(samples.length, to + SEAM_S * sr), false)
+function openLong(signal, system) {
+  let buf = new Float32Array(SR * 90);
+  let len = 0;
+  let closed = false;
+  const splitter = new long.Splitter(SR);
+  const jobs = new Map();
+  const timings = [];
+  let chain = Promise.resolve();
+
+  function schedule(key, kind, index, audio) {
+    const sys = system();
+    const t = { kind, index, phase: 'early', availableS: len / SR, ms: null };
+    timings.push(t);
+    const promise = chain.then(async () => {
+      if (signal && signal.aborted) { t.ms = 0; return { error: 'cancelled' }; }
+      const t0 = Date.now();
+      t.startS = len / SR;
+      try {
+        let text = '';
+        for await (const x of decodeOne(audio, SR, signal, sys, dictationBudget(audio, SR))) text = x;
+        if (signal && signal.aborted) return { error: 'cancelled' };
+        return { text };
+      } catch (err) {
+        return { error: (err && err.message) || String(err) };
+      } finally {
+        t.ms = Date.now() - t0;
+      }
     });
-    start = cutB;
+    chain = promise;
+    jobs.set(key, { sys, promise });
   }
-  pieces.push(samples.subarray(start));
-  return { pieces, pauses };
+
+  return {
+    /** Float32 mono at 16 kHz, in capture order. */
+    push(samples) {
+      if (closed || (signal && signal.aborted)) return;
+      if (len + samples.length > buf.length) {
+        // Views handed to jobs keep the old buffer, which is never written again.
+        const grown = new Float32Array(Math.max(buf.length * 2, len + samples.length));
+        grown.set(buf.subarray(0, len));
+        buf = grown;
+      }
+      buf.set(samples, len);
+      len += samples.length;
+      if (len <= long.LONG_S * SR) return;
+      for (const c of splitter.feed(buf, len)) {
+        const i = splitter.cuts.length - 1;
+        debug('early: cut', i, 'settled at', (len / SR).toFixed(1), 's; piece', (c.start / SR).toFixed(1), '-', (c.end / SR).toFixed(1), 's');
+        schedule(pieceKey(c), 'piece', i, buf.subarray(c.start, c.end));
+        schedule(seamKey(c), 'seam', i, long.seamAudio(buf, SR, c));
+      }
+    },
+
+    /** Finished text for the whole recording: `samples` is the complete capture. */
+    async* finish(samples, sampleRate, sig, sys, maxTokens = 1024) {
+      closed = true;
+      if (!jobs.size || sampleRate !== SR) {
+        await chain;
+        yield* dictate(samples, sampleRate, sig, sys, maxTokens);
+        return;
+      }
+      // What was written early must be of this very audio: the capture is the chunks, in order.
+      let same = samples.length >= len;
+      for (let i = 0; same && i < len; i++) if (samples[i] !== buf[i]) same = false;
+      if (!same) debug('early: the capture differs from the chunks; writing it all now');
+      debug('early:', jobs.size, 'requests settled while talking;', ((samples.length - splitter.start) / SR).toFixed(1), 's after the last cut');
+      const cache = {
+        take: (key, prompt) => {
+          const j = same && jobs.get(key);
+          return j && j.sys === prompt ? j.promise : null;
+        },
+        idle: () => chain,
+        timings
+      };
+      yield* dictateLong(samples, SR, sig, sys, cache, null);
+    },
+
+    /** Every request's timing so far -- for the bench and the replay. */
+    get timings() { return timings.map((t) => ({ ...t })); },
+    get cuts() { return splitter.cuts.map((c) => c.end); }
+  };
 }
 
-/** The seam's audio: its speech either side of the cut, the pause between shortened to <= 2 x KEEP_S. */
-function seamAudio(samples, sr, { from, to, seamFrom, seamTo }) {
-  const keep = Math.min(Math.round(KEEP_S * sr), Math.floor((to - from) / 2));
-  const a = samples.subarray(seamFrom, from + keep);
-  const b = samples.subarray(to - keep, seamTo);
-  const w = new Float32Array(a.length + b.length);
-  w.set(a);
-  w.set(b, a.length);
-  return w;
+/* ------------------------------------------------------- the dictionary check */
+
+/** A one-shot completion (no streaming): the parsed reply, or null. */
+function complete(payload, signal, timeoutMs = 4000) {
+  return new Promise((resolve) => {
+    if (signal && signal.aborted) return resolve(null);
+    const req = http.request({
+      host: '127.0.0.1', port: PORT, path: '/v1/chat/completions', method: 'POST', agent: false,
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
+    }, (res) => {
+      let b = '';
+      res.setEncoding('utf8');
+      res.on('data', (c) => { b += c; });
+      res.on('end', () => {
+        if (res.statusCode !== 200) return resolve(null);
+        try { resolve(JSON.parse(b)); } catch { resolve(null); }
+      });
+    });
+    req.on('error', () => resolve(null));
+    req.setTimeout(timeoutMs, () => { req.destroy(); resolve(null); });
+    if (signal) signal.addEventListener('abort', () => { req.destroy(); resolve(null); }, { once: true });
+    req.end(payload);
+  });
 }
 
 /**
- * How the text runs across a cut, read from `seam`: the model's text for the audio either side
- * of it. Finds the last words before the cut (the end of `a`) in the seam and returns what
- * follows them there -- a sentence end or not, and the next word as the model wrote it in
- * context (its case: "quota" vs "Kaggle") -- or null when the seam cannot be lined up.
- * `at` is where the cut falls in the seam's audio (0-1); a match near that share of the text
- * wins. The seam's first word may be a word cut in half ("WTH" for "RWTH").
+ * The dictionary's terms in `text`, checked against what the model would have written without
+ * them (vocab.js). For each, two short requests that continue the dictation's own answer up to
+ * the term, so the server reuses its cached prompt: one token with its probabilities, then -- if
+ * the model was not sure of the term -- a few tokens with the term's first token barred. Returns
+ * `text`, with any term the hint put in place of a different word put back. Any failure keeps
+ * `text` as it is.
  */
-function readSeam(a, seam, at = 0.5) {
-  const words = (s) => [...s.matchAll(/[\p{L}\p{N}][\p{L}\p{N}'’-]*/gu)]
-    .map((m) => ({ w: m[0].toLowerCase(), raw: m[0], i: m.index, end: m.index + m[0].length }));
-  const S = words(seam), A = words(a);
-  const same = (x, y, j) => x === y || (j === 0 && y.length >= 2 && x.endsWith(y));
-  for (const k of [3, 2, 1]) {
-    if (A.length < k || (k === 1 && A[A.length - 1].w.length < 4)) continue;
-    const tail = A.slice(-k);
-    let best = null;
-    for (let j = 0; j + k < S.length; j++) {
-      if (!tail.every((x, q) => same(x.w, S[j + q].w, j + q))) continue;
-      const d = Math.abs(S[j + k - 1].end - seam.length * at);
-      if (!best || d < best.d) best = { d, end: S[j + k - 1].end, next: S[j + k] };
+async function checkTerms(parts, system, info, text, signal) {
+  let found;
+  try { found = vocab.suspects(text, system); } catch { return text; }
+  if (!found.length) return text;
+  const raw = info.raw || '';
+  const lead = /^\s*(?:language \w+<asr_text>)?\s*/.exec(raw)[0].length;
+  if (!raw.slice(lead).startsWith(text)) { debug('vocab: raw text does not line up; not checked'); return text; }
+  const echoed = PREFILL && raw.startsWith(PREFILL);
+  let out = text;
+  let shift = 0;   // out's offsets against text's, after replacements
+  for (const occ of found) {
+    if (signal && signal.aborted) return text;
+    const before = (echoed ? '' : PREFILL) + raw.slice(0, lead + occ.index).replace(/\s+$/, '');
+    const t0 = Date.now();
+    const first = await complete(body(parts, system, { max_tokens: 1, logprobs: true, top_logprobs: 5 }, false, before), signal);
+    const lp = first && first.choices && first.choices[0] && first.choices[0].logprobs && first.choices[0].logprobs.content && first.choices[0].logprobs.content[0];
+    if (!lp || typeof lp.id !== 'number') { debug('vocab:', occ.term, 'no token probabilities; kept'); continue; }
+    const tok = String(lp.token || '').trim().toLowerCase();
+    if (!tok || !occ.term.toLowerCase().startsWith(tok)) { debug('vocab:', occ.term, 'the model now writes', JSON.stringify(lp.token), 'there; kept'); continue; }
+    const p = Math.exp(lp.logprob);
+    let alt = null, altNext = null;
+    if (p < vocab.SURE) {
+      const n = occ.term.split(/\s+/).length;
+      const second = await complete(body(parts, system, { max_tokens: 6 + 3 * n, logit_bias: [[lp.id, false]] }, false, before), signal);
+      const content = second && second.choices && second.choices[0] && second.choices[0].message && second.choices[0].message.content;
+      if (typeof content === 'string') ({ alt, next: altNext } = vocab.firstWords(content, n));
     }
-    if (best) return { sentenceEnd: /[.!?]/.test(seam.slice(best.end, best.next.i)), next: best.next.raw };
+    const origNext = vocab.firstWords(text.slice(occ.index + occ.length), 1).alt || null;
+    const d = vocab.decide({ term: occ.term, heardAs: occ.heardAs, p, alt, altNext, origNext });
+    debug('vocab:', occ.term, 'p=' + p.toFixed(3), 'instead:', JSON.stringify(alt), '->', d.keep ? 'kept' : 'replaced', '(' + d.why + ')', (Date.now() - t0) + ' ms');
+    if (vocabLog) vocabLog({ term: occ.term, p, alt, keep: d.keep, why: d.why, ms: Date.now() - t0 });
+    if (!d.keep) {
+      const at = { index: occ.index + shift, length: occ.length };
+      const next = vocab.replace(out, at, alt);
+      shift += next.length - out.length;
+      out = next;
+    }
   }
-  return null;
+  return out;
 }
 
-/**
- * Join the text of two pieces. With a read seam: a sentence that ended at the cut starts a new
- * paragraph; otherwise the sentence continues -- the full stop the model put at the cut goes, and
- * the next word takes its case from the seam. Without one, a space: a paragraph break in the
- * middle of a sentence is the worse mistake.
- */
-function joinPieces(a, b, seam) {
-  if (!a) return b;
-  if (!b) return a;
-  a = a.trimEnd();
-  b = b.trimStart();
-  const ended = /[.!?:]$/.test(a);
-  if (!seam) return a + ' ' + b;
-  if (seam.sentenceEnd) return ended ? a + '\n\n' + b : a.replace(/[,;]$/, '') + '. ' + b;
-  if (/[^.]\.$/.test(a)) a = a.slice(0, -1);
-  const first = /^[\p{L}][\p{L}'’-]*/u.exec(b);
-  if (first && first[0].toLowerCase() === seam.next.toLowerCase()) b = seam.next + b.slice(first[0].length);
-  return a + ' ' + b;
-}
+/** Eval tools listen to the dictionary check's decisions (setVocabLog). */
+let vocabLog = null;
+function setVocabLog(fn) { vocabLog = typeof fn === 'function' ? fn : null; }
 
 /**
  * Output budget for dictation: nobody types more than they said. ~8 tokens per second of
@@ -668,21 +796,27 @@ function dictationBudget(samples, sampleRate) {
  * A model that starts repeating itself does not stop on its own (seen live: a 79 s dictation
  * that ended in the same file name written over and over). Three copies of one sentence of 12+
  * characters, or of the last 40 characters within the last 400, mean a loop: returns the text
- * cut where the repetition began, or null.
+ * cut where the repetition began, or null. `allow` is the text a revision was given: what repeats
+ * there (a status line, a list's "- TBD") may repeat in its rewrite.
  */
-function loopCut(text) {
+function loopCut(text, allow = '') {
   const seen = new Map();
   const re = /[^.!?\n]+[.!?\n]+/g;
+  const given = (s) => {
+    if (!allow) return false;
+    const first = allow.indexOf(s);
+    return first !== -1 && allow.indexOf(s, first + 1) !== -1;
+  };
   let m;
   while ((m = re.exec(text))) {
     const s = m[0].trim();
     if (s.length < 12) continue;
     const at = (seen.get(s) || []).concat(m.index);
     seen.set(s, at);
-    if (at.length >= 3) return text.slice(0, at[1]).trimEnd();
+    if (at.length === 3 && !given(s)) return text.slice(0, at[1]).trimEnd();
   }
   const tail = text.slice(-40);
-  if (tail.length === 40) {
+  if (tail.length === 40 && !given(tail)) {
     const win = text.slice(-400), base = text.length - win.length, at = [];
     for (let i = win.indexOf(tail); i !== -1; i = win.indexOf(tail, i + 1)) at.push(base + i);
     if (at.length >= 3) return text.slice(0, at[1]).trimEnd();
@@ -725,12 +859,14 @@ function ping(system = '') {
  * goes through here. With a revise adapter loaded it names the adapter's scale: on only when
  * `asRevise` (see `adapter`); without one the body is what it always was.
  */
-function body(parts, system, extra, asRevise = false) {
+function body(parts, system, extra, asRevise = false, assistant = PREFILL) {
   return JSON.stringify({
     messages: [
       { role: 'system', content: system || '' },
       { role: 'user', content: parts.map((data) => ({ type: 'input_audio', input_audio: { data, format: 'wav' } })) },
-      ...(PREFILL ? [{ role: 'assistant', content: PREFILL }] : [])
+      // The answer's opening: the language tag older models were given, or (the dictionary check)
+      // the dictation's own answer up to a word.
+      ...(assistant ? [{ role: 'assistant', content: assistant }] : [])
     ],
     temperature: 0,
     cache_prompt: true,
@@ -739,19 +875,31 @@ function body(parts, system, extra, asRevise = false) {
   });
 }
 
-async function* dictateParts(parts, signal, system = '', maxTokens = 1024, asRevise = false) {
+async function* dictateParts(parts, signal, system = '', maxTokens = 1024, asRevise = false, opts = {}) {
   await warm();
-  yield* ask(parts, signal, system, maxTokens, asRevise);
+  yield* ask(parts, signal, system, maxTokens, asRevise, opts);
 }
 
-/** The request itself, to a server already up (the self-test calls it from inside warm()). */
-async function* ask(parts, signal, system = '', maxTokens = 1024, asRevise = false) {
+/**
+ * The request itself, to a server already up (the self-test calls it from inside warm()).
+ * `opts`: {info} gets {raw, finish} at the end -- the text exactly as the model wrote it (the
+ * language tag included) and why it stopped ('stop', 'length', 'loop', 'stalled'); {firstWordMs}
+ * waits longer for a long prompt; {allow} is text whose own repeated sentences are not a loop.
+ */
+async function* ask(parts, signal, system = '', maxTokens = 1024, asRevise = false, opts = {}) {
+  const info = opts.info || {};
+  info.raw = '';
+  info.finish = null;
+  // A request for a session already cancelled would still run to the end on the server (the abort
+  // listener below only fires on a change), holding the GPU from the next one.
+  if (signal && signal.aborted) return;
   const payload = body(parts, system, { stream: true, max_tokens: maxTokens }, asRevise);
 
   const queue = [];
   let done = false;
   let failure = null;
   let wake = null;
+  let finish = null;
   const poke = () => { if (wake) { wake(); wake = null; } };
 
   const req = http.request(
@@ -786,7 +934,9 @@ async function* ask(parts, signal, system = '', maxTokens = 1024, asRevise = fal
           const body = line.slice(5).trim();
           if (body === '[DONE]') continue;
           try {
-            const delta = JSON.parse(body).choices[0].delta;
+            const choice = JSON.parse(body).choices[0];
+            const delta = choice.delta;
+            if (choice.finish_reason) finish = choice.finish_reason;
             if (delta && delta.content) { queue.push(delta.content); poke(); }
           } catch {
             // partial frame; the next chunk completes it
@@ -810,35 +960,55 @@ async function* ask(parts, signal, system = '', maxTokens = 1024, asRevise = fal
   // time, so anything else using it (or a GPU starved by other work) can stall a dictation.
   // No first word within FIRST_WORD_MS is an error; a stream that stops for STALL_MS keeps what
   // it already wrote (it is usually nearly complete) rather than losing it.
-  const FIRST_WORD_MS = 30000, STALL_MS = 15000;
+  // A long revise prompt (thousands of tokens) takes a while to read before the first word,
+  // most of all on a CPU: opts.firstWordMs.
+  const FIRST_WORD_MS = Math.max(30000, opts.firstWordMs || 0), STALL_MS = 15000;
   let text = '';
   let last = Date.now();
   let shownSoFar = '';
+  // loopCut scans the whole text; on a 12,000-character revise that is every chunk times the
+  // text. Checked every chunk while short, then every 200 characters (a loop is cut where it
+  // began either way, so a later check loses nothing).
+  let checkedAt = 0;
   while (true) {
     if (queue.length) {
-      text += queue.shift();
+      text += queue.join('');
+      queue.length = 0;
       last = Date.now();
+      info.raw = text;
       // The server may echo the prefilled tag on some builds; never show it.
       // A model that names the language itself streams the tag first; show nothing
       // until it is complete rather than a flash of "language Tur".
       const pending = /^\s*l(a(n(g(u(a(g(e( \w*)?)?)?)?)?)?)?)?$/.test(text);
       const shown = pending ? '' : text.replace(/^\s*language \w+<asr_text>/, '').replace(/^\s+/, '');
-      const cut = loopCut(shown);  // a few KB at most; cheap enough to check every chunk
-      if (cut !== null) {
-        debug('loop detected; cut', shown.length, '->', cut.length, 'chars');
-        req.destroy();
-        yield cut;
-        return;
+      if (shown.length < 2000 || shown.length - checkedAt >= 200) {
+        checkedAt = shown.length;
+        const cut = loopCut(shown, opts.allow);
+        if (cut !== null) {
+          debug('loop detected; cut', shown.length, '->', cut.length, 'chars');
+          req.destroy();
+          info.finish = 'loop';
+          yield cut;
+          return;
+        }
       }
       shownSoFar = shown;
       yield shown;
       continue;
     }
     if (failure) throw failure;
-    if (done) return;
+    if (done) {
+      if (shownSoFar.length > checkedAt) {
+        const cut = loopCut(shownSoFar, opts.allow);
+        if (cut !== null) { info.finish = 'loop'; yield cut; return; }
+      }
+      info.finish = finish || 'stop';
+      return;
+    }
     if (Date.now() - last > (shownSoFar ? STALL_MS : FIRST_WORD_MS)) {
       debug('watchdog:', shownSoFar ? 'stalled mid-answer, keeping ' + shownSoFar.length + ' chars' : 'no answer');
       req.destroy();
+      info.finish = 'stalled';
       if (shownSoFar) return;
       throw new Error('The model did not answer — try again');
     }
@@ -950,11 +1120,64 @@ function prime(parts, system, signal) {
  * Revise `span` by the spoken instruction in `samples`: the replacement text, streamed
  * (cumulative) like dictate(). The one request that runs with the revise adapter on. The
  * instruction is short (pipeline/index.js sends anything past 20 s as dictation), so it goes
- * in one piece, and like the training it has no output cap: a short instruction can rewrite a
- * long span.
+ * in one piece.
+ *
+ * Its output budget is the span's own length and half again (a list or a fuller rewrite runs
+ * longer than its source) plus 256, at least 1,024 as before 0.2.3 -- never more than the window
+ * has left after the prompt. A span whose prompt leaves less than its own length for the answer
+ * does not fit: `info.tooLong`, and nothing is sent. `info` also gets ask()'s {raw, finish}:
+ * 'length' means the answer was cut off by the budget, and must not be pasted.
  */
-async function* revise(samples, sampleRate, signal, span) {
-  yield* dictateParts([toWav(samples, sampleRate).toString('base64')], signal, revisePrompt(span), 1024, true);
+async function* revise(samples, sampleRate, signal, span, info = {}) {
+  const sr = sampleRate || 16000;
+  await warm();   // the tokenizer is the server's
+  const spanTokens = await countTokens(span);
+  // The prompt: the template and instruction (~13 audio tokens a second, 20 s at most) and the span.
+  const prompt = spanTokens + Math.ceil(13 * (samples.length / sr)) + 96;
+  const room = CONTEXT - prompt - 16;
+  if (room < spanTokens + 64) {
+    info.tooLong = true;
+    debug('revise: span of', spanTokens, 'tokens does not fit the', CONTEXT, 'window');
+    return;
+  }
+  const budget = Math.min(room, Math.max(1024, Math.round(spanTokens * 1.5) + 256));
+  debug('revise: span', spanTokens, 'tokens, budget', budget);
+  yield* dictateParts([toWav(samples, sampleRate).toString('base64')], signal, revisePrompt(span), budget, true, {
+    info,
+    allow: span,
+    // ~20 ms a prompt token on a slow CPU, over the usual 30 s.
+    firstWordMs: 30000 + 20 * prompt
+  });
+}
+
+/**
+ * How many tokens the model's tokenizer makes of `text`: the server's /tokenize, which takes a
+ * few milliseconds. Before the server answers (or if it cannot), an estimate that errs high:
+ * 3 characters a token (English prose runs ~4.2, Turkish and code ~3).
+ */
+function countTokens(text) {
+  const estimate = Math.ceil(String(text || '').length / 3);
+  if (!text || text.length < 2000) return Promise.resolve(estimate);
+  const payload = JSON.stringify({ content: text });
+  return new Promise((resolve) => {
+    const req = http.request({
+      host: '127.0.0.1', port: PORT, path: '/tokenize', method: 'POST', agent: false,
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
+    }, (res) => {
+      let b = '';
+      res.setEncoding('utf8');
+      res.on('data', (c) => { b += c; });
+      res.on('end', () => {
+        try {
+          const t = JSON.parse(b).tokens;
+          resolve(Array.isArray(t) && t.length ? t.length : estimate);
+        } catch { resolve(estimate); }
+      });
+    });
+    req.on('error', () => resolve(estimate));
+    req.setTimeout(3000, () => { req.destroy(); resolve(estimate); });
+    req.end(payload);
+  });
 }
 
 /** The whole text at once -- for revise mode, where the words are an instruction. */
@@ -965,7 +1188,10 @@ async function transcribe(samples, sampleRate, signal, system = '') {
 }
 
 module.exports = {
-  warm, stop, ping, dictate, revise, transcribe, openStream, dictationBudget, loopCut, splitLong, readSeam, joinPieces, contextPrompt, revisePrompt,
+  warm, stop, ping, dictate, revise, transcribe, openStream, openLong, dictationBudget, loopCut, contextPrompt, revisePrompt,
+  countTokens, CONTEXT, setVocabLog,
+  // long.js's, here too for the eval tools that load local.js
+  splitLong: long.splitLong, readSeam: long.readSeam, joinPieces: long.joinPieces, stitch: long.stitch,
   canRevise: () => Boolean(SPEC.revise),
   usesContext: () => Boolean(SPEC.context),
   streams: () => Boolean(SPEC.stream),
