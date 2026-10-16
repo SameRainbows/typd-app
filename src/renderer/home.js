@@ -467,6 +467,7 @@
 
   $('openRec').addEventListener('click', function () { api.settings.openRecordings(); });
   $('feedback').addEventListener('click', function () { api.feedback(); });
+  $('modelLicense').addEventListener('click', function () { api.license(); });
 
   function renderRecordings() {
     var s = S.settings, m = S.platform.machine;

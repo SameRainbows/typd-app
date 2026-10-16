@@ -124,7 +124,7 @@ check('every handler goes through handle(), which checks fromPage()',
   directHandles === 1 && /function handle\([^)]*\)\s*\{\s*ipcMain\.handle\(channel, \(e, \.\.\.args\) => \(fromPage\(e\)/.test(hMain));
 
 const apiUses = [...hJs.matchAll(/api\.([a-z]+)(?:\.([a-zA-Z]+))?\(/g)].map((m) => m[2] ? m[1] + '.' + m[2] : m[1]);
-const exposed = new Set(['get', 'news', 'action', 'pane', 'feedback', 'on']);
+const exposed = new Set(['on', ...[...hPre.matchAll(/^ {2}([a-z]+): call\(/gm)].map((m) => m[1])]);   // top-level calls, and on()
 for (const m of hPre.matchAll(/^ {2}([a-z]+): \{([\s\S]*?)^ {2}\}/gm)) {
   for (const k of m[2].matchAll(/^ {4}([a-zA-Z]+):/gm)) exposed.add(m[1] + '.' + k[1]);
 }

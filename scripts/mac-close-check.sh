@@ -46,18 +46,22 @@ rm -f "$MARK" "$LOG" "$LOG.err" "$KEYS"
 touch "$STARTED"
 
 if [ "$HOW" = open ]; then
-  if ! open "$APP" --env TYPD_DEBUG=1 --env "TYPD_TEST_CLOSE_HOME=$MARK" --stdout "$LOG" --stderr "$LOG.err"; then
+  # TYPD_NO_MODEL_UPDATE=1: a build without a key would otherwise follow the public model routes
+  # (src/main/modelUpdate.js) and start downloading the real model from production during the check.
+  if ! open "$APP" --env TYPD_DEBUG=1 --env "TYPD_TEST_CLOSE_HOME=$MARK" --env TYPD_NO_MODEL_UPDATE=1 --stdout "$LOG" --stderr "$LOG.err"; then
     echo "open --env failed; passing the variables through launchd instead"
     launchctl setenv TYPD_DEBUG 1
     launchctl setenv TYPD_TEST_CLOSE_HOME "$MARK"
+    launchctl setenv TYPD_NO_MODEL_UPDATE 1
     open "$APP"
     sleep 3
     launchctl unsetenv TYPD_DEBUG
     launchctl unsetenv TYPD_TEST_CLOSE_HOME
+    launchctl unsetenv TYPD_NO_MODEL_UPDATE
   fi
   for i in $(seq 1 40); do pid=$(pgrep -nf "$BIN" || echo 0); [ "$pid" -gt 0 ] && break; sleep 0.5; done
 else
-  TYPD_DEBUG=1 TYPD_TEST_CLOSE_HOME="$MARK" "$BIN" > "$LOG" 2> "$LOG.err" &
+  TYPD_DEBUG=1 TYPD_TEST_CLOSE_HOME="$MARK" TYPD_NO_MODEL_UPDATE=1 "$BIN" > "$LOG" 2> "$LOG.err" &
   pid=$!
 fi
 echo "[$MODE] Typd pid $pid"

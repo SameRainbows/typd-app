@@ -11,7 +11,12 @@
  *     cut connection, a server that ignores Range, sha256 verification, reuse of a file already
  *     on disk, waiting for idle before switching, deleting the previous version (never the
  *     bundled one), revert and "bad version" memory, a crashed switch judged at the next launch,
- *     disk space, 429 Retry-After, 401, min_app, and an ordinary build making no request at all
+ *     disk space, 429 Retry-After, 401, min_app, and a source run with no key making no request
+ *   - which routes a build follows (findConfig): a reader key, a tester key, and a packaged build
+ *     with neither -> the public routes with no key; a source run with neither -> off
+ *   - a packaged build with no key against the fake's public routes: the same download, resume,
+ *     verify, adapter, switch, revert and 429 handling, never an Authorization header, and only
+ *     the live version's files reachable
  *
  * Everything runs in a throwaway folder.
  *
@@ -24,7 +29,7 @@ const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
 
-const { createUpdater, activeModel, checkManifest, older, labelOf } = require('../src/main/modelUpdate');
+const { createUpdater, activeModel, checkManifest, older, labelOf, findConfig, ENDPOINT } = require('../src/main/modelUpdate');
 const local = require('../src/main/pipeline/local');
 
 let failures = 0;
@@ -186,16 +191,22 @@ function fakeServer() {
     requests: []
   };
   s.server = http.createServer((req, res) => {
-    s.requests.push({ url: req.url, range: req.headers.range || null });
-    if (req.headers.authorization !== 'Bearer ' + s.key) { res.writeHead(401); return res.end('{"error":"unauthorized"}'); }
-    if (req.url === '/v1/model/manifest') {
+    s.requests.push({ url: req.url, range: req.headers.range || null, auth: req.headers.authorization || null, install: req.headers['x-typd-install'] || null });
+    // /v1/model/public/*: no key, as typd-collect's public routes (src/publicmodel.js): the same
+    // manifest, and only the files the live manifest names.
+    const pub = req.url.startsWith('/v1/model/public/');
+    if (!pub && req.headers.authorization !== 'Bearer ' + s.key) { res.writeHead(401); return res.end('{"error":"unauthorized"}'); }
+    if (req.url === '/v1/model/manifest' || req.url === '/v1/model/public/manifest') {
       if (s.manifestStatus !== 200) { res.writeHead(s.manifestStatus, s.manifestStatus === 429 ? { 'Retry-After': '120' } : {}); return res.end('{}'); }
       if (!s.manifest) { res.writeHead(404); return res.end('{"error":"no model published"}'); }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify(s.manifest));
     }
-    const m = /^\/v1\/model\/file\/([^/]+)\/([^/]+)$/.exec(req.url);
+    const m = /^\/v1\/model\/(?:public\/)?file\/([^/]+)\/([^/]+)$/.exec(req.url);
     if (!m) { res.writeHead(404); return res.end(); }
+    if (pub && !(s.manifest && s.manifest.version === decodeURIComponent(m[1]) && s.manifest.files.some((f) => f.name === decodeURIComponent(m[2])))) {
+      res.writeHead(404); return res.end('{"error":"not a file of the live model"}');
+    }
     if (s.fileStatus) { res.writeHead(s.fileStatus.status, s.fileStatus.retryAfter ? { 'Retry-After': String(s.fileStatus.retryAfter) } : {}); return res.end('{}'); }
     const name = decodeURIComponent(m[2]);
     let body = s.files[decodeURIComponent(m[1]) + '/' + name];
@@ -235,7 +246,7 @@ function publish(s, version, files, extra = {}) {
   };
 }
 
-const fileRequests = (s, name) => s.requests.filter((q) => q.url.includes('/v1/model/file/') && (!name || q.url.endsWith('/' + name)));
+const fileRequests = (s, name) => s.requests.filter((q) => /\/v1\/model\/(public\/)?file\//.test(q.url) && (!name || q.url.endsWith('/' + name)));
 
 /* ------------------------------------------------------------ the updater */
 
@@ -267,7 +278,7 @@ async function updaterTests() {
   });
   const current = () => { try { return readJson(path.join(modelsDir, 'current.json')); } catch { return null; } };
 
-  section('an ordinary build (no key) never contacts the server');
+  section('a run from source with no key (config null) never contacts the server');
   {
     s.requests = [];
     const u = createUpdater({ config: null, modelsDir, bundledDir, fetch: () => { throw new Error('network used'); } });
@@ -445,6 +456,7 @@ async function updaterTests() {
   }
 
   await adapterTests(s, make, modelsDir, bundledDir, current, () => switches, (v) => { switches = v; });
+  await publicTests(s);
 
   s.server.close();
 }
@@ -526,6 +538,141 @@ async function adapterTests(s, make, modelsDir, bundledDir, current, switches, s
       readJson(path.join(modelsDir, 'r-old-lora', 'model.json')).revise_lora === 'rev-a.gguf', { r, cur: current(), n: fileRequests(s).length });
     fs.rmSync(path.join(bundledDir, 'rev-a.gguf'));
   }
+}
+
+/* ------------------------------------------- a packaged build with no key */
+
+function configTests() {
+  section('which routes a build follows (findConfig)');
+  const root = path.join(tmp, 'config');
+  const userData = path.join(root, 'userData'), resources = path.join(root, 'resources'), repo = path.join(root, 'repo');
+  for (const d of [userData, resources, repo]) fs.mkdirSync(d, { recursive: true });
+  const reader = { reader: 'mehmet', endpoint: 'https://collect.example', key: 'rk_reader_0123456789abcdef' };
+  const tester = { tester: 'tester_b', endpoint: 'https://collect.example', key: 'tk_tester_0123456789abcdef' };
+  const find = (o) => findConfig({ userData, resourcesPath: resources, repoDir: repo, env: {}, ...o });
+  let c = find({ packaged: true });
+  check('a packaged build with no key file -> the public routes: the real endpoint, no key',
+    c && c.endpoint === ENDPOINT && ENDPOINT === 'https://typd-collect.mehmetdedeler.com' && c.key === null, c);
+  check('a source run with no key file -> off (null), as before', find({ packaged: false }) === null);
+  fs.writeFileSync(path.join(resources, 'tester.json'), JSON.stringify({ ...tester, key: '' }));
+  c = find({ packaged: true });
+  check('a packaged build whose tester.json has no key (a template) -> the public routes', c && c.key === null, c);
+  fs.writeFileSync(path.join(resources, 'tester.json'), JSON.stringify(tester));
+  c = find({ packaged: true });
+  check('a tester build -> its key, the keyed routes', c && c.key === tester.key && c.endpoint === tester.endpoint, c);
+  fs.writeFileSync(path.join(userData, 'model-updates.json'), JSON.stringify(reader));
+  c = find({ packaged: true });
+  check('a reader key in userData wins over the tester key', c && c.key === reader.key, c);
+  c = find({ packaged: false });
+  check('a source run with a reader key (the developer\'s checkout) -> that key, as before', c && c.key === reader.key, c);
+  fs.rmSync(path.join(userData, 'model-updates.json'));
+  fs.writeFileSync(path.join(repo, 'tester.json'), JSON.stringify(tester));
+  check('a source run with the repo\'s tester.json -> off without TYPD_TESTER_DEV=1', find({ packaged: false }) === null);
+  c = find({ packaged: false, env: { TYPD_TESTER_DEV: '1' } });
+  check('... and its key with TYPD_TESTER_DEV=1', c && c.key === tester.key, c);
+  fs.writeFileSync(path.join(userData, 'model-updates.json'), JSON.stringify({ ...reader, endpoint: 'http://collect.example' }));
+  fs.rmSync(path.join(resources, 'tester.json'));
+  c = find({ packaged: true });
+  check('a reader file with a plain-http endpoint is refused -> the public routes', c && c.key === null && c.endpoint === ENDPOINT, c);
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'modelUpdate.js'), 'utf8');
+  check('TYPD_NO_MODEL_UPDATE=1 and TYPD_MODEL_DIR turn it off in start()', /TYPD_NO_MODEL_UPDATE === '1'/.test(src) && /process\.env\.TYPD_MODEL_DIR\) return main/.test(src));
+}
+
+async function publicTests(s) {
+  configTests();
+
+  section('a packaged build with no key: the public routes');
+  const root = path.join(tmp, 'public');
+  const modelsDir = path.join(root, 'userData', 'models');
+  const bundledDir = path.join(root, 'resources', 'models', 'typd-dictate');
+  fs.mkdirSync(bundledDir, { recursive: true });
+  const proj = crypto.randomBytes(300000);
+  fs.writeFileSync(path.join(bundledDir, 'bundled.gguf'), crypto.randomBytes(200000));
+  fs.writeFileSync(path.join(bundledDir, 'mmproj-p.gguf'), proj);
+  fs.writeFileSync(path.join(bundledDir, 'model.json'), JSON.stringify({ model: 'bundled.gguf', mmproj: 'mmproj-p.gguf' }));
+  let switches = [], failSwitchTo = null;
+  const make = (over = {}) => createUpdater({
+    config: { endpoint: s.endpoint, key: null }, modelsDir, bundledDir, appVersion: '0.2.0',
+    switchModel: async () => {
+      const a = activeModel(modelsDir);
+      const v = a ? a.version : 'bundled';
+      switches.push(v);
+      if (failSwitchTo && v === failSwitchTo) throw new Error('the model failed its self-test');
+    },
+    rate: 0, idleMs: 50, ...over
+  });
+  const current = () => { try { return readJson(path.join(modelsDir, 'current.json')); } catch { return null; } };
+  const onlyPublic = () => s.requests.every((q) => q.url.startsWith('/v1/model/public/') && q.auth === null);
+
+  s.manifest = null;
+  s.requests = [];
+  let u = make();
+  let r = await u.check();
+  check('nothing published: the public manifest\'s 404 -> nothing to do', r.state === 'none' && s.requests.length === 1 && s.requests[0].url === '/v1/model/public/manifest', { r, req: s.requests });
+
+  const lora = crypto.randomBytes(400000), big = crypto.randomBytes(2 * 1024 * 1024 + 11);
+  publish(s, 'p1', { 'typd-p1.gguf': big, 'mmproj-p.gguf': proj, 'rev-p.gguf': lora });
+  s.manifest.model_json.revise_lora = 'rev-p.gguf';
+  s.files['p0/typd-p0.gguf'] = crypto.randomBytes(1000);   // stored on the server, not live
+  s.cutNext['typd-p1.gguf'] = 600000;
+  s.requests = [];
+  switches = [];
+  r = await u.check();
+  check('a cut connection: a partial file and a retry, still on the bundled model', r.state === 'retry' && fs.existsSync(path.join(modelsDir, 'p1.partial', 'typd-p1.gguf')) && !current() && switches.length === 0, r);
+  const have = fs.statSync(path.join(modelsDir, 'p1.partial', 'typd-p1.gguf')).size;
+  r = await u.check();
+  const last = fileRequests(s, 'typd-p1.gguf').pop();
+  check('the retry resumes with Range: bytes=<have>- from the public file route', last.range === `bytes=${have}-` && last.url === '/v1/model/public/file/p1/typd-p1.gguf' && have > 0, { last, have });
+  const dir = path.join(modelsDir, 'p1');
+  check('verified (model and adapter), switched once, up to date', r.state === 'current' && current().version === 'p1' && current().confirmed === true && switches.join() === 'p1' &&
+    sha(fs.readFileSync(path.join(dir, 'typd-p1.gguf'))) === sha(big) && sha(fs.readFileSync(path.join(dir, 'rev-p.gguf'))) === sha(lora) && u.line() === 'Model p1 · up to date', { r, line: u.line() });
+  check('local.js would load it, with its adapter', local.resolveModel({ env: {}, modelsDir, bundled: bundledDir }).dir === dir && local.reviseLora(dir, readJson(path.join(dir, 'model.json'))) === path.join(dir, 'rev-p.gguf'));
+  check('the mmproj already in the app was copied, never requested', fileRequests(s, 'mmproj-p.gguf').length === 0);
+  check('every request went to /v1/model/public/, with no Authorization header', onlyPublic() && s.requests.length >= 4, s.requests);
+
+  section('no key: revert, bad-version memory, 429, and only the live version');
+  publish(s, 'p2', { 'typd-p2.gguf': crypto.randomBytes(300000), 'mmproj-p.gguf': proj });
+  failSwitchTo = 'p2';
+  switches = [];
+  r = await u.check();
+  check('a model that fails to start: back on p1, p2 deleted and remembered as bad', r.state === 'failed' && current().version === 'p1' && switches.join() === 'p2,p1' &&
+    !fs.existsSync(path.join(modelsDir, 'p2')) && readJson(path.join(modelsDir, 'state.json')).bad.version === 'p2', { r, switches });
+  s.requests = [];
+  r = await u.check();
+  check('the same manifest again: no download', r.state === 'failed' && fileRequests(s).length === 0);
+  failSwitchTo = null;
+  s.manifestStatus = 429;
+  r = await u.check();
+  check('the public manifest\'s 429 Retry-After: 120 -> next try in 120 s', r.state === 'retry' && r.next === 120e3, r);
+  s.manifestStatus = 200;
+  s.manifest = { ...s.manifest, notes: 'p2, fixed' };
+  s.fileStatus = { status: 429, retryAfter: 5400 };
+  r = await u.check();
+  check('a public file\'s 429 Retry-After: 5400 -> next try in 90 minutes, not sooner', r.state === 'retry' && r.next === 5400e3, r);
+  s.fileStatus = null;
+  r = await u.check();
+  check('then p2 downloads and switches', r.state === 'current' && current().version === 'p2', r);
+  const notLive = await new Promise((resolve) => http.get(s.endpoint + '/v1/model/public/file/p0/typd-p0.gguf', (res) => { res.resume(); resolve(res.statusCode); }));
+  const keyedNoKey = await new Promise((resolve) => http.get(s.endpoint + '/v1/model/file/p2/typd-p2.gguf', (res) => { res.resume(); resolve(res.statusCode); }));
+  check('the fake, like the Worker: a stored version that is not live -> 404; the keyed route without a key -> 401', notLive === 404 && keyedNoKey === 401, { notLive, keyedNoKey });
+  check('still no request with an Authorization header, none to the keyed routes', s.requests.filter((q) => q.auth !== null || !q.url.startsWith('/v1/model/public/')).length === 1);
+
+  section('no key: the version counts\' headers (versionStats.js) go with the manifest check only');
+  publish(s, 'p3', { 'typd-p3.gguf': crypto.randomBytes(200000), 'mmproj-p.gguf': proj });
+  s.requests = [];
+  u = make({ stats: () => ({ 'X-Typd-App': '0.2.1', 'X-Typd-Model': 'p2', 'X-Typd-OS': 'win32-x64', 'X-Typd-Install': 'a'.repeat(32) }) });
+  r = await u.check();
+  const manifests = s.requests.filter((q) => q.url === '/v1/model/public/manifest');
+  check('the public manifest check carries them; no file download does; still no Authorization header',
+    r.state === 'current' && manifests.length === 1 && manifests[0].install === 'a'.repeat(32) && fileRequests(s).length === 1 &&
+    fileRequests(s).every((q) => q.install === null) && s.requests.every((q) => q.auth === null), { r, req: s.requests });
+
+  section('with a key, the same server: the keyed routes, as before');
+  s.requests = [];
+  u = createUpdater({ config: { endpoint: s.endpoint, key: s.key }, modelsDir: path.join(root, 'keyed', 'models'), bundledDir, appVersion: '0.2.0', rate: 0, idleMs: 0 });
+  r = await u.check();
+  check('the keyed manifest and files, every request with the key, none to /v1/model/public/',
+    r.state === 'current' && s.requests.length >= 2 && s.requests.every((q) => !q.url.startsWith('/v1/model/public/') && q.auth === 'Bearer ' + s.key), { r, req: s.requests });
 }
 
 function finish() {

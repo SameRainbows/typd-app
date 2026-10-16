@@ -55,6 +55,8 @@
     "transcribes it and falls back to the CPU on wrong text (src/main/pipeline/local.js).",
     "extraResources: the dictation model and llama-server live outside app.asar in",
     "<resources>/models/typd-dictate and <resources>/llama (see src/main/pipeline/local.js).",
+    "extraResources: MODEL_LICENSE.txt, the model's licence, at <resources>/MODEL_LICENSE.txt; Settings",
+    "opens it (home-window.js app:license), and app-update packages carry it like the rest of the app.",
     "The model is staged by scripts/before-pack.js from model.json, so only the model in",
     "use ships. win: the CUDA build in vendor/llama minus the other tools' *-impl.dll.",
     "mac: vendor/llama-mac/<arch>, fetched by scripts/fetch-llama-mac.js (b11351).",
@@ -92,6 +94,10 @@
       {
         "from": "dist/.stage/models/typd-dictate",
         "to": "models/typd-dictate"
+      },
+      {
+        "from": "MODEL_LICENSE.txt",
+        "to": "MODEL_LICENSE.txt"
       }
     ],
     "win": {

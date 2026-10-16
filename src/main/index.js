@@ -20,7 +20,7 @@ const learn = require('./learn');
 const dictionary = require('./dictionary');
 const sharing = require('./sharing');   // only with consent: the public beta's choice, or a tester build's key
 const ask = require('./ask-window');    // sharing's two questions: consent, and "That was wrong"
-const modelUpdate = require('./modelUpdate');   // tester builds and the developer's machines; inert without a key
+const modelUpdate = require('./modelUpdate');   // every packaged build (no key: the public routes) and the developer's machines
 const appUpdate = require('./appUpdate');       // packaged builds: a newer signed Typd, installed while you are away
 
 const MAC = process.platform === 'darwin';

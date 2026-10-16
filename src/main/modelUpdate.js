@@ -1,20 +1,25 @@
 'use strict';
 
 /**
- * Model updates, for tester builds and the developer's own machines: follow the dictation model
- * the developer publishes, without ever making a dictation wait for it.
+ * Model updates, for every packaged Typd and the developer's own machines: follow the dictation
+ * model the developer publishes, without ever making a dictation wait for it.
  *
- * Inert unless a key is present -- an ordinary build never contacts the server for a model. (The
- * public beta's install key, sharing.js, is not one: it can upload dictations and flags, nothing
- * else.) The key comes from, in order:
+ * Where it reads the model from (findConfig), in order:
  *   <userData>/model-updates.json   {endpoint, key}: the developer's own machines (a READER_ key
  *                                   from typd-collect/keys.mjs; it can read the model, nothing else)
  *   <resources>/tester.json         tester builds (the file sharing.js reads; development:
  *                                   the repo's tester.json, only with TYPD_TESTER_DEV=1)
- * TYPD_MODEL_DIR (eval tools, a fixed model folder) turns it off.
+ *   neither, in a packaged build    the public routes, with no key (the public beta): the same
+ *                                   manifest and files, under the server's public ceilings
+ * A key reads /v1/model/manifest and /v1/model/file/; no key, /v1/model/public/manifest and
+ * /v1/model/public/file/ (only the live version's files), and no Authorization header is sent.
+ * (The public beta's install key, sharing.js, is never used here: it uploads, nothing else.)
+ * Run from source with neither file, it is off, as before. TYPD_MODEL_DIR (eval tools, a fixed
+ * model folder) and TYPD_NO_MODEL_UPDATE=1 (CI, tests) turn it off.
  *
- * 60 s after launch and every 6 hours it reads the manifest (typd-collect, GET /v1/model/manifest);
- * in a packaged build that request also carries the version counts' headers (versionStats.js).
+ * 60 s after launch and every 6 hours it reads the manifest (typd-collect, GET <routes>/manifest);
+ * in a packaged build that request also carries the version counts' headers (versionStats.js),
+ * keyed or not.
  * If it names a version this machine is not running, its files are downloaded into
  * <userData>/models/<version>.partial/ -- one file at a time, resumable with Range, held to
  * RATE so the connection stays the user's, retried with backoff -- while dictation goes on with
@@ -55,6 +60,7 @@ const SPACE_FACTOR = 1.2;
 const VERSION_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const FILE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const RESERVED = ['manifest.json', 'model.json'];
+const ENDPOINT = 'https://typd-collect.mehmetdedeler.com';   // as sharing.js and appUpdate.js
 
 /* ------------------------------------------------------------ on-disk layout */
 
@@ -203,7 +209,8 @@ class Retry extends Error {
 /**
  * Electron-free, so tests and typd-collect/models.test.mjs drive it directly.
  *
- *   config        {endpoint, key}, or null: then it never touches the network (startup guard only)
+ *   config        {endpoint, key}: the keyed routes; {endpoint, key: null}: the public ones, no
+ *                 Authorization header; or null: then it never touches the network (startup guard only)
  *   modelsDir     <userData>/models
  *   bundledDir    the model shipped with the app (never modified)
  *   busy          () => boolean: a dictation or revision is in progress
@@ -309,7 +316,9 @@ function createUpdater({
 
   /* ------------------------------------------------------------ the network */
 
-  const auth = () => ({ Authorization: 'Bearer ' + config.key });
+  // A key reads the keyed routes; a packaged build without one, the public routes (findConfig).
+  const routes = () => config.endpoint + (config.key ? '/v1/model' : '/v1/model/public');
+  const auth = () => (config.key ? { Authorization: 'Bearer ' + config.key } : {});
 
   function retryAfter(res) {
     const s = Number(res.headers.get('retry-after'));
@@ -346,7 +355,7 @@ function createUpdater({
     try {
       const headers = auth();
       if (have) headers.Range = `bytes=${have}-`;
-      const url = `${config.endpoint}/v1/model/file/${encodeURIComponent(version)}/${encodeURIComponent(f.name)}`;
+      const url = `${routes()}/file/${encodeURIComponent(version)}/${encodeURIComponent(f.name)}`;
       const res = await fetch(url, { headers, signal: ctrl.signal });
       if (res.status === 416) {
         // What we hold is not a prefix of this file (it ends past it): start over.
@@ -535,7 +544,7 @@ function createUpdater({
     try {
       let extra = {};
       try { extra = stats() || {}; } catch { extra = {}; }   // counting must never stop a check
-      res = await fetch(config.endpoint + '/v1/model/manifest', { headers: { ...extra, ...auth() }, signal: AbortSignal.timeout(30e3) });
+      res = await fetch(routes() + '/manifest', { headers: { ...extra, ...auth() }, signal: AbortSignal.timeout(30e3) });
     } catch (err) {
       throw new Retry('manifest: ' + ((err && err.message) || err));
     }
@@ -651,12 +660,23 @@ try {
 const debug = (...a) => { if (process.env.TYPD_DEBUG) console.log('[typd:models]', ...a); };
 let main = null;
 
-/** Where the key comes from: the developer's own machine first, then a tester build's. */
-function findConfig(app) {
-  const own = readConfig(path.join(app.getPath('userData'), 'model-updates.json'));
+/**
+ * What to follow: the developer's own machine's key first, then a tester build's, then -- in a
+ * packaged build with neither -- the public routes ({endpoint, key: null}). Run from source with
+ * neither, nothing (null), as before. Electron-free, for bench/updates.js:
+ *   userData        app.getPath('userData')
+ *   packaged        app.isPackaged
+ *   resourcesPath   process.resourcesPath (packaged)
+ *   repoDir         the checkout (source runs: its tester.json, only with TYPD_TESTER_DEV=1)
+ *   env             process.env
+ */
+function findConfig({ userData, packaged, resourcesPath, repoDir = path.join(__dirname, '..', '..'), env = process.env }) {
+  const own = readConfig(path.join(userData, 'model-updates.json'));
   if (own) return own;
-  if (!app.isPackaged && process.env.TYPD_TESTER_DEV !== '1') return null;
-  return readConfig(app.isPackaged ? path.join(process.resourcesPath, 'tester.json') : path.join(__dirname, '..', '..', 'tester.json'));
+  if (!packaged && env.TYPD_TESTER_DEV !== '1') return null;
+  const tester = readConfig(packaged ? path.join(resourcesPath, 'tester.json') : path.join(repoDir, 'tester.json'));
+  if (tester) return tester;
+  return packaged ? { endpoint: ENDPOINT, key: null } : null;
 }
 
 /**
@@ -669,8 +689,9 @@ function findConfig(app) {
  */
 function start({ bundledDir, busy, switchModel, onWarm, changed }) {
   if (main || !electron || process.env.TYPD_MODEL_DIR) return main;
+  if (process.env.TYPD_NO_MODEL_UPDATE === '1') { debug('model updates off: TYPD_NO_MODEL_UPDATE=1'); return main; }
   const { app, powerMonitor, net } = electron;
-  const config = findConfig(app);
+  const config = findConfig({ userData: app.getPath('userData'), packaged: app.isPackaged, resourcesPath: process.resourcesPath });
   main = createUpdater({
     config,
     modelsDir: path.join(app.getPath('userData'), 'models'),
@@ -687,7 +708,7 @@ function start({ bundledDir, busy, switchModel, onWarm, changed }) {
   if (onWarm) onWarm((r) => main.warmed(r));
   if (changed) main.onChange(changed);
   if (config) {
-    debug('model updates on, from', config.endpoint);
+    debug('model updates on, from', config.endpoint, config.key ? '(with a key)' : '(public routes, no key)');
     main.start();
     powerMonitor.on('resume', () => main.wake());
   }
@@ -699,4 +720,4 @@ function line() {
   return main ? main.line() : null;
 }
 
-module.exports = { start, line, createUpdater, activeModel, activeVersion, versionOf, readCurrent, isComplete, checkManifest, labelOf, older, sha256File, readConfig };
+module.exports = { start, line, createUpdater, activeModel, activeVersion, versionOf, readCurrent, isComplete, checkManifest, labelOf, older, sha256File, readConfig, findConfig, ENDPOINT };

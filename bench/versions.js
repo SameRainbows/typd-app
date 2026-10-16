@@ -255,7 +255,8 @@ function fakeServer() {
     check("wiring: modelUpdate.start passes versionStats' headers", /stats: \(\) => require\('\.\/versionStats'\)\.statsHeaders\(\)/.test(mu.slice(mu.indexOf('function start('))));
     check("wiring: appUpdate.start passes versionStats' headers", /stats: \(\) => require\('\.\/versionStats'\)\.statsHeaders\(\)/.test(aus.slice(aus.indexOf('function start('))));
     check('wiring: only the manifest requests use stats()', (mu.match(/stats\(\)/g) || []).length === 1 && (aus.match(/stats\(\)/g) || []).length === 1 &&
-      /extra = stats\(\)[^\n]*\n[^\n]*\/v1\/model\/manifest', \{ headers: \{ \.\.\.extra, \.\.\.auth\(\) \}/.test(mu.replace(/\r\n/g, '\n')) &&
+      // the model check: routes() + '/manifest', the keyed /v1/model/manifest or, with no key, /v1/model/public/manifest
+      /extra = stats\(\)[^\n]*\n[^\n]*routes\(\) \+ '\/manifest', \{ headers: \{ \.\.\.extra, \.\.\.auth\(\) \}/.test(mu.replace(/\r\n/g, '\n')) &&
       /headers = stats\(\)[^\n]*\n[^\n]*\/v1\/app\/manifest', \{ headers, signal/.test(aus.replace(/\r\n/g, '\n')));
     check('wiring: appUpdate.start returns before anything when run from source or with TYPD_NO_APP_UPDATE=1',
       /if \(!app\.isPackaged\) \{ debug\('off: run from source'\); return null; \}/.test(aus) && /TYPD_NO_APP_UPDATE === '1'\) \{ debug/.test(aus));

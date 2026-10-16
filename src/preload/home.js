@@ -51,6 +51,7 @@ contextBridge.exposeInMainWorld('typdHome', {
   action: call('app:action'),
   pane: call('app:pane'),
   feedback: call('app:feedback'),
+  license: call('app:license'),
 
   on(event, handler) {
     if (!EVENTS.includes(event)) throw new Error('typdHome.on: unknown event "' + event + '"');

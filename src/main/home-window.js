@@ -335,6 +335,12 @@ function register(d) {
     require('./permissions-mac').openPane(kind);
     return true;
   });
+  // The model's licence (MODEL_LICENSE.txt: shipped in the app's resources, the repo's in development)
+  handle('app:license', () => {
+    const file = app.isPackaged ? path.join(process.resourcesPath, 'MODEL_LICENSE.txt') : path.join(__dirname, '..', '..', 'MODEL_LICENSE.txt');
+    if (!fs.existsSync(file)) return false;
+    return shell.openPath(file).then((err) => !err);
+  });
   handle('app:feedback', () => {
     const subject = encodeURIComponent('Typd feedback (' + app.getVersion() + ', ' + (MAC ? 'macOS' : 'Windows') + ')');
     shell.openExternal('mailto:' + FEEDBACK + '?subject=' + subject).catch(() => {});

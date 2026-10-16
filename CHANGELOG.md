@@ -4,6 +4,7 @@
 
 - **Update checks count versions.** When Typd checks for an update, it now sends its version and the model's version with an anonymous install ID, so the developer can see which versions are in use. The ID is random and made on your computer, it is not your sharing ID, and nothing you say or type goes with it.
 - **Shared dictations name their model.** If you share, each dictation and each **That was wrong** now records the exact model version that wrote it, and whether the revise adapter was used.
+- **Better models arrive on their own.** When a new dictation model is published, Typd downloads it in the background and switches to it when you are not dictating; if it does not start, the model you had comes back. The tray shows which model you have. Its licence is under **Model licence** in Settings.
 
 ## 0.2.0 · October 2026
 

@@ -145,7 +145,10 @@ async function run(aApp, pkgDir) {
     ...process.env, TYPD_DEBUG: '1', TYPD_APP_UPDATE_URL: endpoint, TYPD_APP_UPDATE_REPORT: report,
     TYPD_APP_UPDATE_FIRST_MS: '3000', TYPD_APP_UPDATE_EVERY_MS: '10000', TYPD_APP_UPDATE_IDLE_MS: '2000',
     TYPD_APP_UPDATE_SYSTEM_IDLE_S: '0', TYPD_APP_UPDATE_RATE: '0', TYPD_APP_UPDATE_SELFTEST_FAIL: C.version,
-    TYPD_APP_UPDATE_STDOUT: path.join(T, 'relaunched.log')
+    TYPD_APP_UPDATE_STDOUT: path.join(T, 'relaunched.log'),
+    // A build without a key follows the public model routes (modelUpdate.js): not from a test. Every
+    // TYPD_* variable is passed on to the relaunched versions.
+    TYPD_NO_MODEL_UPDATE: '1'
   };
   const logs = () => {
     for (const [name, f] of [['report', report], ['helper.log', path.join(dir, 'helper.log')], ['A (first launch)', path.join(T, 'a.log')], ['relaunched', path.join(T, 'relaunched.log')]]) {

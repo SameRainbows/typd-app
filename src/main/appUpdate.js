@@ -39,8 +39,8 @@
  *
  * The packages are thin on purpose (scripts/app-update-package.js): the dictation model and the
  * CUDA llama.cpp are most of an installer, and the bucket has 9 GB for everything. So an app update
- * never changes the bundled model: tester builds get new models from modelUpdate.js, a public build
- * keeps the one it was installed with. A Windows package leaves llama.cpp out when it is unchanged
+ * never changes the bundled model: every packaged build gets new models from modelUpdate.js (a public
+ * build through the keyless public routes). A Windows package leaves llama.cpp out when it is unchanged
  * and says which tree it needs (`requires`); an install with another one is told to reinstall.
  *
  * Settings, history, dictionary, downloaded models: all in userData, which an update never touches.

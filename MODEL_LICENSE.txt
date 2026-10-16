@@ -1,0 +1,40 @@
+Typd dictation model licence
+
+Copyright (c) 2026 Mehmet Dedeler.
+
+This licence covers the dictation model that comes with Typd and every model file Typd
+downloads to update it: the model weights, the audio encoder (the mmproj file), any
+adapter that comes with them, and their model.json.
+
+You may use the model free of charge, through Typd, for your own personal use.
+
+You may not, without written permission from the author:
+  - redistribute the model or any part of it, on its own or inside anything else, changed
+    or not, including by sharing or hosting the files;
+  - extract the model from Typd to use it in another product, app or service, or to train,
+    fine-tune or distil another model with it;
+  - use the model commercially.
+
+To ask for permission: contact@mehmetdedeler.com
+
+The model is provided "as is", without warranty of any kind. The author is not liable for
+any claim or damage arising from its use.
+
+
+Base model: Qwen3-ASR (Apache License 2.0)
+
+The model is a fine-tuned version of Qwen3-ASR, by the Qwen team at Alibaba Cloud. Qwen3-ASR
+is licensed under the Apache License, Version 2.0 (the "License"); you may not use it except
+in compliance with the License. You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software distributed under the
+License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+either express or implied. See the License for the specific language governing permissions
+and limitations under the License.
+
+Changes made for Typd: the weights were fine-tuned for dictation, then converted to GGUF and
+quantized; the audio encoder was converted to GGUF. The terms above apply to these changes and
+to the model as a whole. They do not limit what the Apache License allows for the original
+Qwen3-ASR, which is available from its authors.
