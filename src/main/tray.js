@@ -29,6 +29,8 @@ function preview40(text) {
  * @param {(id: string) => void} deps.statusAction             a click on the status line
  * @param {(term: string) => void} deps.forget                 undo a learned word
  * @param {() => string|null} [deps.modelLine]                 model-update line (modelUpdate.js)
+ * @param {() => {label: string, action?: string}|null} [deps.updateLine]   app-update line (appUpdate.js)
+ * @param {(action: string) => void} [deps.updateAction]       a click on it (the download page)
  */
 function createTray(deps) {
   let tray = null;
@@ -80,9 +82,14 @@ function createTray(deps) {
     const last = lastDictation();
     // Tester builds and the developer's machines: which model, and whether it is updating.
     const model = deps.modelLine ? deps.modelLine() : null;
+    // Packaged builds: a new Typd downloading, waiting to install, or just installed.
+    const update = deps.updateLine ? deps.updateLine() : null;
     return Menu.buildFromTemplate([
       s.action ? { label: s.line, click: () => deps.statusAction(s.action.id) } : { label: s.line, enabled: false },
       ...(model ? [{ label: model, enabled: false }] : []),
+      ...(update ? [update.action && deps.updateAction
+        ? { label: update.label, click: () => deps.updateAction(update.action) }
+        : { label: update.label, enabled: false }] : []),
       { type: 'separator' },
       { label: 'Open Typd', click: () => deps.open('home') },
       last

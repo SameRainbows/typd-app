@@ -20,6 +20,7 @@ const learn = require('./learn');
 const dictionary = require('./dictionary');
 const collect = require('./collect');   // tester builds only; inert without tester.json
 const modelUpdate = require('./modelUpdate');   // tester builds and the developer's machines; inert without a key
+const appUpdate = require('./appUpdate');       // packaged builds: a newer signed Typd, installed while you are away
 
 const MAC = process.platform === 'darwin';
 
@@ -415,7 +416,9 @@ const trayUi = createTray({
   copy: (text) => inject.copy(text),
   statusAction,
   forget: (term) => forget(term),
-  modelLine: () => modelUpdate.line()
+  modelLine: () => modelUpdate.line(),
+  updateLine: () => appUpdate.line(),
+  updateAction: () => require('electron').shell.openExternal(appUpdate.DOWNLOAD_PAGE).catch(() => {})
 });
 
 const refreshTray = () => trayUi.refresh();
@@ -471,6 +474,51 @@ function switchModel() {
   });
 }
 
+/* -------------------------------------------------------------- app updates */
+
+let appUpdater = null;
+
+/** Leave so appUpdate.js's helper can swap the app; forced if anything holds the quit up. */
+function quitForUpdate() {
+  const t = setTimeout(() => app.exit(0), 8000);
+  if (t.unref) t.unref();
+  app.quit();
+}
+
+/**
+ * Packaged builds only (appUpdate.js). Started as soon as the overlay exists, so the first start
+ * of a just-installed version says at once that it is alive; its verdict follows the overlay's
+ * page and the model's start-up self-test, and a failure hands the helper back the old version.
+ */
+function startAppUpdate() {
+  const { BrowserWindow } = require('electron');
+  const visible = () => BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed() && w.isVisible());
+  const asking = () => MAC && require('./permissions-mac').isAsking();
+  const local = require('./pipeline/local');
+  const away = () => { try { return powerMonitor.getSystemIdleTime() >= 1800; } catch { return false; } };
+  appUpdater = appUpdate.start({
+    // Never while dictating; not while a Typd window is open, unless nobody has touched the
+    // computer for half an hour (a window left open must not hold updates back for days).
+    busy: () => Boolean(session) || (visible().length > 0 && !away()),
+    onWarm: local.onWarm,
+    changed: () => refreshTray(),
+    quit: quitForUpdate,
+    reportExtra: () => ({ windows: visible().map((w) => w.getTitle() || 'untitled'), dock: MAC && app.dock ? app.dock.isVisible() : null, tray: Boolean(trayUi.tray), asking: asking() })
+  });
+  if (!appUpdater) return;
+  // "Updated to x": the tray says it; on Windows the pill too, briefly. A Mac relaunch shows nothing.
+  appUpdater.onUpdated(({ to }) => { if (!MAC) note('Updated to ' + to, 4000); refreshTray(); });
+  if (!appUpdater.firstStart) return;
+  let loaded = false, warm = null;
+  const decide = () => {
+    if (!loaded || !warm) return;
+    appUpdater.settle({ windowOk: true, modelOk: warm.ok, why: warm.ok ? '' : String((warm.error && warm.error.message) || '') })
+      .then((v) => { if (v === 'failed') setTimeout(() => { pipeline.stop(); app.exit(1); }, 500); });
+  };
+  overlay.webContents.once('did-finish-load', () => { loaded = true; decide(); });
+  local.onWarm((r) => { if (!warm) { warm = r; decide(); } });
+}
+
 /**
  * Windows: is the microphone switched off for desktop apps in Privacy settings? Read
  * without opening it. A blocked microphone is the one launch-time problem that opens the
@@ -521,6 +569,7 @@ app.whenReady().then(() => {
 
   overlay = createOverlayWindow({ dev });
   overlay.webContents.on('did-finish-load', markRendererReady);
+  if (!stub) startAppUpdate();
 
   // Warm the injector during launch so the first paste does not pay the ~450 ms
   // shell start, and the speech model so the first dictation does not pay for
@@ -648,7 +697,10 @@ app.whenReady().then(() => {
   // again from Finder, Spotlight or Launchpad -- the way to reach it when the menu bar hides
   // its icon behind the notch -- opens the window, as a second launch does on Windows.
   if (MAC) {
-    require('./permissions-mac').ensure('startup').then(checkMacPermissions);
+    // After a quiet update relaunch the dialog waits until someone is at the keyboard (a new
+    // ad-hoc build is a new app to macOS, so its switches may need turning on again).
+    const askPermissions = () => require('./permissions-mac').ensure('startup').then(checkMacPermissions);
+    if (appUpdater && appUpdater.firstStart) { checkMacPermissions(); appUpdate.whenUserActive(askPermissions); } else askPermissions();
     require('./mac/login-item').sync(settings.get('startAtLogin'));
     setInterval(checkMacPermissions, 15000);
     const launched = Date.now();

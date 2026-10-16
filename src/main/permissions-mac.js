@@ -317,4 +317,7 @@ async function status() {
   return out;
 }
 
-module.exports = { ensure, status, openPane };
+/** Is the permissions dialog on screen? (appUpdate.js never quits for an update under it.) */
+function isAsking() { return dialogOpen; }
+
+module.exports = { ensure, status, openPane, isAsking };

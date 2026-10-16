@@ -9,7 +9,7 @@
     "start": "electron .",
     "dev": "electron . --dev",
     "stub": "electron . --stub",
-    "bench": "node bench/wiring.js && node bench/hotkeys.js && node bench/home.js && node bench/revise.js && node bench/formatting.js && node bench/learn.js && node bench/updates.js && node bench/lora.js --no-model",
+    "bench": "node bench/wiring.js && node bench/hotkeys.js && node bench/home.js && node bench/revise.js && node bench/formatting.js && node bench/learn.js && node bench/updates.js && node bench/lora.js --no-model && node bench/app-update.js",
     "bench:revise": "node bench/revise.js",
     "bench:format": "node bench/formatting.js",
     "bench:selection": "node bench/selection.js 90 --copy",
@@ -19,6 +19,8 @@
     "bench:home": "node bench/home.js",
     "bench:updates": "node bench/updates.js",
     "bench:lora": "node bench/lora.js",
+    "bench:app-update": "node bench/app-update.js",
+    "package:update:win": "node scripts/app-update-package.js win",
     "fetch:llama-mac": "node scripts/fetch-llama-mac.js",
     "smoke": "node scripts/smoke-llama.js",
     "dist:win": "electron-builder --win --x64",
@@ -54,7 +56,11 @@
     "npmRebuild false: the only native module, uiohook-napi, ships N-API prebuilds for every",
     "platform, which Electron loads as-is; a rebuild would need a compiler for nothing.",
     "mac: identity null means electron-builder signs nothing; scripts/after-pack.js signs ad",
-    "hoc on a Mac. minimumSystemVersion is llama.cpp b11351's deployment target."
+    "hoc on a Mac. minimumSystemVersion is llama.cpp b11351's deployment target.",
+    "App updates (src/main/appUpdate.js): the helper scripts in src/main/app-update/ are read out of",
+    "app.asar and written to <userData>/app-update/ before they run (a script inside the app it is",
+    "replacing could not move that app), so they need no asarUnpack. The update packages themselves",
+    "are made after packaging by scripts/app-update-package.js (README.md \"App updates\")."
   ],
   "build": {
     "appId": "ai.typd.app",
