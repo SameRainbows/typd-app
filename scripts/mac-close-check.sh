@@ -71,7 +71,11 @@ if [ ! -s "$MARK" ] && alive; then
   # Running but silent: where is it stuck? Every thread's stack, main thread first.
   echo "--- [$MODE] no marker yet Typd runs: its threads, sampled"
   sample "$pid" 3 -file "$RUNNER_TEMP/sample-$MODE.txt" > /dev/null 2>&1 || true
-  sed -n '/^Call graph:/,/^Total number in stack/p' "$RUNNER_TEMP/sample-$MODE.txt" 2>/dev/null | cut -c1-220 | head -300 || true
+  # The main thread and any thread in uiohook (the key's event tap), whole.
+  awk '/^    [0-9]+ Thread_/ { if (b ~ /main-thread|uiohook|hook_|CGEventTap|AXIsProcess/) printf "%s", b; b = "" }
+       /^Total number in stack/ { if (b ~ /main-thread|uiohook|hook_|CGEventTap|AXIsProcess/) printf "%s", b; exit }
+       f { b = b $0 "\n" } /^Call graph:/ { f = 1 }' "$RUNNER_TEMP/sample-$MODE.txt" 2>/dev/null | cut -c1-240 | head -400 || true
+  grep -c 'Thread_' "$RUNNER_TEMP/sample-$MODE.txt" 2>/dev/null | sed 's/^/threads sampled: /' || true
   echo "--- [$MODE] the start of its log"; head -60 "$LOG" "$LOG.err" 2>/dev/null | cut -c1-220 || true
 fi
 
