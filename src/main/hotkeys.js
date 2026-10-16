@@ -169,7 +169,7 @@ function registerHotkeys({ onPress, onRelease, onCancel, onAltDown, binding, int
 
   const act = (what) => {
     if (!what || paused) return;
-    if (process.env.TYPD_DEBUG) console.log('[typd:hotkey]', what, open ? '(open)' : '(closed)');
+    if (process.env.TYPD_DEBUG) console.log('[typd:hotkey]', what, open ? '(open)' : '(closed)', 'at', (Date.now() / 1000).toFixed(3));
     if (what === 'toggle') { if (open) finish(); else start(); }
     else if (what === 'start') start();
     else if (what === 'finish') finish();

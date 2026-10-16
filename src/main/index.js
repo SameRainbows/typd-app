@@ -890,8 +890,12 @@ app.whenReady().then(() => {
 function testCloseHome(file) {
   const { BrowserWindow } = require('electron');
   const heard = () => (hotkeys ? hotkeys.keysHeard : 0);
-  let atOpen = 0, atClose = 0, closedAt = 0;
+  let atOpen = 0, atClose = 0, closedAt = 0, last = 0, late = 0;
   const write = () => {
+    // How late this 1 s timer fires: App Nap, among others, coalesces a background app's timers.
+    const now = Date.now();
+    if (last) late = Math.max(late, now - last - 1000);
+    last = now;
     const lines = [
       'pid: ' + process.pid,
       'alive',
@@ -900,7 +904,8 @@ function testCloseHome(file) {
       'keys heard: ' + atOpen + ' before the window opened, ' + (atClose - atOpen) + ' while open, ' + (heard() - atClose) + ' since it closed',
       'dictation: ' + (session ? session.mode + ', open' : 'none open'),
       'dock: ' + (app.dock ? (app.dock.isVisible() ? 'shown' : 'hidden') : 'none'),
-      'overlay: ' + (overlay && !overlay.isDestroyed() ? 'alive' : 'gone') + ', windows: ' + BrowserWindow.getAllWindows().length
+      'overlay: ' + (overlay && !overlay.isDestroyed() ? 'alive' : 'gone') + ', windows: ' + BrowserWindow.getAllWindows().length,
+      'timer: up to ' + late + ' ms late'
     ];
     try { require('fs').writeFileSync(file, lines.join('\n') + '\n'); } catch (err) { console.log('[typd:test]', err.message); }
   };
