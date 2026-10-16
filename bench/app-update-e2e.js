@@ -22,10 +22,19 @@
  *          screen counts as answered (share "off" in settings.json, unless already answered).
  *       2. Wait until A has updated itself to B: B relaunched by the helper through `open`, passed
  *          its start-up self-test (the model's included), reports its version, shows no window and
- *          no Dock icon, has its menu-bar item, carries A's model, is validly signed, has no
- *          quarantine mark, runs its own llama-server, and nothing is left next to it.
+ *          no Dock icon, has its menu-bar item, is validly signed, has no quarantine mark, runs its
+ *          own llama-server, and nothing is left next to it. From 0.2.2 (docs/MAC.md "Code
+ *          signing"): B is installed exactly as CI signed it -- no model inside, nothing carried,
+ *          not signed again -- and A's model was kept for it in <userData>/carried/ (carried.js);
+ *          A, B, C and the installed app after the swap have ONE designated requirement, naming
+ *          Typd's certificate (scripts/mac-signing.json) when the builds were signed with it.
+ *          With TYPD_E2E_TCC=1 (the runner's TCC.db is writable): A is granted Accessibility by
+ *          its designated requirement before it starts, and B, relaunched as its own app, must be
+ *          trusted by that grant -- the privacy switches survive the update.
  *       3. Publish C, which fails its self-test (TYPD_APP_UPDATE_SELFTEST_FAIL, passed on to every
- *          relaunch), and wait until B is back, running, and remembers C as failed.
+ *          relaunch), and wait until B is back, running, and remembers C as failed. With
+ *          TYPD_E2E_TCC=1 the grant is first changed to name another certificate: the B that comes
+ *          back must NOT be trusted (the check above tells the two apart).
  */
 
 const fs = require('fs');
@@ -56,6 +65,26 @@ function key() {
     "'use strict';\n\n// A throwaway key for an app-update test (bench/app-update-e2e.js key). Never committed.\n" +
     `module.exports = { keys: { ${JSON.stringify(kid)}: ${JSON.stringify(pem)} } };\n`);
   console.log(`throwaway app-update key ${kid}: private half in ${KEY_FILE}, public half in src/main/appUpdateKey.js`);
+}
+
+/** `codesign -d -r-`: the designated requirement, or null. */
+function designated(app) {
+  const r = sh('codesign', ['-d', '-r-', app]);
+  const m = /designated => (.+)/.exec((r.stdout || '') + (r.stderr || ''));
+  return m ? m[1].trim() : null;
+}
+
+const SYS_TCC = '/Library/Application Support/com.apple.TCC/TCC.db';
+/** Grant ai.typd.app Accessibility in the runner's TCC.db for code that satisfies `requirement`. */
+function grantAx(requirement, dir) {
+  const bin = path.join(dir, 'ax.csreq');
+  const c = sh('csreq', ['-r=' + requirement, '-b', bin]);
+  if (c.status !== 0) return 'csreq: ' + c.stderr;
+  const hex = fs.readFileSync(bin).toString('hex');
+  const sql = "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version, csreq, flags, last_modified) " +
+    `VALUES ('kTCCServiceAccessibility', 'ai.typd.app', 0, 2, 4, 1, X'${hex}', 0, ${Math.floor(Date.now() / 1000)});`;
+  const r = sh('sudo', ['sqlite3', SYS_TCC, sql]);
+  return r.status === 0 ? null : 'sqlite3: ' + r.stderr;
 }
 
 const plistVersion = (app) => sh('plutil', ['-extract', 'CFBundleShortVersionString', 'raw', '-o', '-', path.join(app, 'Contents', 'Info.plist')]).stdout.trim();
@@ -141,6 +170,23 @@ async function run(aApp, pkgDir) {
       console.log('the consent screen answered "off" in ' + f);
     }
   }
+  // One code identity for every build (docs/MAC.md "Code signing").
+  const drA = designated(APP), drB = B.signature && B.signature.designated, drC = C.signature && C.signature.designated;
+  const identity = (process.env.TYPD_MAC_SIGN_IDENTITY || '').toLowerCase();
+  console.log(`designated requirements:\n  A (installed) ${drA}\n  B (package)   ${drB}\n  C (package)   ${drC}`);
+  check('A, B and C (three builds) have the same designated requirement', Boolean(drA) && drA === drB && drA === drC, { drA, drB, drC });
+  if (identity) {
+    const want = JSON.parse(fs.readFileSync(path.join(ROOT, 'scripts', 'mac-signing.json'), 'utf8')).sha1;
+    check(`... naming ai.typd.app and Typd's certificate (${want.slice(0, 8)}, scripts/mac-signing.json)`,
+      Boolean(drA) && drA.includes('identifier "ai.typd.app"') && drA.toLowerCase().includes(want) && identity === want, drA);
+  }
+  check('the macOS packages carry nothing (installed exactly as signed)', Array.isArray(B.carry) && B.carry.length === 0 && Array.isArray(C.carry) && C.carry.length === 0, { b: B.carry, c: C.carry });
+  const tcc = process.env.TYPD_E2E_TCC === '1' && drA;
+  if (tcc) {
+    const bad = grantAx(drA, T);
+    check("the runner's TCC.db grants ai.typd.app Accessibility for A's designated requirement", !bad, bad);
+  }
+
   const env = {
     ...process.env, TYPD_DEBUG: '1', TYPD_APP_UPDATE_URL: endpoint, TYPD_APP_UPDATE_REPORT: report,
     TYPD_APP_UPDATE_FIRST_MS: '3000', TYPD_APP_UPDATE_EVERY_MS: '10000', TYPD_APP_UPDATE_IDLE_MS: '2000',
@@ -188,10 +234,16 @@ async function run(aApp, pkgDir) {
     const main = pids(`^${rx(APP)}/Contents/MacOS/Typd`);
     check('the process running from it is the one that reported', r && main.includes(r.pid), { main, pid: r && r.pid });
     check('B runs its own llama-server, from inside the new bundle', pids(`^${rx(APP)}/Contents/Resources/llama/llama-server`).length === 1);
-    const spec = readJson(path.join(APP, 'Contents', 'Resources', 'models', 'typd-dictate', 'model.json'));
-    check("A's model was carried into B (the package has none)", spec && fs.existsSync(path.join(APP, 'Contents', 'Resources', 'models', 'typd-dictate', spec.model)), spec);
+    const kept = path.join(userData, 'carried', 'models', 'typd-dictate');
+    const spec = readJson(path.join(kept, 'model.json'));
+    check('B is installed exactly as signed: no model inside the bundle (nothing carried into it)', !fs.existsSync(path.join(APP, 'Contents', 'Resources', 'models')));
+    check("A's model was kept for B in <userData>/carried/ (carried.js), and B's self-test passed on it", spec && fs.existsSync(path.join(kept, spec.model)) && r && r.settled === true, spec);
     const cs = sh('codesign', ['--verify', '--deep', '--strict', APP]);
-    check('B is validly signed with the model inside (codesign --verify --deep --strict)', cs.status === 0, cs.stderr);
+    check('B is validly signed (codesign --verify --deep --strict)', cs.status === 0, cs.stderr);
+    const drSwap = designated(APP);
+    console.log(`  installed after the swap: ${drSwap}`);
+    check("after the helper's swap the installed app has A's designated requirement (the same code identity)", Boolean(drSwap) && drSwap === drA, { drSwap, drA });
+    if (tcc) check("B, started as its own app, is trusted for Accessibility by A's grant (the switch survived the update)", r && r.ax === true, r && r.ax);
     check('no quarantine mark on B', sh('xattr', ['-p', 'com.apple.quarantine', APP]).status !== 0);
     check('nothing left next to it (no backup, no staging copy)', leftovers().length === 0, leftovers());
     const helper = fs.readFileSync(path.join(dir, 'helper.log'), 'utf8');
@@ -199,13 +251,20 @@ async function run(aApp, pkgDir) {
     check('app-update/ cleaned up (no pending.json, verdict, staged version)', !fs.existsSync(path.join(dir, 'pending.json')) && !fs.existsSync(path.join(dir, B.version)), fs.readdirSync(dir));
 
     console.log('\nB -> C, which fails its self-test');
+    if (tcc) {
+      // The control: a grant for another certificate. The B that comes back must not be trusted.
+      const bad = grantAx('identifier "ai.typd.app" and certificate leaf = H"' + '0'.repeat(40) + '"', T);
+      check('the grant now names another certificate (the control)', !bad, bad);
+    }
     const before = requests.length;
     publish(C);
     r = await waitFor('B is back and remembers C', (x) => x.version === B.version && x.state === 'failed' && x.bad && x.bad.version === C.version, 8 * 60e3);
     check(`C (${C.version}) was downloaded`, requests.slice(before).some((u) => u.includes(C.file)), requests.slice(before));
     check(`B is back, running, and remembers C as failed`, r && r.version === B.version && r.state === 'failed' && r.bad && r.bad.version === C.version && /self-test/.test(r.bad.why), r);
-    check('the installed bundle is B again, with its model, validly signed', plistVersion(APP) === B.version && fs.existsSync(path.join(APP, 'Contents', 'Resources', 'models', 'typd-dictate', 'model.json')) &&
-      sh('codesign', ['--verify', '--strict', APP]).status === 0);
+    check('the installed bundle is B again, as signed (no model inside), validly signed, with the same designated requirement', plistVersion(APP) === B.version &&
+      !fs.existsSync(path.join(APP, 'Contents', 'Resources', 'models')) && sh('codesign', ['--verify', '--deep', '--strict', APP]).status === 0 && designated(APP) === drA, designated(APP));
+    check("the kept model is still there for B", fs.existsSync(path.join(userData, 'carried', 'models', 'typd-dictate', 'model.json')));
+    if (tcc) check('the B that came back is NOT trusted by a grant for another certificate (the check tells them apart)', r && r.ax === false, r && r.ax);
     check('the process running from it is the one that reported', r && pids(`^${rx(APP)}/Contents/MacOS/Typd`).includes(r.pid));
     check('nothing left next to it', leftovers().length === 0, leftovers());
     check('no window on screen after the rollback either', r && r.windows && r.windows.length === 0, r);

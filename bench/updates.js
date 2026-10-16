@@ -17,6 +17,10 @@
  *   - a packaged build with no key against the fake's public routes: the same download, resume,
  *     verify, adapter, switch, revert and 429 handling, never an Authorization header, and only
  *     the live version's files reachable
+ *   - signed manifests (0.2.2): the fake signs every manifest it serves with a throwaway key the
+ *     updaters here trust, as typd-collect serves publish_model.py's signature; unsigned, a bad
+ *     signature, an unknown key, another key under a known id, no seq, and an older seq replayed are
+ *     all refused with nothing downloaded; an updater with the built-in key refuses the test key
  *
  * Everything runs in a throwaway folder.
  *
@@ -29,7 +33,7 @@ const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
 
-const { createUpdater, activeModel, checkManifest, older, labelOf, findConfig, ENDPOINT } = require('../src/main/modelUpdate');
+const { createUpdater, activeModel, checkManifest, checkSignature, older, labelOf, findConfig, ENDPOINT, SIG_PREFIX } = require('../src/main/modelUpdate');
 const local = require('../src/main/pipeline/local');
 
 let failures = 0;
@@ -178,10 +182,40 @@ section('self-test: GPU -> CPU');
 
 /* ------------------------------------------------------- the fake server */
 
+// Manifests are signed (modelUpdate.js checkSignature). A throwaway key that the updaters here trust
+// (keys: TEST_KEYS); OTHER_KP is a key nobody trusts.
+const TEST_KP = crypto.generateKeyPairSync('ed25519');
+const OTHER_KP = crypto.generateKeyPairSync('ed25519');
+const TEST_KID = 'typd-model-bench';
+const TEST_KEYS = { [TEST_KID]: TEST_KP.publicKey.export({ type: 'spki', format: 'pem' }) };
+let SEQ = Math.floor(Date.now() / 1000);
+
+/**
+ * The manifest as typd-collect serves a published one: its exact text, with a seq that goes up
+ * whenever the content changes (publish_model.py), and the signature headers. `how`: ok, none, bad
+ * (signs other text), unknown (an id nobody trusts), otherkey (a trusted id, another key).
+ */
+function served(s) {
+  const base = JSON.stringify(s.manifest);
+  if (base !== s.lastBase) { s.lastBase = base; s.seq = ++SEQ; }
+  const full = s.manifest.seq !== undefined || s.noSeq ? { ...s.manifest } : { ...s.manifest, seq: s.seq };
+  if (s.noSeq) delete full.seq;
+  const text = JSON.stringify(full, null, 2) + '\n';
+  const headers = { 'Content-Type': 'application/json' };
+  if (s.sign !== 'none') {
+    const signer = s.sign === 'otherkey' ? OTHER_KP.privateKey : TEST_KP.privateKey;
+    headers['X-Typd-Manifest-Key'] = s.sign === 'unknown' ? 'typd-model-nobody' : TEST_KID;
+    headers['X-Typd-Manifest-Sig'] = crypto.sign(null, Buffer.from(SIG_PREFIX + (s.sign === 'bad' ? text + ' ' : text)), signer).toString('base64');
+  }
+  return { text, headers };
+}
+
 function fakeServer() {
   const s = {
     key: 'tk_test_0123456789abcdef',
     manifest: null,        // object, or null for 404
+    sign: 'ok',            // served(): ok | none | bad | unknown | otherkey
+    noSeq: false,
     manifestStatus: 200,
     files: {},             // "<version>/<name>" -> Buffer
     cutNext: {},           // name -> bytes after which the next response for it is cut off
@@ -199,8 +233,9 @@ function fakeServer() {
     if (req.url === '/v1/model/manifest' || req.url === '/v1/model/public/manifest') {
       if (s.manifestStatus !== 200) { res.writeHead(s.manifestStatus, s.manifestStatus === 429 ? { 'Retry-After': '120' } : {}); return res.end('{}'); }
       if (!s.manifest) { res.writeHead(404); return res.end('{"error":"no model published"}'); }
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify(s.manifest));
+      const { text, headers } = served(s);
+      res.writeHead(200, headers);
+      return res.end(text);
     }
     const m = /^\/v1\/model\/(?:public\/)?file\/([^/]+)\/([^/]+)$/.exec(req.url);
     if (!m) { res.writeHead(404); return res.end(); }
@@ -265,7 +300,7 @@ async function updaterTests() {
   let busy = false;
   let switches = [];
   let failSwitchTo = null;
-  const make = (over = {}) => createUpdater({
+  const make = (over = {}) => createUpdater({ keys: TEST_KEYS,
     config: { endpoint: s.endpoint, key: s.key }, modelsDir, bundledDir, appVersion: '0.1.0',
     busy: () => busy,
     switchModel: async () => {
@@ -278,10 +313,53 @@ async function updaterTests() {
   });
   const current = () => { try { return readJson(path.join(modelsDir, 'current.json')); } catch { return null; } };
 
+  section('signed manifests: anything but a good signature by a trusted key is refused, nothing downloaded');
+  {
+    const sdir = path.join(root, 'sig', 'models');
+    const su = (over = {}) => createUpdater({ keys: TEST_KEYS, config: { endpoint: s.endpoint, key: s.key }, modelsDir: sdir, bundledDir, appVersion: '0.2.2', switchModel: async () => {}, rate: 0, idleMs: 0, ...over });
+    publish(s, 'vs1', { 'typd-vs1.gguf': crypto.randomBytes(5000), 'mmproj-s.gguf': crypto.randomBytes(3000) });
+    for (const [how, what] of [['none', 'unsigned'], ['bad', 'a signature over other text'], ['unknown', 'a key id nobody trusts'], ['otherkey', 'a trusted key id, signed by another key']]) {
+      s.sign = how;
+      s.requests = [];
+      const r = await su().check();
+      check(`${what} -> refused, no file requested, nothing written`, r.state === 'refused' && fileRequests(s).length === 0 && !fs.existsSync(path.join(sdir, 'vs1.partial')) && !fs.existsSync(path.join(sdir, 'current.json')), r);
+    }
+    s.sign = 'ok';
+    s.noSeq = true;
+    let r = await su().check();
+    check('signed, but no seq -> refused', r.state === 'none' && fileRequests(s).length === 0, r);
+    s.noSeq = false;
+    r = await su({ keys: undefined }).check();
+    check("an updater with the built-in key (modelManifestKey.js) refuses the test key's manifest", r.state === 'refused', r);
+    r = await su().check();
+    const seen = readJson(path.join(sdir, 'state.json')).seq;
+    check('a good signature -> downloaded and switched; state.json keeps its seq', r.state === 'current' && readJson(path.join(sdir, 'current.json')).version === 'vs1' && Number.isSafeInteger(seen), r);
+    // An older manifest replayed: validly signed, seq below the one seen.
+    s.manifest = { ...s.manifest, notes: 'replayed', seq: seen - 1 };
+    s.requests = [];
+    r = await su().check();
+    check('an older seq replayed (validly signed) -> refused, nothing downloaded, seq kept', r.state === 'refused' && fileRequests(s).length === 0 && readJson(path.join(sdir, 'state.json')).seq === seen, r);
+    delete s.manifest.seq;
+    s.manifest = { ...s.manifest, notes: 'newer' };
+    r = await su().check();
+    check('a newer seq is followed again', r.state === 'current' && readJson(path.join(sdir, 'state.json')).seq > seen, r);
+    const text = '{"version":"x"}\n';
+    const good = crypto.sign(null, Buffer.from(SIG_PREFIX + text), TEST_KP.privateKey).toString('base64');
+    check('checkSignature: good -> null; a trailing byte, a short or padded signature, no key id -> refused',
+      checkSignature(text, TEST_KID, good, TEST_KEYS) === null && checkSignature(text + ' ', TEST_KID, good, TEST_KEYS) === 'bad signature' &&
+      checkSignature(text, TEST_KID, good.slice(0, 40), TEST_KEYS) === 'bad signature' && checkSignature(text, TEST_KID, good + '==', TEST_KEYS) === 'bad signature' &&
+      checkSignature(text, null, good, TEST_KEYS) === 'unsigned' && checkSignature(text, '../x', good, TEST_KEYS) === 'signed by an unknown key');
+    const builtin = require('../src/main/modelManifestKey').keys;
+    check('the built-in model key parses as an Ed25519 public key', Object.keys(builtin).length >= 1 && Object.values(builtin).every((pem) => crypto.createPublicKey(pem).asymmetricKeyType === 'ed25519'));
+    check('the model key is not the app-update key', Object.values(builtin).every((pem) => !Object.values(require('../src/main/appUpdateKey').keys).includes(pem)));
+    s.manifest = null;
+    s.lastBase = undefined;
+  }
+
   section('a run from source with no key (config null) never contacts the server');
   {
     s.requests = [];
-    const u = createUpdater({ config: null, modelsDir, bundledDir, fetch: () => { throw new Error('network used'); } });
+    const u = createUpdater({ keys: TEST_KEYS, config: null, modelsDir, bundledDir, fetch: () => { throw new Error('network used'); } });
     const r = await u.check();
     u.start();
     await sleep(50);
@@ -591,7 +669,7 @@ async function publicTests(s) {
   fs.writeFileSync(path.join(bundledDir, 'mmproj-p.gguf'), proj);
   fs.writeFileSync(path.join(bundledDir, 'model.json'), JSON.stringify({ model: 'bundled.gguf', mmproj: 'mmproj-p.gguf' }));
   let switches = [], failSwitchTo = null;
-  const make = (over = {}) => createUpdater({
+  const make = (over = {}) => createUpdater({ keys: TEST_KEYS,
     config: { endpoint: s.endpoint, key: null }, modelsDir, bundledDir, appVersion: '0.2.0',
     switchModel: async () => {
       const a = activeModel(modelsDir);
@@ -669,7 +747,7 @@ async function publicTests(s) {
 
   section('with a key, the same server: the keyed routes, as before');
   s.requests = [];
-  u = createUpdater({ config: { endpoint: s.endpoint, key: s.key }, modelsDir: path.join(root, 'keyed', 'models'), bundledDir, appVersion: '0.2.0', rate: 0, idleMs: 0 });
+  u = createUpdater({ keys: TEST_KEYS, config: { endpoint: s.endpoint, key: s.key }, modelsDir: path.join(root, 'keyed', 'models'), bundledDir, appVersion: '0.2.0', rate: 0, idleMs: 0 });
   r = await u.check();
   check('the keyed manifest and files, every request with the key, none to /v1/model/public/',
     r.state === 'current' && s.requests.length >= 2 && s.requests.every((q) => !q.url.startsWith('/v1/model/public/') && q.auth === 'Bearer ' + s.key), { r, req: s.requests });

@@ -65,6 +65,15 @@ const fakeApp = (name, isPackaged, version = '0.2.0') => {
 
 /* ------------------------------------------------------------- a fake typd-collect */
 
+// The model manifest is served signed (modelUpdate.js checkSignature), with a throwaway key the
+// updaters here are given.
+const MKP = crypto.generateKeyPairSync('ed25519');
+const MKEYS = { 'typd-model-bench': MKP.publicKey.export({ type: 'spki', format: 'pem' }) };
+function signedManifest(m) {
+  const text = JSON.stringify({ seq: 1000, ...m }, null, 2) + '\n';
+  return { text, sig: crypto.sign(null, Buffer.from(require('../src/main/modelUpdate').SIG_PREFIX + text), MKP.privateKey).toString('base64') };
+}
+
 function fakeServer() {
   const s = { requests: [], manifest: null, files: new Map(), items: new Map(), endpoint: null };
   s.server = http.createServer((req, res) => {
@@ -75,7 +84,12 @@ function fakeServer() {
       const r = { method: req.method, path: req.url, headers: req.headers, body };
       s.requests.push(r);
       const send = (status, obj, type = 'application/json') => { res.writeHead(status, { 'Content-Type': type }); res.end(Buffer.isBuffer(obj) ? obj : JSON.stringify(obj)); };
-      if (req.url === '/v1/model/manifest') return s.manifest ? send(200, s.manifest) : send(404, { error: 'none' });
+      if (req.url === '/v1/model/manifest') {
+        if (!s.manifest) return send(404, { error: 'none' });
+        const { text, sig } = signedManifest(s.manifest);
+        res.writeHead(200, { 'Content-Type': 'application/json', 'X-Typd-Manifest-Key': 'typd-model-bench', 'X-Typd-Manifest-Sig': sig });
+        return res.end(text);
+      }
       if (req.url.startsWith('/v1/model/file/')) {
         const name = decodeURIComponent(req.url.split('/').pop());
         return s.files.has(name) ? send(200, s.files.get(name), 'application/octet-stream') : send(404, { error: 'none' });
@@ -204,7 +218,7 @@ function fakeServer() {
     const files = { 'n.gguf': crypto.randomBytes(3000), 'mm2.gguf': crypto.randomBytes(1000) };
     for (const [n, b] of Object.entries(files)) srv.files.set(n, b);
     srv.manifest = { version: 'r30_1p7b', files: Object.entries(files).map(([name, b]) => ({ name, size: b.length, sha256: sha(b) })), model_json: { model: 'n.gguf', mmproj: 'mm2.gguf' }, min_app: '0.1.0' };
-    const u = createUpdater({ config: { endpoint: srv.endpoint, key: 'rk_test_0123456789abcdef' }, modelsDir: models, bundledDir: bundled, appVersion: '0.2.0',
+    const u = createUpdater({ keys: MKEYS, config: { endpoint: srv.endpoint, key: 'rk_test_0123456789abcdef' }, modelsDir: models, bundledDir: bundled, appVersion: '0.2.0',
       switchModel: async () => {}, idleMs: 20, rate: 0, stats });
     const first = await u.check();
     const mreq = srv.requests.filter((r) => r.path === '/v1/model/manifest');
@@ -220,17 +234,17 @@ function fakeServer() {
 
     // The same updater in a source run (the developer's machine follows models too): no headers.
     const devModels = path.join(root, 'dev-models');
-    const dev = createUpdater({ config: { endpoint: srv.endpoint, key: 'rk_test_0123456789abcdef' }, modelsDir: devModels, bundledDir: bundled, appVersion: '0.2.0',
+    const dev = createUpdater({ keys: MKEYS, config: { endpoint: srv.endpoint, key: 'rk_test_0123456789abcdef' }, modelsDir: devModels, bundledDir: bundled, appVersion: '0.2.0',
       switchModel: async () => {}, idleMs: 20, rate: 0, stats: vs.fromApp(fakeApp('dev-user', false), { env: {}, modelVersion: () => 'r24_1p7b' }) });
     srv.requests.length = 0;
     await dev.check();
     const devReqs = srv.requests.filter((r) => r.path === '/v1/model/manifest');
     check('a source run checks for models with its key and sends no version headers', devReqs.length === 1 && !hasStats(devReqs[0].headers) && /^Bearer /.test(devReqs[0].headers.authorization || ''));
-    const nostats = createUpdater({ config: { endpoint: srv.endpoint, key: 'rk_test_0123456789abcdef' }, modelsDir: path.join(root, 'm3'), bundledDir: bundled, appVersion: '0.2.0', switchModel: async () => {}, idleMs: 20, rate: 0 });
+    const nostats = createUpdater({ keys: MKEYS, config: { endpoint: srv.endpoint, key: 'rk_test_0123456789abcdef' }, modelsDir: path.join(root, 'm3'), bundledDir: bundled, appVersion: '0.2.0', switchModel: async () => {}, idleMs: 20, rate: 0 });
     srv.requests.length = 0;
     await nostats.check();
     check('an updater made without stats (older callers, tests) sends none', srv.requests.filter((r) => r.path === '/v1/model/manifest').every((r) => !hasStats(r.headers)));
-    const throwing = createUpdater({ config: { endpoint: srv.endpoint, key: 'rk_test_0123456789abcdef' }, modelsDir: path.join(root, 'm4'), bundledDir: bundled, appVersion: '0.2.0', switchModel: async () => {}, idleMs: 20, rate: 0, stats: () => { throw new Error('boom'); } });
+    const throwing = createUpdater({ keys: MKEYS, config: { endpoint: srv.endpoint, key: 'rk_test_0123456789abcdef' }, modelsDir: path.join(root, 'm4'), bundledDir: bundled, appVersion: '0.2.0', switchModel: async () => {}, idleMs: 20, rate: 0, stats: () => { throw new Error('boom'); } });
     check('stats that throw never stop a model check', (await throwing.check()).state !== 'retry');
 
     // appUpdate.js: every packaged build.

@@ -7,9 +7,13 @@
 #
 # 1. Wait for Typd (OLD_PID) to exit, then for anything still running from inside the bundle
 #    (llama-server): a server left on the port would be reused by the new version untested.
-# 2. Move the staged Typd.app next to the installed one (NEWIN), carry over what the package leaves
-#    out (CARRY: the dictation model, a tester build's tester.json), clear quarantine, and if
-#    anything was carried sign it ad hoc again, so its seal covers what is now inside.
+# 2. Move the staged Typd.app next to the installed one (NEWIN), carry over what the manifest names
+#    (CARRY), clear quarantine, and if anything was carried sign it ad hoc again, so its seal covers
+#    what is now inside. From 0.2.2 a macOS manifest carries NOTHING: the package's app is signed in
+#    CI with Typd's own certificate and is installed exactly as signed (nothing carried, so it is
+#    not signed again here and keeps its designated requirement, and with it the user's privacy
+#    switches); the new version copies the model and tester.json out of OLD itself
+#    (src/main/carried.js). 0.2.0 and 0.2.1 run this same script with that empty list.
 # 3. Swap: the installed bundle becomes OLD and NEWIN takes its name. Start it with `open`, which
 #    makes it its own app to macOS (permissions, the menu bar), passing on the TYPD_* variables.
 # 4. Wait for its verdict.json: "started", then "ok" or "failed". On "ok" delete OLD. On "failed",

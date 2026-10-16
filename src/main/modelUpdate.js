@@ -7,7 +7,8 @@
  * Where it reads the model from (findConfig), in order:
  *   <userData>/model-updates.json   {endpoint, key}: the developer's own machines (a READER_ key
  *                                   from typd-collect/keys.mjs; it can read the model, nothing else)
- *   <resources>/tester.json         tester builds (the file sharing.js reads; development:
+ *   <resources>/tester.json         tester builds (the file sharing.js reads, or after a macOS app
+ *                                   update its copy in <userData>/carried/, carried.js; development:
  *                                   the repo's tester.json, only with TYPD_TESTER_DEV=1)
  *   neither, in a packaged build    the public routes, with no key (the public beta): the same
  *                                   manifest and files, under the server's public ceilings
@@ -19,7 +20,13 @@
  *
  * 60 s after launch and every 6 hours it reads the manifest (typd-collect, GET <routes>/manifest);
  * in a packaged build that request also carries the version counts' headers (versionStats.js),
- * keyed or not.
+ * keyed or not. The manifest must be SIGNED: its exact text, with an Ed25519 signature over
+ * SIG_PREFIX + text in the X-Typd-Manifest-Key and X-Typd-Manifest-Sig headers, by a key in
+ * modelManifestKey.js (dictation-research/scripts/publish_model.py signs it). An unsigned manifest,
+ * a bad signature, an unknown key, or a seq below one already seen (an old manifest replayed) is
+ * refused, and nothing is downloaded. Typd up to 0.2.1 did not check; the server serves those the
+ * same JSON.
+ *
  * If it names a version this machine is not running, its files are downloaded into
  * <userData>/models/<version>.partial/ -- one file at a time, resumable with Range, held to
  * RATE so the connection stays the user's, retried with backoff -- while dictation goes on with
@@ -61,6 +68,8 @@ const VERSION_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const FILE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const RESERVED = ['manifest.json', 'model.json'];
 const ENDPOINT = 'https://typd-collect.mehmetdedeler.com';   // as sharing.js and appUpdate.js
+const SIG_PREFIX = 'typd-model-manifest/1\n';                 // what the signature covers, before the text
+const KID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 /* ------------------------------------------------------------ on-disk layout */
 
@@ -134,7 +143,25 @@ function checkManifest(m) {
   // The revise adapter, when there is one, is one more of the version's files (local.js loads it).
   if (mj.revise_lora != null && (!names.has(mj.revise_lora) || mj.revise_lora === mj.model || mj.revise_lora === mj.mmproj)) return 'bad model_json';
   if (m.min_app !== undefined && (typeof m.min_app !== 'string' || !/^\d+\.\d+\.\d+$/.test(m.min_app))) return 'bad min_app';
+  if (m.seq !== undefined && (!Number.isSafeInteger(m.seq) || m.seq < 1)) return 'bad seq';
   return null;
+}
+
+/**
+ * null if `text`, the manifest exactly as served, is signed by one of `keys` ({id: PEM}): `keyId`
+ * and `sig` (base64) from the X-Typd-Manifest-Key and X-Typd-Manifest-Sig headers, the signature
+ * over SIG_PREFIX + text. Else what is wrong. Nothing in the manifest is trusted before this.
+ */
+function checkSignature(text, keyId, sig, keys) {
+  if (!keyId || !sig) return 'unsigned';
+  if (!KID_RE.test(keyId) || !keys || !Object.prototype.hasOwnProperty.call(keys, keyId)) return 'signed by an unknown key';
+  const raw = Buffer.from(String(sig), 'base64');
+  if (raw.length !== 64 || raw.toString('base64') !== sig) return 'bad signature';
+  try {
+    return crypto.verify(null, Buffer.from(SIG_PREFIX + text, 'utf8'), crypto.createPublicKey(keys[keyId]), raw) ? null : 'bad signature';
+  } catch {
+    return 'bad signature';
+  }
 }
 
 /** '0.1.0' older than '0.2.0'? Anything unreadable counts as current. */
@@ -219,15 +246,18 @@ class Retry extends Error {
  *   stats         () => headers for the manifest check: the version counts' app version, model
  *                 version, OS and anonymous install id (versionStats.js), or {} -- a source run,
  *                 TYPD_NO_APP_UPDATE=1. Never sent with a file download.
+ *   keys          {id: PEM}: the keys a manifest may be signed with (modelManifestKey.js; tests
+ *                 pass a throwaway one)
  */
 function createUpdater({
   config, modelsDir, bundledDir, appVersion = '0.0.0', fetch = globalThis.fetch, busy = () => false,
   switchModel = async () => {}, log = () => {}, online = () => true, statfs = (p) => fsp.statfs(p),
-  rate = RATE, idleMs = IDLE_MS, firstCheckMs = FIRST_CHECK_MS, everyMs = CHECK_EVERY_MS, stats = () => ({})
+  rate = RATE, idleMs = IDLE_MS, firstCheckMs = FIRST_CHECK_MS, everyMs = CHECK_EVERY_MS, stats = () => ({}),
+  keys = require('./modelManifestKey').keys
 }) {
   const stateFile = path.join(modelsDir, 'state.json');
   const dirOf = (v) => path.join(modelsDir, v);
-  let state = 'idle';             // what line() says: idle, current, downloading, ready, failed, app, space, stopped, none
+  let state = 'idle';             // what line() says: idle, current, downloading, ready, failed, app, space, stopped, none, refused
   let progress = { done: 0, total: 0 };
   let target = null;              // the version being fetched or switched to
   let running = null;
@@ -551,15 +581,24 @@ function createUpdater({
     if (res.status === 404) { await res.body?.cancel().catch(() => {}); return set('none'); }
     if (!res.ok) await refused(res, 'manifest');
     const text = await res.text();
+    const unsigned = checkSignature(text, res.headers.get('x-typd-manifest-key'), res.headers.get('x-typd-manifest-sig'), keys);
+    if (unsigned) { log('manifest refused:', unsigned); return set('refused', { why: unsigned }); }
     let m;
     try { m = JSON.parse(text); } catch { m = null; }
-    const bad = checkManifest(m);
+    const bad = checkManifest(m) || (Number.isSafeInteger(m.seq) ? null : 'no seq');
     if (bad) { log('manifest refused:', bad); return set('none'); }
     const tag = crypto.createHash('sha256').update(text).digest('hex');
 
     const s = readState();
-    if (s.bad && s.bad.manifest === tag) return set('failed');
-    if (s.bad) { delete s.bad; await writeState(s); }
+    if (Number.isSafeInteger(s.seq) && m.seq < s.seq) {
+      log('manifest refused: seq', m.seq, 'is older than', s.seq, 'already seen');
+      return set('refused', { why: 'an older manifest than one already seen' });
+    }
+    let dirty = false;
+    if (s.seq !== m.seq) { s.seq = m.seq; dirty = true; }
+    if (s.bad && s.bad.manifest === tag) { if (dirty) await writeState(s); return set('failed'); }
+    if (s.bad) { delete s.bad; dirty = true; }
+    if (dirty) await writeState(s);
     if (older(appVersion, m.min_app)) { log(m.version, 'needs Typd', m.min_app); return set('app'); }
 
     const cur = readCurrent(modelsDir);
@@ -674,7 +713,7 @@ function findConfig({ userData, packaged, resourcesPath, repoDir = path.join(__d
   const own = readConfig(path.join(userData, 'model-updates.json'));
   if (own) return own;
   if (!packaged && env.TYPD_TESTER_DEV !== '1') return null;
-  const tester = readConfig(packaged ? path.join(resourcesPath, 'tester.json') : path.join(repoDir, 'tester.json'));
+  const tester = readConfig(packaged ? require('./carried').pick(resourcesPath, userData, 'tester.json') : path.join(repoDir, 'tester.json'));
   if (tester) return tester;
   return packaged ? { endpoint: ENDPOINT, key: null } : null;
 }
@@ -720,4 +759,4 @@ function line() {
   return main ? main.line() : null;
 }
 
-module.exports = { start, line, createUpdater, activeModel, activeVersion, versionOf, readCurrent, isComplete, checkManifest, labelOf, older, sha256File, readConfig, findConfig, ENDPOINT };
+module.exports = { start, line, createUpdater, activeModel, activeVersion, versionOf, readCurrent, isComplete, checkManifest, checkSignature, labelOf, older, sha256File, readConfig, findConfig, ENDPOINT, SIG_PREFIX };

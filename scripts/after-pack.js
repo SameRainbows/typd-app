@@ -14,16 +14,21 @@
  *  2. Every Mach-O file under Contents/Resources gets mode 0755. Files fetched on Windows
  *     carry no mode (scripts/fetch-llama-mac.js), and a server without its executable bit
  *     fails to spawn with EACCES.
- *  3. Ad-hoc signature (`codesign --sign -`). build.mac.identity is null, so
- *     electron-builder signs nothing; but Apple Silicon refuses to run code whose signature
- *     is missing or broken, and packaging breaks Electron's (new Info.plist, renamed
- *     binary). The loose Mach-O files in Resources (llama-server, its dylibs, native .node
- *     modules) are signed one by one first, because `--deep` only descends into nested
- *     bundles and frameworks, then the app as a whole with --deep. Only possible on a Mac;
- *     elsewhere it warns, and that .app will not open on Apple Silicon.
+ *  3. Signed. build.mac.identity is null, so electron-builder signs nothing; this does, because
+ *     Apple Silicon refuses to run code whose signature is missing or broken, and packaging
+ *     breaks Electron's (new Info.plist, renamed binary). With TYPD_MAC_SIGN_IDENTITY (the SHA-1
+ *     of Typd's own self-signed code-signing certificate, which the Mac CI imports into a keychain
+ *     of its own, TYPD_MAC_SIGN_KEYCHAIN: scripts/mac-signing-import.sh) it signs with that
+ *     certificate, so every build has the same designated requirement and macOS keeps Typd's
+ *     privacy switches across updates (docs/MAC.md "Code signing"); without it, ad hoc
+ *     (`--sign -`: a local build). The loose Mach-O files in Resources (llama-server, its dylibs,
+ *     native .node modules) are signed one by one first, because `--deep` only descends into
+ *     nested bundles and frameworks, then the app as a whole with --deep. No hardened runtime and
+ *     no entitlements, as before. Only possible on a Mac; elsewhere it warns, and that .app will
+ *     not open on Apple Silicon.
  *
- * Ad-hoc is not Developer ID: Gatekeeper still blocks the first open of a downloaded copy
- * (docs/MAC.md says how to get past it). It does make the app's signature valid and
+ * Neither is Developer ID: Gatekeeper still blocks the first open of a downloaded copy the same
+ * way (docs/MAC.md says how to get past it). Both make the app's signature valid and
  * consistent, which is the difference between "cannot be opened" and "is damaged".
  */
 
@@ -69,7 +74,27 @@ function run(cmd, args) {
   return execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 }
 
-module.exports = async function afterPack(context) {
+/**
+ * codesign's arguments for Typd's identity: TYPD_MAC_SIGN_IDENTITY (a SHA-1, in the keychain
+ * TYPD_MAC_SIGN_KEYCHAIN) when the Mac CI has imported the certificate, else ad hoc. Shared with
+ * scripts/app-update-package.js, which signs the update package's app the same way.
+ */
+function signArgs(env = process.env) {
+  const id = (env.TYPD_MAC_SIGN_IDENTITY || '').trim();
+  if (!id) return { args: ['--sign', '-'], label: 'ad hoc' };
+  if (!/^[0-9A-Fa-f]{40}$/.test(id)) throw new Error('TYPD_MAC_SIGN_IDENTITY must be the certificate\'s SHA-1 (40 hex digits)');
+  const kc = (env.TYPD_MAC_SIGN_KEYCHAIN || '').trim();
+  return { args: ['--sign', id, '--timestamp=none', ...(kc ? ['--keychain', kc] : [])], label: 'with Typd\'s certificate ' + id.slice(0, 8) };
+}
+
+/** `codesign -d -r-`: the designated requirement, the code identity macOS privacy settings remember. */
+function designatedRequirement(app) {
+  const r = require('child_process').spawnSync('codesign', ['-d', '-r-', app], { encoding: 'utf8' });
+  const m = /designated => (.+)/.exec((r.stdout || '') + (r.stderr || ''));
+  return m ? m[1].trim() : null;
+}
+
+async function afterPack(context) {
   const { electronPlatformName: platform, appOutDir, packager } = context;
   const arch = ARCH[context.arch] || String(context.arch);
   const mac = platform === 'darwin' || platform === 'mas';
@@ -122,8 +147,20 @@ module.exports = async function afterPack(context) {
 
   // Extended attributes (quarantine, Finder info) make codesign refuse the bundle.
   try { run('xattr', ['-cr', app]); } catch { /* nothing to clear */ }
-  for (const f of machos) run('codesign', ['--force', '--sign', '-', f]);
-  run('codesign', ['--force', '--deep', '--sign', '-', app]);
+  const how = signArgs();
+  for (const f of machos) run('codesign', ['--force', ...how.args, f]);
+  run('codesign', ['--force', '--deep', ...how.args, app]);
   run('codesign', ['--verify', '--deep', '--strict', app]);
-  console.log(`  • typd: ad-hoc signed ${path.basename(app)} (${machos.length} loose Mach-O files + bundle), signature verifies`);
-};
+  const dr = designatedRequirement(app);
+  const id = (process.env.TYPD_MAC_SIGN_IDENTITY || '').trim().toLowerCase();
+  if (id && !(dr && dr.toLowerCase().includes(id) && dr.includes('identifier "ai.typd.app"'))) {
+    throw new Error(`signed with ${id}, but the designated requirement is ${dr}`);
+  }
+  console.log(`  • typd: signed ${path.basename(app)} ${how.label} (${machos.length} loose Mach-O files + bundle), signature verifies`);
+  console.log(`  • typd: designated requirement: ${dr}`);
+}
+
+module.exports = afterPack;
+module.exports.default = afterPack;
+module.exports.signArgs = signArgs;
+module.exports.designatedRequirement = designatedRequirement;

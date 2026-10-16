@@ -283,8 +283,10 @@ function instance() {
   // with TYPD_SHARE_DEV=1 (and TYPD_COLLECT_URL to point it at a local wrangler dev).
   const devTester = !app.isPackaged && process.env.TYPD_TESTER_DEV === '1';
   const devBeta = !app.isPackaged && process.env.TYPD_SHARE_DEV === '1';
+  // Packaged: <resources>/tester.json, or after a macOS app update the copy kept from the version it
+  // replaced (src/main/carried.js).
   const tester = app.isPackaged || devTester
-    ? readConfig(app.isPackaged ? path.join(process.resourcesPath, 'tester.json') : path.join(__dirname, '..', '..', 'tester.json'))
+    ? readConfig(app.isPackaged ? (require('./carried').resource('tester.json') || path.join(process.resourcesPath, 'tester.json')) : path.join(__dirname, '..', '..', 'tester.json'))
     : null;
   if (!tester && !app.isPackaged && !devBeta) return main;
   const endpoint = (!app.isPackaged && checkEndpoint(process.env.TYPD_COLLECT_URL)) || ENDPOINT;

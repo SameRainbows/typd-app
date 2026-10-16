@@ -16,6 +16,10 @@
  *      stand-in Typd.exe; macOS: helper-mac.sh with a stand-in Typd.app): A -> B, a version that
  *      fails its self-test, one that crashes -- each put back, with the model, llama.cpp,
  *      tester.json and the uninstaller carried over and nothing left behind
+ *   4. what a macOS update no longer carries in (0.2.2, src/main/carried.js): the new version copies
+ *      the model and tester.json out of the app it replaced into <userData>/carried/ at its first
+ *      start, leaves that app whole, uses the copies, and drops them once the app has its own again;
+ *      and the macOS package and helper never sign the app again (one code identity)
  *
  * Everything runs in a throwaway folder; nothing touches %APPDATA%\typd, Typd itself or port 8737,
  * and nothing opens a window.
@@ -668,6 +672,97 @@ async function installTests() {
   }
 }
 
+/* ------------------------------------- 4. what the app keeps for itself (carried.js) */
+
+function carriedTests() {
+  section('what a macOS update no longer carries in: the new version keeps it in userData (carried.js)');
+  const carried = require('../src/main/carried');
+  const root = path.join(tmp, 'carried');
+  const userData = path.join(root, 'userData');
+  const newRes = path.join(root, 'Applications', 'Typd.app', 'Contents', 'Resources');
+  const old = path.join(root, 'Applications', '.Typd-update-old.app');
+  const oldRes = path.join(old, 'Contents', 'Resources');
+  const model = crypto.randomBytes(200000), proj = crypto.randomBytes(50000);
+  fs.mkdirSync(path.join(oldRes, 'models', 'typd-dictate'), { recursive: true });
+  fs.mkdirSync(newRes, { recursive: true });
+  fs.writeFileSync(path.join(oldRes, 'models', 'typd-dictate', 'model.json'), JSON.stringify({ model: 'm.gguf', mmproj: 'p.gguf', revise: true, revise_lora: 'missing-adapter.gguf' }));
+  fs.writeFileSync(path.join(oldRes, 'models', 'typd-dictate', 'm.gguf'), model);
+  fs.writeFileSync(path.join(oldRes, 'models', 'typd-dictate', 'p.gguf'), proj);
+  fs.writeFileSync(path.join(oldRes, 'tester.json'), '{"tester":"t","key":"tk_test_0123456789abcdef","endpoint":"https://example.invalid"}');
+  const pending = (version, oldPath = old) => {
+    fs.mkdirSync(path.join(userData, 'app-update'), { recursive: true });
+    fs.writeFileSync(path.join(userData, 'app-update', 'pending.json'), JSON.stringify({ version, from: '0.2.0', sides: { old: oldPath, newIn: '/x', failed: '/y' } }));
+  };
+  const make = (over = {}) => carried.create({ resourcesPath: newRes, userData, appVersion: '0.2.2', platform: 'darwin', ...over });
+  const kept = (rel) => path.join(userData, 'carried', ...rel.split('/'));
+
+  pending('0.2.3');
+  let c = make();
+  let m = c.resource('models/typd-dictate');
+  check('pending.json for another version: nothing copied, the app\'s own (missing) path', m === path.join(newRes, 'models', 'typd-dictate') && !exists(kept('models/typd-dictate')));
+
+  pending('0.2.2');
+  c = make();
+  m = c.resource('models/typd-dictate');
+  check('the first start after the update: the old app\'s model is kept in <userData>/carried/ and used', m === kept('models/typd-dictate') &&
+    sha(fs.readFileSync(path.join(m, 'm.gguf'))) === sha(model) && sha(fs.readFileSync(path.join(m, 'p.gguf'))) === sha(proj));
+  check('... and its tester.json', c.resource('tester.json') === kept('tester.json') && fs.readFileSync(kept('tester.json'), 'utf8') === fs.readFileSync(path.join(oldRes, 'tester.json'), 'utf8'));
+  check('the old app is left whole (a failed update puts it back as it was)', exists(path.join(oldRes, 'models', 'typd-dictate', 'm.gguf')) && exists(path.join(oldRes, 'tester.json')));
+  check('the new app itself is not touched (its signature stays as signed)', fs.readdirSync(newRes).length === 0);
+  check('no partial copy left', fs.readdirSync(path.join(userData, 'carried', 'models')).every((n) => !n.includes('.partial')));
+  check('a missing revise adapter does not stop the copy (local.js runs revise on the base model)', exists(path.join(m, 'model.json')));
+
+  fs.rmSync(path.join(userData, 'app-update', 'pending.json'));
+  fs.rmSync(old, { recursive: true, force: true });   // the helper deletes the old app after "ok"
+  c = make();
+  check('the next launch (no pending.json, the old app gone): the kept copies are used, nothing copied', c.resource('models/typd-dictate') === kept('models/typd-dictate') && c.resource('tester.json') === kept('tester.json'));
+  check('pick() makes the same choice without copying', carried.pick(newRes, userData, 'tester.json') === kept('tester.json'));
+
+  // The next update (0.2.3 over 0.2.2): the old app (0.2.2) has no model inside either; the kept copy stays.
+  fs.mkdirSync(path.join(old, 'Contents', 'Resources'), { recursive: true });
+  pending('0.2.3');
+  c = make({ appVersion: '0.2.3' });
+  check('the update after that: the old app has no model either, the kept copy is used as it is', c.resource('models/typd-dictate') === kept('models/typd-dictate') && sha(fs.readFileSync(path.join(kept('models/typd-dictate'), 'm.gguf'))) === sha(model));
+
+  // Reinstalled from the dmg: the app has its own model again.
+  fs.mkdirSync(path.join(newRes, 'models', 'typd-dictate'), { recursive: true });
+  fs.writeFileSync(path.join(newRes, 'models', 'typd-dictate', 'model.json'), JSON.stringify({ model: 'n.gguf', mmproj: 'q.gguf' }));
+  fs.writeFileSync(path.join(newRes, 'models', 'typd-dictate', 'n.gguf'), 'n');
+  fs.writeFileSync(path.join(newRes, 'models', 'typd-dictate', 'q.gguf'), 'q');
+  c = make();
+  check('reinstalled with its own model: the app\'s is used and the kept copy deleted', c.resource('models/typd-dictate') === path.join(newRes, 'models', 'typd-dictate') && !exists(kept('models/typd-dictate')));
+  check('a kept tester.json stays while the app has none', c.resource('tester.json') === kept('tester.json'));
+
+  // An old app whose model is not whole: nothing is copied (the new version fails its self-test and is put back).
+  const root2 = path.join(tmp, 'carried2');
+  const res2 = path.join(root2, 'new', 'resources'), old2 = path.join(root2, 'Typd.update-old'), ud2 = path.join(root2, 'ud');
+  fs.mkdirSync(path.join(old2, 'resources', 'models', 'typd-dictate'), { recursive: true });
+  fs.mkdirSync(res2, { recursive: true });
+  fs.writeFileSync(path.join(old2, 'resources', 'models', 'typd-dictate', 'model.json'), JSON.stringify({ model: 'gone.gguf', mmproj: 'p.gguf' }));
+  fs.writeFileSync(path.join(old2, 'resources', 'models', 'typd-dictate', 'p.gguf'), 'p');
+  fs.mkdirSync(path.join(ud2, 'app-update'), { recursive: true });
+  fs.writeFileSync(path.join(ud2, 'app-update', 'pending.json'), JSON.stringify({ version: '1.0.0', sides: { old: old2 } }));
+  const c2 = carried.create({ resourcesPath: res2, userData: ud2, appVersion: '1.0.0', platform: 'win32' });
+  check('an old app whose model is not whole (Windows layout): nothing copied', c2.resource('models/typd-dictate') === path.join(res2, 'models', 'typd-dictate') && !exists(path.join(ud2, 'carried', 'models')));
+  fs.writeFileSync(path.join(old2, 'resources', 'tester.json'), '{}');
+  fs.writeFileSync(path.join(ud2, 'app-update', 'pending.json'), JSON.stringify({ version: '1.0.0', sides: { old: path.relative(process.cwd(), old2) } }));
+  check('a relative sides.old is ignored: nothing copied', carried.create({ resourcesPath: res2, userData: ud2, appVersion: '1.0.0', platform: 'win32' }).resource('tester.json') === path.join(res2, 'tester.json') &&
+    !exists(path.join(ud2, 'carried', 'tester.json')));
+
+  // modelUpdate.findConfig: a packaged tester build after a macOS update finds its kept tester.json.
+  const { findConfig } = require('../src/main/modelUpdate');
+  const f = findConfig({ userData, packaged: true, resourcesPath: newRes, env: {} });
+  check('findConfig: a packaged build with no tester.json inside follows the kept one\'s key', f && f.key === 'tk_test_0123456789abcdef' && f.endpoint === 'https://example.invalid');
+
+  // One code identity: the macOS package carries nothing, and the helper signs only what it carried into.
+  const pkgSrc = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'app-update-package.js'), 'utf8').replace(/\r\n/g, '\n');
+  const helper = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'app-update', 'helper-mac.sh'), 'utf8').replace(/\r\n/g, '\n');
+  check('app-update-package.js: a macOS package carries nothing, and is signed with signArgs (Typd\'s certificate in CI)',
+    /platform = 'darwin-' \+ arch;[\s\S]*?carry = \[\];/.test(pkgSrc) && /signArgs\(\)/.test(pkgSrc) && !/'--sign', '-'/.test(pkgSrc));
+  check('helper-mac.sh signs the new app (ad hoc) only when it carried something into it',
+    /if \[ -n "\$CARRIED" \]; then\n\s*codesign --force --sign - "\$NEWIN"/.test(helper) && (helper.match(/codesign --force/g) || []).length === 1);
+}
+
 function finish() {
   if (process.argv.includes('--keep')) console.log('\nkept: ' + tmp);
   else try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* a file still held open: the OS cleans its temp folder */ }
@@ -677,5 +772,6 @@ function finish() {
 
 (async () => {
   await updaterTests();
+  carriedTests();
   if (!process.argv.includes('--no-install')) await installTests();
 })().catch((e) => { failures++; console.log('  FAIL  ' + (e && e.stack)); }).finally(finish);

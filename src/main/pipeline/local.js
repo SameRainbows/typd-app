@@ -65,7 +65,11 @@ function defaultServer() {
   return path.join(root(), 'vendor', 'llama', exe);
 }
 
-const BUNDLED_DIR = RESOURCES ? path.join(RESOURCES, 'models', 'typd-dictate') : path.join(root(), 'models', 'typd-dictate');
+// Packaged: the app's own model, or after a macOS app update (which installs the app exactly as
+// signed, without its model) the copy kept from the version it replaced (src/main/carried.js).
+const BUNDLED_DIR = RESOURCES
+  ? (require('../carried').resource('models/typd-dictate') || path.join(RESOURCES, 'models', 'typd-dictate'))
+  : path.join(root(), 'models', 'typd-dictate');
 const SERVER = process.env.TYPD_LLAMA_SERVER || defaultServer();
 
 function userData() {

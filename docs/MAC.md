@@ -4,8 +4,8 @@
 
 | Your Mac | File |
 |---|---|
-| Apple chip (M1, M2, M3, M4…) | `Typd-0.2.1-mac-arm64.dmg` |
-| Intel chip | `Typd-0.2.1-mac-x64.dmg` |
+| Apple chip (M1, M2, M3, M4…) | `Typd-0.2.2-mac-arm64.dmg` |
+| Intel chip | `Typd-0.2.2-mac-x64.dmg` |
 
 To check which chip you have, open the Apple menu  → **About This Mac** and look at **Chip** (or
 **Processor**). You need macOS 13.3 (Ventura) or newer. The download is about 650 MB because the
@@ -59,9 +59,11 @@ If a message asks to let Typd control **System Events**, click **OK**. Typd uses
 text you highlighted and the text around your cursor, so it can learn the words you correct. The
 paste itself (⌘V) does not need it: Typd presses ⌘V directly.
 
-**After an update:** a new version can lose these permissions, because the app is not signed with
-an Apple developer ID. If dictation stops pasting or the key stops working, go to each list, select
-Typd, remove it with **–**, then add it again with **+**.
+**After an update:** from Typd 0.2.2 the permissions stay on: every version is signed with Typd's
+own certificate, so macOS knows it is the same app. The one exception is the update from 0.2.0 or
+0.2.1 to 0.2.2, which were not signed that way: after it, switch the three permissions on once more.
+If dictation ever stops pasting or the key stops working, go to each list, select Typd, remove it
+with **–**, then add it again with **+**.
 
 ## Use it
 
@@ -115,10 +117,35 @@ the targets: with `--arm64` alone, electron-builder still builds every arch list
   loads, in `vendor/llama-mac/<arch>/`. Apple chips use Metal. Intel Macs use the CPU, because
   llama.cpp's Intel build has no Metal. The script explains how symlinks and executable bits are
   kept through packaging.
-- **Signing.** The app is ad-hoc signed by `scripts/after-pack.js` (`codesign --sign -`), which
-  works only on a Mac. Ad-hoc signing makes the app run on Apple chips and keeps it from being
-  reported as "damaged". It does not get past Gatekeeper; that needs a paid Apple Developer ID and
-  notarization. That is also why permissions do not survive updates.
+- **Code signing.** `scripts/after-pack.js` signs the app (only on a Mac). In CI it signs with
+  Typd's own self-signed code-signing certificate ("Typd Code Signing", made once by
+  `dictation-research/scripts/make_mac_codesign_cert.sh`; public fingerprint in
+  `scripts/mac-signing.json`; the `.p12` and its password are the repository secrets
+  `MAC_CODESIGN_P12` and `MAC_CODESIGN_P12_PASSWORD`, with an encrypted backup in
+  `dictation-research/.secrets/`). `scripts/mac-signing-import.sh` imports it into a keychain of its
+  own and sets `TYPD_MAC_SIGN_IDENTITY` (its SHA-1) and `TYPD_MAC_SIGN_KEYCHAIN`; without them a
+  local build is signed ad hoc (`codesign --sign -`), as before. Hardened runtime stays off and
+  there are no entitlements, as before.
+  - **Why:** macOS remembers a privacy permission for an app's *designated requirement*
+    (`codesign -d -r- Typd.app`). Ad hoc, that is the build's own hash, so every update was a new
+    app to macOS and lost its switches. Signed with the certificate, every build's requirement is
+    `identifier "ai.typd.app" and certificate leaf = H"b5868f3c…"`, so the switches survive updates.
+    The Mac CI checks it on every build, and its update test (job `app-update`) checks that three
+    builds, and the installed app after the update helper's swap, have one requirement, and that
+    an Accessibility grant made for the old version holds for the new one.
+  - **App updates keep it:** a macOS update package is signed in CI with the same certificate and
+    carries nothing, so the helper installs it exactly as signed and never signs it again on the
+    user's Mac (it signs ad hoc only when it carried something in). The new version copies the
+    model and a tester's `tester.json` out of the version it replaced into
+    `~/Library/Application Support/typd/carried/` at its first start (`src/main/carried.js`; an
+    APFS clone, no extra disk).
+  - **Gatekeeper is unchanged:** the certificate is not an Apple Developer ID and the app is not
+    notarized, so a downloaded dmg is blocked on its first open exactly as before (`spctl --assess`
+    rejects it, as it did the ad-hoc app; "Open it the first time" above). That needs a paid Apple
+    Developer ID and notarization.
+  - **If the certificate is lost:** make a new one (the script refuses to overwrite the old one;
+    move it away first). Every Mac then switches the permissions on once more after the update
+    that brings it. `make_mac_codesign_cert.sh --reupload` sets the secrets again from the backup.
 - **CI.** `.github/workflows/mac.yml` runs on pushes to `dev` and by hand (Actions → macOS → Run
   workflow, where you can also choose x64 or both). It builds, checks the signature and
   Info.plist, transcribes `test/fixtures/dictation-3s.wav` with the bundled server and model, and

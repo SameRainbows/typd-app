@@ -22,10 +22,15 @@
  *     whenever vendor/llama changes.
  * Windows also carries the NSIS uninstaller, which the unpacked app does not have.
  *
- * macOS: taking the model out breaks the bundle's seal, so the copy is signed ad hoc again
- * (codesign, as scripts/after-pack.js does); the helper signs it once more after carrying the
- * model in. The version is read from the app itself (Info.plist, or app.asar's package.json) and
- * must match package.json's, or --version's.
+ * macOS: taking the model out breaks the bundle's seal, so the copy is signed again, the way
+ * scripts/after-pack.js signs: with Typd's own certificate when TYPD_MAC_SIGN_IDENTITY is set (the
+ * Mac CI), so the package's app has the same designated requirement as every other build; else ad
+ * hoc, with a warning (such a package would cost every Mac its privacy switches). It carries NOTHING
+ * ("carry": []): the helper installs it exactly as signed and never signs it again on the user's Mac
+ * (helper-mac.sh signs only when something was carried), and the new version copies the model and
+ * tester.json out of the version it replaced itself (src/main/carried.js). Windows still carries.
+ * The version is read from the app itself (Info.plist, or app.asar's package.json) and must match
+ * package.json's, or --version's.
  */
 
 const fs = require('fs');
@@ -155,7 +160,7 @@ function main() {
     platform = 'darwin-' + arch;
     appName = path.basename(app);
     skip = ['Contents/Resources/models', 'Contents/Resources/tester.json'];
-    carry = ['Contents/Resources/models/typd-dictate', 'Contents/Resources/tester.json'];
+    carry = [];   // nothing: see the top of this file (src/main/carried.js does it)
   }
   if (version !== want) die(`the app is Typd ${version}, but ${opt('--version') ? '--version' : 'package.json'} says ${want}`);
 
@@ -167,15 +172,21 @@ function main() {
   fs.mkdirSync(stage, { recursive: true });
   console.log(`Packaging Typd ${version} for ${platform} from ${app}`);
 
-  let skipped;
+  let skipped, signature = null;
   if (kind === 'mac') {
     execFileSync('ditto', [app, path.join(stage, appName)]);
     skipped = skip.filter((rel) => fs.existsSync(path.join(stage, appName, rel)));
     for (const rel of skipped) fs.rmSync(path.join(stage, appName, rel), { recursive: true, force: true });
     execFileSync('xattr', ['-cr', path.join(stage, appName)]);
-    execFileSync('codesign', ['--force', '--sign', '-', path.join(stage, appName)]);
+    const { signArgs, designatedRequirement } = require('./after-pack');
+    const how = signArgs();
+    if (how.label === 'ad hoc') console.warn('  WARNING: no TYPD_MAC_SIGN_IDENTITY: signed ad hoc. Installed as an update, it would cost every Mac its privacy switches; publish only CI packages.');
+    execFileSync('codesign', ['--force', ...how.args, path.join(stage, appName)]);
     execFileSync('codesign', ['--verify', '--deep', '--strict', path.join(stage, appName)]);
-    console.log('  signed ad hoc again without the model; the signature verifies');
+    signature = { how: how.label, designated: designatedRequirement(path.join(stage, appName)), installedApp: designatedRequirement(app) };
+    if (how.label !== 'ad hoc' && signature.designated !== signature.installedApp) die(`the package's designated requirement (${signature.designated}) is not the app's (${signature.installedApp})`);
+    console.log(`  signed again without the model, ${how.label}; the signature verifies`);
+    console.log(`  designated requirement: ${signature.designated} (the same as ${path.basename(app)}'s)`);
   } else {
     skipped = copyTree(app, path.join(stage, appName), skip);
   }
@@ -199,11 +210,11 @@ function main() {
   const record = {
     schema: 'typd-app-update-package/1', file, version, platform, size, sha256, app: appName, carry,
     ...(Object.keys(requires).length ? { requires } : {}),
-    left_out: skipped, commit: git('rev-parse', 'HEAD'), dirty: Boolean(git('status', '--porcelain')), built_at: new Date().toISOString()
+    left_out: skipped, ...(signature ? { signature } : {}), commit: git('rev-parse', 'HEAD'), dirty: Boolean(git('status', '--porcelain')), built_at: new Date().toISOString()
   };
   fs.writeFileSync(zip + '.json', JSON.stringify(record, null, 2) + '\n');
   console.log(`  ${file}: ${(size / 1e6).toFixed(1)} MB, sha256 ${sha256}`);
-  console.log(`  left out: ${skipped.join(', ') || 'nothing'}; carried over on install: ${carry.join(', ')}`);
+  console.log(`  left out: ${skipped.join(', ') || 'nothing'}; carried over on install: ${carry.join(', ') || 'nothing (the new version copies what it lacks itself)'}`);
   console.log(`  record: ${zip}.json`);
 }
 

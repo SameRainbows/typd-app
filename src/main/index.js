@@ -582,7 +582,10 @@ function startAppUpdate() {
     onWarm: local.onWarm,
     changed: () => refreshTray(),
     quit: quitForUpdate,
-    reportExtra: () => ({ windows: visible().map((w) => w.getTitle() || 'untitled'), dock: MAC && app.dock ? app.dock.isVisible() : null, tray: Boolean(trayUi.tray), asking: asking() })
+    // ax: is this Typd trusted for Accessibility (macOS)? The Mac CI's update test grants the old
+    // version by its designated requirement and checks the new one inherits it (docs/MAC.md).
+    reportExtra: () => ({ windows: visible().map((w) => w.getTitle() || 'untitled'), dock: MAC && app.dock ? app.dock.isVisible() : null, tray: Boolean(trayUi.tray), asking: asking(),
+      ax: MAC ? (() => { try { return systemPreferences.isTrustedAccessibilityClient(false); } catch { return null; } })() : null })
   });
   if (!appUpdater) return;
   // "Updated to x": the tray says it; on Windows the pill too, briefly. A Mac relaunch shows nothing.
