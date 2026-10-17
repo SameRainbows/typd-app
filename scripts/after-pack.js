@@ -102,13 +102,22 @@ async function afterPack(context) {
   const resources = mac ? path.join(app, 'Contents', 'Resources') : path.join(appOutDir, 'resources');
 
   // --- every platform: it must be able to dictate ---------------------------------------
+  // With its bundled model, or (TYPD_NO_BUNDLED_MODEL=1, public installers) with none at all: the
+  // app downloads it at first launch. llama-server is always in the app.
   const modelDir = path.join(resources, 'models', 'typd-dictate');
-  const spec = JSON.parse(fs.readFileSync(path.join(modelDir, 'model.json'), 'utf8'));
   const server = path.join(resources, 'llama', mac ? 'llama-server' : 'llama-server.exe');
-  for (const f of [path.join(modelDir, spec.model), path.join(modelDir, spec.mmproj), server]) {
-    if (!fs.existsSync(f) || fs.statSync(f).size === 0) throw new Error(`Packaged app is missing ${f}`);
+  if (process.env.TYPD_NO_BUNDLED_MODEL === '1') {
+    if (process.env.TYPD_TESTER_CONFIG) throw new Error('A tester build bundles its model: unset TYPD_NO_BUNDLED_MODEL (or TYPD_TESTER_CONFIG)');
+    if (fs.existsSync(path.join(modelDir, 'model.json'))) throw new Error(`TYPD_NO_BUNDLED_MODEL=1, but ${modelDir} holds a model`);
+    if (!fs.existsSync(server) || fs.statSync(server).size === 0) throw new Error(`Packaged app is missing ${server}`);
+    console.log(`  • typd: ${platform}/${arch} resources ok (no model: downloaded at first launch; ${path.basename(server)})`);
+  } else {
+    const spec = JSON.parse(fs.readFileSync(path.join(modelDir, 'model.json'), 'utf8'));
+    for (const f of [path.join(modelDir, spec.model), path.join(modelDir, spec.mmproj), server]) {
+      if (!fs.existsSync(f) || fs.statSync(f).size === 0) throw new Error(`Packaged app is missing ${f}`);
+    }
+    console.log(`  • typd: ${platform}/${arch} resources ok (model ${spec.model}, ${path.basename(server)})`);
   }
-  console.log(`  • typd: ${platform}/${arch} resources ok (model ${spec.model}, ${path.basename(server)})`);
 
   // --- tester builds: TYPD_TESTER_CONFIG names a tester.json to ship ---------------------
   // Only <resources>/tester.json makes a tester build (src/main/sharing.js), so an ordinary

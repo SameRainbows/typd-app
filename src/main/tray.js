@@ -95,7 +95,7 @@ function createTray(deps) {
     // "Update now" / "Later". After Later, only "Update now" stays until it asks again.
     const prompt = deps.modelPrompt ? deps.modelPrompt() : null;
     const promptItems = prompt
-      ? [{ label: `New model available (${prompt.size}) — Update now`, click: () => deps.modelNow() },
+      ? [{ label: prompt.first ? `Download the speech model (${prompt.size})` : `New model available (${prompt.size}) — Update now`, click: () => deps.modelNow() },
         ...(prompt.later ? [] : [{ label: 'Later', click: () => deps.modelLater() }])]
       : [];
     // Where sharing exists (sharing.js): flag the last dictation, with its shortcut beside it.

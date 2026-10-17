@@ -137,7 +137,10 @@ jobs:
           flags=""
           for a in $ARCHS; do flags="$flags --$a"; done
           unset TYPD_TESTER_CONFIG
-          npx electron-builder --mac dmg $flags --publish never
+          # The public dmg ships WITHOUT the dictation model (0.2.5): the app downloads the one its
+          # hardware suits at first launch (src/main/modelUpdate.js). The model fetched above is
+          # for the tests below (TYPD_MODEL_DIR, smoke tests), never packaged.
+          TYPD_NO_BUNDLED_MODEL=1 npx electron-builder --mac dmg $flags --publish never
           ls -la dist
 
       - name: Inspect the app
@@ -160,6 +163,9 @@ jobs:
             plutil -p "$app/Contents/Info.plist" | grep -E 'LSUIElement|NSMicrophoneUsageDescription|NSAppleEventsUsageDescription|LSMinimumSystemVersion|CFBundleIdentifier'
             test "$(plutil -extract LSUIElement raw -o - "$app/Contents/Info.plist")" = true
             ls -la "$app/Contents/Resources/llama" "$app/Contents/Resources/models/typd-dictate"
+            # Model-less: no model.json and no .gguf anywhere in the app.
+            test ! -e "$app/Contents/Resources/models/typd-dictate/model.json"
+            if find "$app" -name '*.gguf' | grep -q .; then echo "the public app must not contain a model"; exit 1; fi
             file "$app/Contents/Resources/llama/llama-server"
             test -x "$app/Contents/Resources/llama/llama-server"
             if [ -e "$app/Contents/Resources/tester.json" ]; then echo "the app must not contain tester.json"; exit 1; fi
@@ -175,7 +181,7 @@ jobs:
         if: contains(env.ARCHS, 'arm64')
         run: |
           R=dist/mac-arm64/Typd.app/Contents/Resources
-          node scripts/smoke-llama.js --server $R/llama/llama-server --models $R/models/typd-dictate --gpu-layers 0 --port 8790
+          node scripts/smoke-llama.js --server $R/llama/llama-server --models "$PWD/models/typd-dictate" --gpu-layers 0 --port 8790
 
       - name: Smoke test, Metal (arm64)
         if: contains(env.ARCHS, 'arm64')
@@ -184,7 +190,7 @@ jobs:
         continue-on-error: true
         run: |
           R=dist/mac-arm64/Typd.app/Contents/Resources
-          node scripts/smoke-llama.js --server $R/llama/llama-server --models $R/models/typd-dictate --gpu-layers 99 --port 8791
+          node scripts/smoke-llama.js --server $R/llama/llama-server --models "$PWD/models/typd-dictate" --gpu-layers 99 --port 8791
 
       - name: Smoke test, as the app starts (arm64)
         if: contains(env.ARCHS, 'arm64')
@@ -192,7 +198,7 @@ jobs:
         # wrong text restarts on the CPU and tests again. A gate: this is what a Mac user's Typd does.
         run: |
           R=dist/mac-arm64/Typd.app/Contents/Resources
-          node scripts/smoke-llama.js --server $R/llama/llama-server --models $R/models/typd-dictate --port 8793 2>&1 | tee smoke-default.log
+          node scripts/smoke-llama.js --server $R/llama/llama-server --models "$PWD/models/typd-dictate" --port 8793 2>&1 | tee smoke-default.log
           grep -E 'self-test|path chosen' smoke-default.log
 
       - name: Smoke test, CPU (x64 under Rosetta)
@@ -200,7 +206,7 @@ jobs:
         continue-on-error: true
         run: |
           R=dist/mac/Typd.app/Contents/Resources
-          node scripts/smoke-llama.js --server $R/llama/llama-server --models $R/models/typd-dictate --gpu-layers 0 --port 8792
+          node scripts/smoke-llama.js --server $R/llama/llama-server --models "$PWD/models/typd-dictate" --gpu-layers 0 --port 8792
 
       - name: App-update packages (README "App updates")
         # The app without its model, signed again with Typd's certificate (the same designated
@@ -233,8 +239,8 @@ jobs:
         run: |
           APP="$PWD/dist/mac-arm64/Typd.app"
           # No model download and no app update from CI; no walkthrough window; no sharing (a public
-          # build shares by default since 0.2.4).
-          TYPD_DEBUG=1 TYPD_NO_MODEL_UPDATE=1 TYPD_NO_APP_UPDATE=1 TYPD_NO_WALKTHROUGH=1 TYPD_NO_SHARE=1 "$APP/Contents/MacOS/Typd" > app.log 2>&1 &
+          # build shares by default since 0.2.4). The app is model-less: it loads the fetched model.
+          TYPD_DEBUG=1 TYPD_NO_MODEL_UPDATE=1 TYPD_NO_APP_UPDATE=1 TYPD_NO_WALKTHROUGH=1 TYPD_NO_SHARE=1 TYPD_MODEL_DIR="$PWD/models/typd-dictate" "$APP/Contents/MacOS/Typd" > app.log 2>&1 &
           pid=$!
           ok=0
           for i in $(seq 1 120); do
@@ -257,6 +263,8 @@ jobs:
 
       - name: Close the Typd window, stay running (arm64)
         if: contains(env.ARCHS, 'arm64')
+        env:
+          TYPD_MODEL_DIR: ${{ github.workspace }}/models/typd-dictate
         # Closing the Typd window must not take Typd's key with it. scripts/mac-close-check.sh
         # opens and closes the window in the packaged app (TYPD_TEST_CLOSE_HOME), presses keys
         # before, during and after, dictates with Right ⌘ after the close, then quits Typd. Two
@@ -289,6 +297,8 @@ jobs:
 
       - name: Close the Typd window, stay running, its own app with its switches on (arm64)
         if: contains(env.ARCHS, 'arm64')
+        env:
+          TYPD_MODEL_DIR: ${{ github.workspace }}/models/typd-dictate
         # The open pass again, now that Typd holds its permissions as itself (a user's Mac after the
         # permission dialog), with a minute alone after the close. Then eight more launches, each
         # of which must come up and quit: uiohook-napi's start used to hang Typd at launch here.
@@ -298,6 +308,43 @@ jobs:
           scripts/mac-close-check.sh open "$PWD/dist/mac-arm64/Typd.app" open-switches-on || fail=1
           scripts/mac-launch-loop.sh "$PWD/dist/mac-arm64/Typd.app" 8 || fail=1
           test $fail = 0
+
+      - name: First launch with no model (arm64, informational)
+        # The public app as a new user starts it: no model anywhere. First with model updates off: it
+        # must stay up and say it has no model (no crash, no dialog). Then as shipped: it downloads
+        # the variant this runner's hardware gets through the public routes (signed manifest, sha256
+        # of every file), switches to it and passes its self-test.
+        if: contains(env.ARCHS, 'arm64')
+        continue-on-error: true
+        run: |
+          APP="$PWD/dist/mac-arm64/Typd.app"
+          BIN="$APP/Contents/MacOS/Typd"
+          UD="$HOME/Library/Application Support/typd"
+          pkill -f "$BIN" || true
+          rm -rf "$UD/models"
+          TYPD_DEBUG=1 TYPD_NO_MODEL_UPDATE=1 TYPD_NO_APP_UPDATE=1 TYPD_NO_WALKTHROUGH=1 TYPD_NO_SHARE=1 "$BIN" > nomodel-off.log 2>&1 &
+          pid=$!
+          sleep 20
+          alive=0; kill -0 $pid 2>/dev/null && alive=1
+          kill $pid 2>/dev/null || true; sleep 2
+          grep -E '\[typd:model\]' nomodel-off.log || true
+          echo "alive after 20 s with no model and updates off: $alive"
+          grep -q '\[typd:model\] no speech model yet: no download' nomodel-off.log && test $alive = 1 || { tail -40 nomodel-off.log; exit 1; }
+          TYPD_DEBUG=1 TYPD_NO_APP_UPDATE=1 TYPD_NO_WALKTHROUGH=1 TYPD_NO_SHARE=1 "$BIN" > nomodel.log 2>&1 &
+          pid=$!
+          ok=0
+          for i in $(seq 1 600); do
+            if grep -qE '\[typd:local\] model .* ready' nomodel.log; then ok=1; break; fi
+            kill -0 $pid 2>/dev/null || break
+            sleep 1
+          done
+          grep -E '\[typd:model\]|\[typd:models\] (variant|downloading|verified|switching|now running)' nomodel.log | head -30
+          grep -E '\[typd:local\] (self-test|path chosen|model .* ready)' nomodel.log || true
+          ls -la "$UD/models" || true
+          kill $pid 2>/dev/null || true; sleep 2
+          pkill -f "$APP/Contents/Resources/llama/llama-server" || true
+          echo "- first launch with no model: downloaded and ready = $ok" >> "$GITHUB_STEP_SUMMARY"
+          test $ok = 1
 
       - name: The app inside each dmg checked for keys (scripts/public-build.js verify)
         run: |
@@ -311,7 +358,7 @@ jobs:
             hdiutil attach "$dmg" -nobrowse -readonly -mountpoint "$mnt"
             codesign --verify --deep --strict "$mnt/Typd.app"
             codesign -d -r- "$mnt/Typd.app" 2>&1 | grep designated | grep -qi "$want"
-            node scripts/public-build.js verify --app "$mnt/Typd.app" --platform "mac-$a" --installer "$dmg"
+            node scripts/public-build.js verify --app "$mnt/Typd.app" --platform "mac-$a" --installer "$dmg" --expect-model no
             hdiutil detach "$mnt"
           done
           ls -la dist/*.dmg dist/*.dmg.public.json

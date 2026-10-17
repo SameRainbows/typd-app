@@ -333,6 +333,12 @@
       <p class="walk-body" id="walkBody"></p>
       <!-- Step 1 only, in a public build with sharing on (home.js): the one line about sharing. -->
       <p class="walk-note" id="walkNote" hidden></p>
+      <!-- No speech model yet (a model-less public install's first launch): its download, on every step. -->
+      <div class="walk-model" id="walkModel" role="status" aria-live="polite" hidden>
+        <p class="walk-model-text" id="walkModelText"></p>
+        <div class="walk-bar" id="walkBar" hidden><span id="walkBarFill"></span></div>
+        <button class="btn solid" type="button" id="walkModelNow" hidden>Download now</button>
+      </div>
       <div class="walk-try" id="walkTry" hidden>
         <textarea id="walkPad" rows="3" spellcheck="false" aria-label="Practice box"></textarea>
         <p class="walk-hint" id="walkHint"></p>

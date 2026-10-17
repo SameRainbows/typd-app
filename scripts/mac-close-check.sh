@@ -50,18 +50,22 @@ if [ "$HOW" = open ]; then
   # (src/main/modelUpdate.js) and start downloading the real model from production during the check.
   # TYPD_NO_SHARE=1: a public build shares by default (0.2.4); a dictation here must never reach
   # typd-collect (src/main/sharing.js).
-  if ! open "$APP" --env TYPD_DEBUG=1 --env "TYPD_TEST_CLOSE_HOME=$MARK" --env TYPD_NO_MODEL_UPDATE=1 --env TYPD_NO_SHARE=1 --stdout "$LOG" --stderr "$LOG.err"; then
+  # TYPD_MODEL_DIR, when the workflow sets it: a model-less build (public dmgs since 0.2.5) dictates
+  # with the model the workflow fetched.
+  if ! open "$APP" --env TYPD_DEBUG=1 --env "TYPD_TEST_CLOSE_HOME=$MARK" --env TYPD_NO_MODEL_UPDATE=1 --env TYPD_NO_SHARE=1 ${TYPD_MODEL_DIR:+--env "TYPD_MODEL_DIR=$TYPD_MODEL_DIR"} --stdout "$LOG" --stderr "$LOG.err"; then
     echo "open --env failed; passing the variables through launchd instead"
     launchctl setenv TYPD_DEBUG 1
     launchctl setenv TYPD_TEST_CLOSE_HOME "$MARK"
     launchctl setenv TYPD_NO_MODEL_UPDATE 1
     launchctl setenv TYPD_NO_SHARE 1
+    [ -n "${TYPD_MODEL_DIR:-}" ] && launchctl setenv TYPD_MODEL_DIR "$TYPD_MODEL_DIR"
     open "$APP"
     sleep 3
     launchctl unsetenv TYPD_DEBUG
     launchctl unsetenv TYPD_TEST_CLOSE_HOME
     launchctl unsetenv TYPD_NO_MODEL_UPDATE
     launchctl unsetenv TYPD_NO_SHARE
+    launchctl unsetenv TYPD_MODEL_DIR
   fi
   for i in $(seq 1 40); do pid=$(pgrep -nf "$BIN" || echo 0); [ "$pid" -gt 0 ] && break; sleep 0.5; done
 else

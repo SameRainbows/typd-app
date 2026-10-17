@@ -214,6 +214,12 @@ function appLabel(focus) {
 }
 
 function beginSession() {
+  // No speech model yet (a public install's first launch: modelUpdate.js is downloading it). The key
+  // says how far that is, in the pill, and nothing is recorded: no error, no dialog.
+  if (!session && modelMissing()) {
+    note(status.describe().line, 6000);
+    return;
+  }
   if (session) session.controller.abort();
 
   const controller = new AbortController();
@@ -469,7 +475,8 @@ status.useKey(keyInfo);
 /** A click on the tray's status line: whatever fixes what it says. */
 function statusAction(id) {
   if (id === 'hotkey') return home.open('settings', { capture: true });
-  if (id === 'retry') return warmModel();
+  if (id === 'retry') { if (modelMissing()) { modelUpdate.recheck(0); return null; } return warmModel(); }
+  if (id === 'model-now') return modelUpdate.approve().catch(() => {});
   if (id === 'privacy') {
     if (MAC) return require('./permissions-mac').openPane('microphone');
     return require('electron').shell.openExternal('ms-settings:privacy-microphone').catch(() => {});
@@ -552,6 +559,9 @@ ask.register({
 
 function warmModel() {
   if (stub) { status.set({ model: 'ready' }); return; }
+  // A model-less install before its first model: nothing to start. The download (modelUpdate.js)
+  // calls switchModel() once the model is here.
+  if (modelMissing()) return;
   status.set({ model: 'loading', modelWhy: '' });
   Promise.resolve(pipeline.warm()).then(() => {
     status.set({ model: 'ready' });
@@ -570,9 +580,12 @@ function warmModel() {
  * a dictation begun meanwhile waits for the new server.
  */
 function switchModel() {
-  status.set({ model: 'loading', modelWhy: '' });
+  const first = status.get().model === 'missing';
+  status.set({ model: 'loading', modelWhy: '', modelFetch: null });
   return Promise.resolve(pipeline.switchModel()).then(() => {
     status.set({ model: 'ready' });
+    // The first model of a model-less install: say once that Typd can dictate now.
+    if (first) { const k = keyInfo(); note('Ready — ' + k.verb + ' ' + k.short + ' and talk', 10000); }
   }, (err) => {
     status.set({ model: 'failed', modelWhy: String((err && err.message) || '') });
     throw err;
@@ -622,19 +635,38 @@ function startWalkthrough(afterUpdate) {
  */
 let notedAsk = null;
 function modelChanged() {
+  modelMissing();   // the first model's progress, for the tray's first line and Home
   refreshTray();
   home.changed('model');
   const p = modelUpdate.pending();
   const asking = p && !p.later ? p.version : null;
-  if (asking && asking !== notedAsk) note('New model (' + p.size + '): see the menu', 8000);
+  if (asking && asking !== notedAsk) note((p.first ? 'Speech model needed (' : 'New model (') + p.size + '): see the menu', 8000);
   notedAsk = asking;
+}
+
+/**
+ * True while there is no speech model to dictate with (a public installer ships without one, and
+ * modelUpdate.js downloads the hardware's pick at the first launch); it then sets the status's
+ * 'missing' state with the download's progress. False once a model is loaded, and also while a
+ * downloaded first model is only waiting for switchModel() (the status is left as it is).
+ */
+let missingLogged = null;
+function modelMissing() {
+  if (stub || require('./pipeline/local').hasModel()) return false;
+  const fetch = modelUpdate.needed();
+  if (!fetch && modelUpdate.following()) return status.get().model === 'missing';   // downloaded: switching to it
+  status.set({ model: 'missing', modelWhy: '', modelFetch: fetch });
+  const said = fetch ? fetch.state + ' ' + fetch.size : 'no download (model updates off)';
+  if (process.env.TYPD_DEBUG && said !== missingLogged) console.log('[typd:model] no speech model yet:', said);
+  missingLogged = said;
+  return true;
 }
 
 /** For Settings: the model choice, Automatic's answer and why, and a download waiting for an answer. */
 async function modelInfo() {
   let d = null;
   try { d = await choice.describe(); } catch { d = null; }
-  return { following: modelUpdate.following(), ...(d || {}), chosen: modelUpdate.chosen(), pending: modelUpdate.pending(), line: modelUpdate.line() };
+  return { following: modelUpdate.following(), ...(d || {}), chosen: modelUpdate.chosen(), pending: modelUpdate.pending(), line: modelUpdate.line(), needed: modelUpdate.needed() };
 }
 
 /* -------------------------------------------------------------- app updates */
@@ -683,6 +715,10 @@ function startAppUpdate() {
   };
   overlay.webContents.once('did-finish-load', () => { loaded = true; decide(); });
   local.onWarm((r) => { if (!warm) { warm = r; decide(); } });
+  // A model-less install whose first model has not arrived yet: no model start will come to wait
+  // for (the helper would time out and put the old version back). The window decides; settle()
+  // keeps an update when the model was not working before it either (pending.modelOk).
+  if (!local.hasModel()) { warm = { ok: false, error: new Error('no speech model yet: it downloads at first launch') }; decide(); }
 }
 
 /**

@@ -4,10 +4,13 @@
 /**
  * Public builds: an app anyone may download, so it must carry no key (docs/PUBLIC_BETA.md).
  *
- *   node scripts/public-build.js win [--dir] [--out dist/public]
+ *   node scripts/public-build.js win [--dir] [--out dist/public] [--with-model]
  *       Windows: electron-builder --win nsis --x64 into dist/public as Typd-Setup-<version>.exe
  *       (no spaces: the download route takes 1-128 of A-Z a-z 0-9 . _ -), with every tester
  *       variable cleared, then `verify` on the unpacked app the installer was made from.
+ *       Since 0.2.5 WITHOUT the dictation model (TYPD_NO_BUNDLED_MODEL=1): the app downloads the
+ *       one its hardware suits at first launch (src/main/modelUpdate.js). --with-model bundles
+ *       models/typd-dictate as before.
  *       --dir makes only the unpacked app (no installer, no record): a quick check of the pipeline.
  *
  *   node scripts/public-build.js verify --app <app> --platform <win-x64|mac-arm64|mac-x64> [--installer <file>]
@@ -21,8 +24,11 @@
  *   no_key_files        no tester*.json, model-updates.json, collect_admin.txt, *.secret or .secrets/
  *                       anywhere in the app, nor .env files
  *   asar_clean          the same names are not inside app.asar either
- *   model_ok            the packaged model.json names a model and an mmproj that are there, and
- *                       llama-server is there
+ *   model_ok            with a bundled model: the packaged model.json names a model and an mmproj
+ *                       that are there, and llama-server is there. Without one (a model-less public
+ *                       build, the default since 0.2.5): no .gguf anywhere in the app, no model.json,
+ *                       and llama-server is there (also as model_absent / bundled_model: false).
+ *                       --expect-model yes|no makes the kind itself a check.
  *   known keys          every key this machine knows -- tester*.json in this checkout and the main one,
  *                       this machine's model-updates.json reader key, dictation-research's admin key,
  *                       $TYPD_COLLECT_ADMIN_KEY -- is searched for, byte for byte, in every file of
@@ -56,7 +62,7 @@ function args(argv) {
     const a = argv[i];
     if (a.startsWith('--')) {
       const k = a.slice(2);
-      if (['dir'].includes(k)) out[k] = true;
+      if (['dir', 'with-model'].includes(k)) out[k] = true;
       else out[k] = argv[++i];
     } else out._.push(a);
   }
@@ -187,7 +193,8 @@ function gitInfo() {
   } catch { return { commit: null, dirty: null, ci_run: null }; }
 }
 
-function verify({ app, platform, installer }) {
+function verify({ app, platform, installer, expectModel = null }) {
+  if (expectModel && !['yes', 'no'].includes(expectModel)) fail('--expect-model takes yes or no');
   if (!app || !fs.existsSync(app)) fail('--app must name the packaged app (win-unpacked, or Typd.app)');
   if (!/^(win-x64|mac-arm64|mac-x64)$/.test(platform || '')) fail('--platform must be win-x64, mac-arm64 or mac-x64');
   const mac = platform.startsWith('mac');
@@ -218,15 +225,28 @@ function verify({ app, platform, installer }) {
   }
   if (!appVersion) problems.push('app.asar has no readable package.json');
 
-  // 3. the model and the server
+  // 3. the model and the server: a bundled model whole, or (model-less) none at all
+  const modelDir = path.join(resources, 'models', 'typd-dictate');
   let spec = null;
-  try { spec = JSON.parse(fs.readFileSync(path.join(resources, 'models', 'typd-dictate', 'model.json'), 'utf8')); } catch { /* below */ }
+  try { spec = JSON.parse(fs.readFileSync(path.join(modelDir, 'model.json'), 'utf8')); } catch { /* below */ }
   const server = path.join(resources, 'llama', mac ? 'llama-server' : 'llama-server.exe');
   const sizeOf = (f) => { try { return fs.statSync(f).size; } catch { return 0; } };
-  const modelBytes = spec ? sizeOf(path.join(resources, 'models', 'typd-dictate', spec.model || '-')) : 0;
-  const mmprojBytes = spec ? sizeOf(path.join(resources, 'models', 'typd-dictate', spec.mmproj || '-')) : 0;
-  checks.model_ok = Boolean(spec && modelBytes > 0 && mmprojBytes > 0 && sizeOf(server) > 0);
-  if (!checks.model_ok) problems.push('the packaged model.json, its model or mmproj, or llama-server is missing');
+  const modelBytes = spec ? sizeOf(path.join(modelDir, spec.model || '-')) : 0;
+  const mmprojBytes = spec ? sizeOf(path.join(modelDir, spec.mmproj || '-')) : 0;
+  const ggufs = entries.filter((e) => !e.dir && /\.gguf$/i.test(e.name)).map((e) => path.relative(app, e.p));
+  checks.bundled_model = Boolean(spec);
+  if (spec) {
+    checks.model_ok = Boolean(modelBytes > 0 && mmprojBytes > 0 && sizeOf(server) > 0);
+    if (!checks.model_ok) problems.push('the packaged model.json, its model or mmproj, or llama-server is missing');
+  } else {
+    checks.model_absent = ggufs.length === 0;
+    checks.model_ok = checks.model_absent && sizeOf(server) > 0;
+    if (!checks.model_absent) problems.push('no model.json, yet model files are in the app: ' + ggufs.join(', '));
+    if (!(sizeOf(server) > 0)) problems.push('llama-server is missing');
+  }
+  if (expectModel && (expectModel === 'yes') !== checks.bundled_model) {
+    problems.push(expectModel === 'yes' ? 'expected a bundled model; this build has none' : 'expected a model-less build; this one bundles ' + (spec && spec.model));
+  }
 
   // 4. every key this machine knows, byte for byte, in every file
   const keys = knownKeys();
@@ -257,7 +277,8 @@ function verify({ app, platform, installer }) {
       const git = gitInfo();
       record = {
         schema: SCHEMA, file: name, size: fs.statSync(installer).size, sha256: sha256File(installer), platform, app_version: appVersion,
-        model: spec.model, mmproj: spec.mmproj, model_bytes: modelBytes + mmprojBytes, installed_bytes: entries.filter((e) => !e.dir).reduce((s, e) => s + sizeOf(e.p), 0),
+        model: spec ? spec.model : null, mmproj: spec ? spec.mmproj : null, model_bytes: modelBytes + mmprojBytes, bundled_model: Boolean(spec),
+        installed_bytes: entries.filter((e) => !e.dir).reduce((s, e) => s + sizeOf(e.p), 0),
         commit: git.commit, dirty: git.dirty, ci_run: git.ci_run, built_at: new Date().toISOString(), checks, ok: true
       };
     }
@@ -282,12 +303,17 @@ function verify({ app, platform, installer }) {
 
 /* --------------------------------------------------------------------- win */
 
-function buildWin({ dir, out }) {
+function buildWin({ dir, out, withModel }) {
   const outDir = path.resolve(ROOT, out || path.join('dist', 'public'));
   const env = { ...process.env };
   for (const v of TESTER_VARS) if (env[v]) { console.log(`public-build: ${v} is set; ignored for a public build`); delete env[v]; }
-  let spec;
-  try { spec = JSON.parse(fs.readFileSync(path.join(ROOT, 'models', 'typd-dictate', 'model.json'), 'utf8')); } catch { fail('models/typd-dictate/model.json is not readable: the dictation model is not in place'); }
+  let spec = { model: '(none: downloaded at first launch)' };
+  if (withModel) {
+    delete env.TYPD_NO_BUNDLED_MODEL;
+    try { spec = JSON.parse(fs.readFileSync(path.join(ROOT, 'models', 'typd-dictate', 'model.json'), 'utf8')); } catch { fail('models/typd-dictate/model.json is not readable: the dictation model is not in place'); }
+  } else {
+    env.TYPD_NO_BUNDLED_MODEL = '1';
+  }
   if (!fs.existsSync(path.join(ROOT, 'vendor', 'llama', 'llama-server.exe'))) fail('vendor/llama/llama-server.exe is missing');
   const cli = path.join(ROOT, 'node_modules', 'electron-builder', 'cli.js');
   if (!fs.existsSync(cli)) fail('node_modules/electron-builder is missing: npm ci first');
@@ -304,7 +330,7 @@ function buildWin({ dir, out }) {
   if (r.status !== 0) fail('electron-builder failed');
   const app = path.join(outDir, 'win-unpacked');
   if (!dir && !fs.existsSync(installer)) fail(`electron-builder did not make ${installer}`);
-  verify({ app, platform: 'win-x64', installer: dir ? null : installer });
+  verify({ app, platform: 'win-x64', installer: dir ? null : installer, expectModel: withModel ? 'yes' : 'no' });
 }
 
 /* -------------------------------------------------------------------- main */
@@ -312,9 +338,9 @@ function buildWin({ dir, out }) {
 if (require.main === module) {
   const a = args(process.argv.slice(2));
   const cmd = a._[0];
-  if (cmd === 'win') buildWin(a);
-  else if (cmd === 'verify') verify({ app: a.app, platform: a.platform, installer: a.installer });
-  else fail('usage: node scripts/public-build.js win [--dir] [--out dist/public]\n       node scripts/public-build.js verify --app <app> --platform <win-x64|mac-arm64|mac-x64> [--installer <file>]');
+  if (cmd === 'win') buildWin({ dir: a.dir, out: a.out, withModel: a['with-model'] });
+  else if (cmd === 'verify') verify({ app: a.app, platform: a.platform, installer: a.installer, expectModel: a['expect-model'] || null });
+  else fail('usage: node scripts/public-build.js win [--dir] [--out dist/public] [--with-model]\n       node scripts/public-build.js verify --app <app> --platform <win-x64|mac-arm64|mac-x64> [--installer <file>] [--expect-model yes|no]');
 }
 
 module.exports = { verify, readAsar, knownKeys, KEY_FILE };
