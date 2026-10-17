@@ -112,8 +112,8 @@ async function afterPack(context) {
 
   // --- tester builds: TYPD_TESTER_CONFIG names a tester.json to ship ---------------------
   // Only <resources>/tester.json makes a tester build (src/main/sharing.js), so an ordinary
-  // build (variable unset) shares nothing unless its user chooses to on the public beta's
-  // consent screen; one left over from an earlier tester build in the same output folder is
+  // build (variable unset) is a public build: it shares with no tester's key (on by default,
+  // off in Settings); one left over from an earlier tester build in the same output folder is
   // removed. Copied before signing so the signature
   // covers it. The file holds an upload key: its contents are never logged.
   const tester = path.join(resources, 'tester.json');

@@ -1,5 +1,11 @@
 # What's new
 
+## 0.2.4 · October 2026
+
+- **Sharing is on to help improve Typd.** Your dictations are shared to train the model, so it gets better for everyone. The first screen of the walkthrough says so, and **Share dictations** in Settings turns it off at once. If you turned sharing off before, it stays off. What is shared has not changed: **What's shared** in Settings lists it. Dictating itself still runs on your computer and works offline.
+- **No more first-run question about sharing.** The consent window is gone; Settings has the switch, **What's shared** and **Delete what I've shared**.
+- **Sharing stays light.** At most 50 dictations (or 20 MB of audio) a day are shared, and Typd waits quietly when the server is busy or full instead of trying again and again.
+
 ## 0.2.3 · October 2026
 
 - **Long dictations finish much sooner.** Typd now writes a long dictation while you are still talking, so the text arrives a second or two after you stop instead of many seconds later.

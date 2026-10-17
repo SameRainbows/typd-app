@@ -18,8 +18,8 @@ const pipeline = require('./pipeline');
 const inject = require('./inject');
 const learn = require('./learn');
 const dictionary = require('./dictionary');
-const sharing = require('./sharing');   // only with consent: the public beta's choice, or a tester build's key
-const ask = require('./ask-window');    // sharing's two questions: consent, and "That was wrong"
+const sharing = require('./sharing');   // public builds: on unless turned off in Settings; tester builds: their key
+const ask = require('./ask-window');    // the "That was wrong" window
 const modelUpdate = require('./modelUpdate');   // every packaged build (no key: the public routes) and the developer's machines
 const appUpdate = require('./appUpdate');       // packaged builds: a newer signed Typd, installed while you are away
 const netcost = require('./netcost');           // a metered connection: big model downloads ask first
@@ -401,7 +401,7 @@ async function endSession() {
         send('session:done', { text: event.text, target: appLabel(current.target) });
         learn.watch(event.text, current.target && current.target.process, inject.focusContext, learned);
         // Kept in memory as the last dictation (for "That was wrong"), and queued for the
-        // developer only if this person chose to share, or this is a tester build (sharing.js).
+        // developer unless this person turned sharing off, or as a tester build's (sharing.js).
         // Only after the paste has landed, never awaited, and never the screen context or span.
         sharing.add(current, event.text);
         refreshTray();
@@ -532,7 +532,7 @@ function openFlag() {
   ask.open('flag');
 }
 
-/** The consent screen answered (or Settings switched sharing off). */
+/** Settings switched sharing on or off. */
 async function chooseSharing(share) {
   const s = sharing.get();
   if (!s) return { ok: false };
@@ -543,8 +543,6 @@ async function chooseSharing(share) {
 
 ask.register({
   sharing: () => sharing.get(),
-  choice: () => settings.get('share'),
-  choose: chooseSharing,
   flagged: (r) => {
     if (r.state === 'flagged') note(r.how === 'shared' ? 'Shared to fix it — thank you' : 'Flagged — thank you');
   }
@@ -598,15 +596,16 @@ function walkthroughDue() {
 
 /**
  * Show it when it is due: a few seconds after launch, one question at a time (it waits while the
- * consent screen or the Mac permission dialog is open). After an app update's quiet relaunch it
- * waits, as the consent screen does, until someone is at the keyboard (appUpdate.whenUserActive).
- * It counts as shown once it opens: closing it early does not bring it back.
+ * Mac permission dialog is open). After an app update's quiet relaunch it waits until someone is
+ * at the keyboard (appUpdate.whenUserActive). It counts as shown once it opens: closing it early
+ * does not bring it back. Its first screen says, in a public build with sharing on, that
+ * dictations are shared to train the model and that Settings turns it off (renderer/home.js).
  */
 function startWalkthrough(afterUpdate) {
   if (!walkthroughDue()) return;
   const show = () => {
     if (!walkthroughDue()) return;
-    if (ask.isOpen('consent') || (MAC && require('./permissions-mac').isAsking())) { setTimeout(show, 1000); return; }
+    if (MAC && require('./permissions-mac').isAsking()) { setTimeout(show, 1000); return; }
     settings.set('walkthrough', 'done');
     home.open('home', { walkthrough: true });
   };
@@ -853,7 +852,6 @@ app.whenReady().then(() => {
     retryModel: warmModel,
     historyChanged: () => refreshTray(),
     wordRemoved: (term) => trayUi.forgotten(term),
-    askConsent: () => ask.open('consent'),
     chooseSharing,
     flagKey: () => (flagKey && flagKey.binding) || null,
     modelInfo,
@@ -882,20 +880,11 @@ app.whenReady().then(() => {
 
   trayUi.build();
 
-  // The public beta's one question, on the first run (and until it is answered): what sharing
-  // means, and two equal buttons. Nothing is shared before "Share my dictations" is pressed.
-  // A tester build has no such screen -- its tester agreed in person (sharing.js). After a quiet
-  // app-update relaunch it waits, like the Mac permission dialog, until someone is at the keyboard.
-  {
-    const s = sharing.get();
-    if (s && s.needsConsent() && !stub && !preview) {
-      const askConsent = () => { if (s.needsConsent()) ask.open('consent'); };
-      if (appUpdater && appUpdater.firstStart) appUpdate.whenUserActive(askConsent); else setTimeout(askConsent, 2500);
-    }
-  }
+  // Sharing asks nothing at launch: public builds share unless turned off in Settings (since
+  // 0.2.4), and the walkthrough's first screen says so (sharing.js). There is no consent screen.
 
   // The walkthrough: once, in the Typd window, on the first launch of an installed Typd (after the
-  // consent screen and the Mac permission dialog), and never into an app update's quiet relaunch.
+  // Mac permission dialog), and never into an app update's quiet relaunch.
   startWalkthrough(Boolean(appUpdater && appUpdater.firstStart));
 
   // First run: start at login is on by default, so make it so -- the installed app's own

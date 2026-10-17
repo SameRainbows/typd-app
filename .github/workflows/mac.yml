@@ -232,8 +232,9 @@ jobs:
         continue-on-error: true
         run: |
           APP="$PWD/dist/mac-arm64/Typd.app"
-          # No model download and no app update from CI; no walkthrough window.
-          TYPD_DEBUG=1 TYPD_NO_MODEL_UPDATE=1 TYPD_NO_APP_UPDATE=1 TYPD_NO_WALKTHROUGH=1 "$APP/Contents/MacOS/Typd" > app.log 2>&1 &
+          # No model download and no app update from CI; no walkthrough window; no sharing (a public
+          # build shares by default since 0.2.4).
+          TYPD_DEBUG=1 TYPD_NO_MODEL_UPDATE=1 TYPD_NO_APP_UPDATE=1 TYPD_NO_WALKTHROUGH=1 TYPD_NO_SHARE=1 "$APP/Contents/MacOS/Typd" > app.log 2>&1 &
           pid=$!
           ok=0
           for i in $(seq 1 120); do

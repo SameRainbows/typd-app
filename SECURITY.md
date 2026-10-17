@@ -14,8 +14,9 @@ publish details.
 
 ## What matters most
 
-- Anything that lets audio, text or screen content leave the computer without the user's choice
-  (sharing is opt-in: `src/main/sharing.js`, `src/main/collect.js`).
+- Anything that lets audio, text or screen content leave the computer beyond what sharing is
+  documented to send, or after the user turned sharing off (`src/main/sharing.js`,
+  `src/main/collect.js`; on by default since 0.2.4, off in Settings).
 - The app updater: a way to make Typd install something not signed with the update key
   (`src/main/appUpdate.js`, `src/main/app-update/`), or to downgrade it.
 - The model updater: a way to make Typd load files that do not match the published manifest

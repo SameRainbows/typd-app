@@ -19,7 +19,11 @@
  * Nothing here is on the critical path. add() returns at once; a tick later the item is written
  * to an outbox on disk, and one uploader sends one item at a time, deleting the local copy only
  * after the server answers 2xx. Failures back off exponentially; the outbox survives restarts,
- * sleep and being offline, and is capped at 2 GB, oldest dropped first.
+ * sleep and being offline, and is capped (2 GB by default, oldest dropped first; public builds
+ * pass a smaller cap and a daily limit, sharing.js). When the server says when to come back
+ * (Retry-After: a daily cap, storage full, busy), nothing is sent before then -- waking from
+ * sleep or unlocking the screen does not cut that short -- and a full bucket (507) can be given
+ * a longer wait of its own (fullHoldS). Refusals are only logged: nothing is ever shown.
  *
  * "That was wrong" (a flag) on an item still here rewrites its meta before it goes; on one
  * already sent it queues a small <name>.flag record, sent to /v1/flag after the items, with the
@@ -116,6 +120,23 @@ async function writeAtomic(file, data) {
   await fsp.rename(file + '.tmp', file);
 }
 
+/** The WAV an item's samples become, in bytes, without encoding it (the daily limit counts it). */
+function wavBytes(samples, rate) {
+  const n = !rate || rate === RATE ? samples.length : Math.floor((samples.length * RATE) / rate);
+  return 44 + 2 * n;
+}
+
+/** The daily limit's count, {day, items, bytes}; a fresh one if the file is absent or not sane. */
+function readDay(file, day) {
+  try {
+    const d = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (d && d.day === day && Number.isFinite(d.items) && Number.isFinite(d.bytes) && d.items >= 0 && d.bytes >= 0) {
+      return { day, items: d.items, bytes: d.bytes };
+    }
+  } catch { /* none yet */ }
+  return { day, items: 0, bytes: 0 };
+}
+
 /**
  * The outbox and its uploader.
  *
@@ -131,10 +152,16 @@ async function writeAtomic(file, data) {
  *              backs off and tries again (a key only just made may not have reached every
  *              data centre yet)
  *   onSent     (name) => void, after the server accepted an item
+ *   cap        the outbox's size on disk (sent-pending and rejected), oldest dropped first
+ *   daily      {items, bytes, file} or null: at most this many dictations and WAV bytes queued a
+ *              UTC day, counted in `file` so a restart does not reset it. Past it a dictation is
+ *              simply not queued (an item shared on its own, consent 'flag', still is)
+ *   fullHoldS  the least wait, in seconds, after the server says its storage is full (507)
  */
 function createCollector({
   config, ensureKey = null, dir, paused = () => false, log = () => {}, about = {},
-  fetch = globalThis.fetch, cap = OUTBOX_CAP, on401 = () => true, onSent = () => {}
+  fetch = globalThis.fetch, cap = OUTBOX_CAP, on401 = () => true, onSent = () => {},
+  daily = null, fullHoldS = 0, now = Date.now
 }) {
   const rejectedDir = path.join(dir, 'rejected');
   const configNow = typeof config === 'function' ? config : () => config;
@@ -145,6 +172,9 @@ function createCollector({
   let revoked = false;   // the server refused the key: this tester or install was removed
   let stopped = false;   // stop(): nothing more is sent until resume()
   let sending = null;    // the item on the wire right now
+  let holdUntil = 0;     // the server said when to come back (Retry-After): nothing goes before then
+  let today = null;      // the daily limit's count, read from daily.file when first needed
+  let dayWrite = Promise.resolve();   // its writes, one after another, each of the latest count
 
   function schedule(ms) {
     clearTimeout(timer);
@@ -152,14 +182,35 @@ function createCollector({
     if (timer.unref) timer.unref();
   }
 
-  /** Back off: 10 s, 20 s, 40 s ... 15 min, with jitter; longer if the server asks. */
+  /**
+   * Back off: 10 s, 20 s, 40 s ... 15 min, with jitter; longer if the server asks (at most 6 h),
+   * and then nothing at all goes before that time, wake() included.
+   */
   function retry(after) {
     failures++;
     let ms = Math.min(BACKOFF_MAX_MS, BACKOFF_MIN_MS * 2 ** (failures - 1));
     ms = ms / 2 + Math.random() * (ms / 2);
-    const asked = Number(after) * 1000;
-    if (asked > 0) ms = Math.max(ms, Math.min(asked, 6 * 3600e3));
+    const asked = Math.min(Number(after) * 1000, 6 * 3600e3);
+    if (asked > 0) {
+      ms = Math.max(ms, asked);
+      holdUntil = Math.max(holdUntil, now() + asked);
+    }
     schedule(ms);
+  }
+
+  /** May one more dictation of this many WAV bytes be queued today? Counts it if so. */
+  function takeDaily(bytes) {
+    if (!daily) return true;
+    const day = new Date(now()).toISOString().slice(0, 10);
+    if (!today || today.day !== day) today = readDay(daily.file, day);
+    if (today.items + 1 > daily.items || today.bytes + bytes > daily.bytes) return false;
+    today.items++;
+    today.bytes += bytes;
+    dayWrite = dayWrite
+      .then(() => fsp.mkdir(path.dirname(daily.file), { recursive: true }))
+      .then(() => writeAtomic(daily.file, JSON.stringify(today)))
+      .catch(() => { /* counted in memory for this run anyway */ });
+    return true;
   }
 
   const readJson = async (file) => { try { return JSON.parse(await fsp.readFile(file, 'utf8')); } catch { return null; } };
@@ -312,8 +363,15 @@ function createCollector({
         await setAside(next);
         continue;
       }
+      const after = Number(res.headers.get('retry-after')) || 0;
+      if (res.status === 507) {
+        // The server's storage is full: it will not empty by itself in minutes. What waits here
+        // stays (within the cap) and goes once there is room.
+        log('server storage full - waiting');
+        return retry(Math.max(after, fullHoldS));
+      }
       log('server said', res.status, '- will retry');
-      return retry(res.headers.get('retry-after'));
+      return retry(after);
     }
   }
 
@@ -329,7 +387,7 @@ function createCollector({
     return running;
   }
 
-  /** Oldest items go first once the outbox (sent-pending and rejected) passes 2 GB. */
+  /** Oldest items go first once the outbox (sent-pending and rejected) passes its cap. */
   async function enforceCap() {
     const groups = new Map();
     let total = 0;
@@ -354,7 +412,7 @@ function createCollector({
       const g = groups.get(name);
       for (const p of g.files) await fsp.unlink(p).catch(() => {});
       total -= g.bytes;
-      log('outbox over 2 GB, dropped', name);
+      log('outbox over its cap, dropped', name);
     }
   }
 
@@ -443,11 +501,15 @@ function createCollector({
   /**
    * Queue one finished dictation; returns its name (<stamp>-<id>) at once, or null when nothing
    * was queued. The disk write happens a tick later. While paused only an item shared on its
-   * own (rec.consent === 'flag') is taken.
+   * own (rec.consent === 'flag') is taken; past the daily limit, too.
    */
   function queue(rec) {
     if (revoked || stopped || (paused() && rec.consent !== 'flag')) return null;
     if (!rec || !rec.samples || typeof rec.text !== 'string') return null;
+    if (rec.consent !== 'flag' && !takeDaily(wavBytes(rec.samples, rec.sampleRate))) {
+      log('daily sharing limit reached; not queued');
+      return null;
+    }
     const created = new Date();
     const id = crypto.randomBytes(8).toString('hex');
     const name = `${stamp(created)}-${id}`;
@@ -535,8 +597,13 @@ function createCollector({
       await enforceCap();
       schedule(0);
     },
-    /** Back from sleep, a lock screen or a pause: try now instead of waiting out the backoff. */
+    /**
+     * Back from sleep, a lock screen or a pause: try now instead of waiting out the backoff --
+     * unless the server said when to come back (a daily cap, storage full): then the retry
+     * already set stands.
+     */
     wake(ms = 3000) {
+      if (holdUntil > now()) return;
       failures = 0;
       schedule(ms);
     },
@@ -545,8 +612,10 @@ function createCollector({
     resume() { stopped = false; },
     /** Resolves when no send is in progress. */
     async idle() { while (running) await running; },
-    /** The key was replaced (a fresh enrollment): forget that the old one was refused. */
-    reset() { revoked = false; failures = 0; },
+    /** The key was replaced (a fresh enrollment): forget that the old one was refused, or held. */
+    reset() { revoked = false; failures = 0; holdUntil = 0; },
+    /** Until when the server asked for nothing more (ms since the epoch; 0: no such wait). */
+    heldUntil: () => (holdUntil > now() ? holdUntil : 0),
     pending: async () => (await ready()).length,
     isRevoked: () => revoked,
     status: () => {

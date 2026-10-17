@@ -17,7 +17,7 @@ This repository is the app's source code, under the **GPL-3.0** ([LICENSE](LICEN
 
 | | |
 |---|---|
-| **Here (GPL-3.0)** | The desktop app: hotkeys, recording, the dictation pipeline, pasting, the overlay and the Typd window, history and dictionary, opt-in sharing, model and app updates, packaging scripts, benches and docs. |
+| **Here (GPL-3.0)** | The desktop app: hotkeys, recording, the dictation pipeline, pasting, the overlay and the Typd window, history and dictionary, sharing (on by default, off in Settings), model and app updates, packaging scripts, benches and docs. |
 | **Not here** | The dictation model's weights. They are downloaded separately and licensed under [MODEL_LICENSE.txt](MODEL_LICENSE.txt), not the GPL. |
 | **Not here** | The research and training that produced the model, and the server code behind sharing and updates. The app talks to that server only through the public routes described below. |
 
@@ -55,16 +55,17 @@ revise:   mic ─► typd-dictate, with the highlighted text and your spoken ins
 
 ## Privacy
 
-- **Dictation never leaves your computer.** The model runs locally; history and the dictionary
-  stay in your user folder (`%APPDATA%\typd` on Windows, `~/Library/Application Support/typd` on
-  a Mac).
-- **Sharing is opt-in.** On its first run a packaged Typd asks once whether you want to share your
-  dictations to help improve it. Nothing is shared, queued or sent unless you choose **Share my
-  dictations to improve Typd**. A shared item is the audio, the pasted text, the app's process
-  name, timings, OS and versions; never what is on your screen, your selection or window titles.
-  Settings turns it off at any time, and **Delete what I've shared** deletes everything stored for
-  your install on the server. The code is `src/main/sharing.js`, `src/main/collect.js` and
-  `src/renderer/consent.html`.
+- **Dictation runs on your computer.** The model runs locally and needs no network to dictate;
+  history and the dictionary stay in your user folder (`%APPDATA%\typd` on Windows,
+  `~/Library/Application Support/typd` on a Mac).
+- **Sharing is on by default** (since 0.2.4). After a dictation's text is pasted, a packaged Typd
+  sends that dictation in the background to help train the model; the walkthrough's first screen
+  says so, and **Share dictations** in Settings turns it off at once (an earlier "off" stays off).
+  A shared item is the audio, the pasted text (not for a revision of selected text), the app's
+  process name, the model and its version, timings, OS and versions; never what is on your screen,
+  your selection or window titles. At most 50 dictations or 20 MB a day. **Delete what I've
+  shared** deletes everything stored for your install on the server. The code is
+  `src/main/sharing.js` and `src/main/collect.js`; `TYPD_NO_SHARE=1` turns it off for one run.
 - **Update checks** (packaged builds only) send the app version, the model version, the OS and an
   anonymous random install ID, so the developer can count which versions are in use
   (`src/main/versionStats.js`). Runs from source send none of it.
@@ -136,7 +137,7 @@ node bench/home.js         # history, undo, the dictionary
 node bench/learn.js        # which corrections are learned, and which edits are not
 node bench/updates.js      # model updates: download, resume, verify, switch, revert; the self-test
 node bench/lora.js --no-model   # the revise adapter's requests, against a fake server
-node bench/sharing.js      # consent gating, enrollment, flags, opt-out, delete (a fake server)
+node bench/sharing.js      # on by default, an explicit off kept, enrollment, limits, flags, delete (a fake server)
 node bench/versions.js     # version headers on update checks; nothing from source runs
 node bench/app-update.js   # signed app updates, idle gating, real installs and rollbacks with the helper, in a temp folder
 node bench/public-build.js # a public build carries no key
@@ -152,7 +153,7 @@ call a cloud model or need recordings; `npm run bench` runs the whole set, so it
 src/main/            the main process: hotkeys, sessions, pasting, tray, updates, sharing
 src/main/pipeline/   the local model (local.js), prompts, context, the cloud fallback (cleanup.js)
 src/main/app-update/ the helper scripts that swap in an app update
-src/renderer/        the overlay pill, the Typd window, the consent and flag windows
+src/renderer/        the overlay pill, the Typd window (with the walkthrough), the flag window
 scripts/             packaging hooks, icon builds, llama.cpp and model fetchers
 bench/               the tests and measurements that decided the design
 design/              standalone design studies, openable in a browser

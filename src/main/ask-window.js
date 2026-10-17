@@ -5,26 +5,24 @@ const { app, BrowserWindow, ipcMain, nativeTheme } = require('electron');
 const brand = require('./brand');
 
 /**
- * The two questions sharing asks (sharing.js), each in one small window:
+ * The one question sharing asks (sharing.js), in one small window:
  *
- *   consent   the public beta's first-run screen: what is shared, what never is, and two equal
- *             buttons -- "Share my dictations to improve Typd" / "Keep everything on my
- *             computer". Opened once on the first run, and from Settings ("What's shared", or
- *             turning sharing on). Closed without an answer, sharing stays off.
  *   flag      "That was wrong" on the last dictation, with an optional one-line note. If it was
  *             never shared, it asks first: "Share this one dictation so it can be fixed?"
  *
- * Like the Typd window, they exist only while open, and every call from their pages is named,
+ * (Until 0.2.3 a consent screen lived here too. Since 0.2.4 public builds share unless turned
+ * off in Settings, and the walkthrough's first screen says so: there is no consent screen.)
+ *
+ * Like the Typd window, it exists only while open, and every call from its page is named,
  * checked to come from that window's own page, and validated here.
  */
 
-const PAGES = { consent: 'consent.html', flag: 'flag.html' };
-const SIZE = { consent: [520, 700], flag: [460, 360] };   // consent: +40 for the update-check line
+const PAGES = { flag: 'flag.html' };
+const SIZE = { flag: [460, 360] };
 const SURFACE = { dark: '#17191E', light: '#FBFBFC' };
 const MAC = process.platform === 'darwin';
 
-const wins = { consent: null, flag: null };
-const answered = { consent: false };
+const wins = { flag: null };
 let deps = null;
 
 /** Which of our windows sent this, if it came from that window's own page; else null. */
@@ -52,13 +50,6 @@ function close(kind) {
   if (w && !w.isDestroyed()) w.close();
 }
 
-function consentState() {
-  return {
-    platform: { mac: MAC, machine: MAC ? 'Mac' : 'PC' },
-    choice: deps.choice()
-  };
-}
-
 function flagState() {
   const s = deps.sharing();
   const last = s ? s.lastInfo() : null;
@@ -77,22 +68,12 @@ function flagState() {
 /**
  * @param {object} d
  * @param {() => object|null} d.sharing             sharing.get()
- * @param {() => string} d.choice                    settings 'share'
- * @param {(share: boolean) => Promise<object>} d.choose   answer the consent screen
  * @param {(result: object) => void} d.flagged       a flag went through (the pill says so)
  */
 function register(d) {
   deps = d;
 
-  handle('ask:state', (kind) => (kind === 'consent' ? consentState() : flagState()));
-
-  handle('ask:consent', async (kind, share) => {
-    if (kind !== 'consent' || typeof share !== 'boolean') return null;
-    answered.consent = true;
-    const r = await deps.choose(share);
-    close('consent');
-    return r;
-  });
+  handle('ask:state', (kind) => (kind === 'flag' ? flagState() : null));
 
   handle('ask:flag', async (kind, answer) => {
     if (kind !== 'flag' || !answer || typeof answer !== 'object') return null;
@@ -110,7 +91,7 @@ function register(d) {
   handle('ask:close', (kind) => { close(kind); return true; });
 }
 
-/** Open (or bring forward) one of the two windows: 'consent' | 'flag'. */
+/** Open (or bring forward) the window: 'flag'. */
 function open(kind) {
   if (!PAGES[kind] || !deps) return;
   const existing = wins[kind];
@@ -134,7 +115,6 @@ function open(kind) {
     }
   });
   wins[kind] = w;
-  if (kind === 'consent') answered.consent = false;
   w.setMenu(null);
   w.webContents.on('will-navigate', (e) => e.preventDefault());
   w.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
@@ -146,9 +126,6 @@ function open(kind) {
   });
   w.on('closed', () => {
     wins[kind] = null;
-    // Closed without an answer: nothing is shared, and the question is not asked again by itself
-    // (Settings has it). The choice is recorded as off only if there was none.
-    if (kind === 'consent' && !answered.consent && deps.choice() === '') deps.choose(false).catch(() => {});
   });
   w.loadFile(path.join(__dirname, '..', 'renderer', PAGES[kind]));
 }

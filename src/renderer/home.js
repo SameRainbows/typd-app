@@ -553,11 +553,10 @@
     renderBeta();
   }
 
-  /* --------------------------------------------------------- the public beta */
+  /* ------------------------------------------------------ sharing, public builds */
 
-  // Sharing, the public beta's way (sharing.js, mode 'beta'): off until the person picks share
-  // on the consent screen. Turning the switch on opens that screen; nothing changes until it is
-  // answered (main says so with home:changed 'sharing').
+  // Sharing in a public build (sharing.js, mode 'beta'): on by default since 0.2.4, and the
+  // walkthrough's first screen says so. The switch takes effect at once, either way.
   function renderBeta() {
     var s = S.settings, sh = s.sharing, m = S.platform.machine;
     var beta = Boolean(sh && sh.mode === 'beta');
@@ -568,8 +567,8 @@
     $('betaHelp').textContent = sh.state === 'stopped'
       ? 'Stopped: the server no longer accepts this ' + m + '. Turn sharing off and on again to start over.'
       : on
-        ? 'On: each dictation’s audio and text go to the developer to improve Typd. Never your screen, selections or window titles.'
-        : 'Off: everything stays on this ' + m + '.';
+        ? 'On: each dictation’s audio and text go to the developer to train Typd’s model. Never your screen, selections or window titles. Dictating itself works offline.'
+        : 'Off: what you dictate stays on this ' + m + '.';
     $('betaDelete').hidden = !(sh.shared || on);
     $('betaId').hidden = !sh.id;
     $('betaId').textContent = sh.id ? 'Anonymous ID ' + sh.id : '';
@@ -588,16 +587,21 @@
 
   $('betaShare').addEventListener('change', function (e) {
     var want = e.target.checked;
-    // On waits for the consent screen; until it is answered the switch shows what is true now.
-    e.target.checked = !want;
+    // Either way at once; the switch shows what main stored (settings come back with the answer).
+    e.target.disabled = true;
     api.sharing.set(want).then(function (r) {
-      if (!r) return;
+      e.target.disabled = false;
+      if (!r) { e.target.checked = !want; return; }
       if (r.settings) { S.settings = r.settings; renderRecordings(); }
-      if (!want) toast('Sharing is off');
+      toast(want ? 'Sharing is on' : 'Sharing is off');
     });
   });
 
-  $('betaAbout').addEventListener('click', function () { api.sharing.about(); });
+  $('betaAbout').addEventListener('click', function () {
+    var open = $('betaWhat').hidden;
+    $('betaWhat').hidden = !open;
+    $('betaAbout').setAttribute('aria-expanded', String(open));
+  });
 
   $('betaDelete').addEventListener('click', function () {
     $('betaConfirm').hidden = false;
@@ -898,11 +902,19 @@
     var step = 0;
     var SAMPLE = 'Hi Sam, I just wanted to quickly reach out and let you know that I will most likely be running a little bit late to our meeting tomorrow morning, so sorry about that.';
 
+    var SHARE_LINE = 'Help improve Typd: your dictations are shared to train the model. Turn off anytime in Settings.';
+
     function sharing() {
       var sh = S.settings && S.settings.sharing;
       if (!sh) return false;
       if (sh.mode === 'tester') return sh.state !== 'stopped' && !S.settings.sharePaused;
       return sh.state === 'on';
+    }
+
+    /** A public build (not a tester's) with sharing on: the first screen says so. */
+    function publicSharing() {
+      var sh = S.settings && S.settings.sharing;
+      return Boolean(sh && sh.mode === 'beta' && sh.state === 'on');
     }
 
     function flagParts() {
@@ -932,10 +944,12 @@
       $('walkSkip').hidden = step === STEPS;
       $('walkTry').hidden = step !== 2 && step !== 3;
       var title, body, parts = h.parts;
+      // Step 1 in a public build with sharing on: the one line about sharing, word for word.
+      var note = step === 1 && publicSharing() ? SHARE_LINE : '';
       if (step === 1) {
         title = 'Typd writes what you say';
         body = 'Talk, and finished text lands wherever you were typing, punctuation and all. It runs on this ' + p.machine +
-          (sharing() ? '; your dictations are also shared to improve Typd, as you chose (Settings changes that).' : ', so nothing you say is sent anywhere.');
+          (note ? '.' : sharing() ? '; your dictations are also shared to improve Typd, as you chose (Settings changes that).' : ', so nothing you say is sent anywhere.');
       } else if (step === 2) {
         title = 'Try a dictation';
         body = 'Click in the box, ' + h.verb + ' {key} and say a sentence, then ' + h.verb + ' {key} again.';
@@ -959,6 +973,8 @@
       }
       $('walkTitle').textContent = title;
       withKeys($('walkBody'), body, parts);
+      $('walkNote').textContent = note;
+      $('walkNote').hidden = !note;
       if (step !== 2 && step !== 3) hint('');
     }
 

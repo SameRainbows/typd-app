@@ -20,9 +20,10 @@ const DEFAULTS = {
   // macOS: Right ⌘ rather than Right Option, which types characters on most Mac layouts.
   hotkey: hotkeyLogic.defaultFor(process.platform),
   sharePaused: false,   // tester builds only (sharing.js): true queues and sends nothing
-  // The public beta (sharing.js): '' until the consent screen is answered, then 'on' or 'off'.
-  // Nothing is shared unless it is 'on'.
-  share: '',
+  // Public builds (sharing.js): 'on' or 'off'. On by default since 0.2.4 (the first walkthrough
+  // screen says so, and Settings turns it off). Before 0.2.4 it was '' until a consent screen was
+  // answered: an install that never answered reads as 'on', and an 'off' it chose stays off.
+  share: 'on',
   // "That was wrong": a combination (globalShortcut) that flags the last dictation; '' = none.
   flagHotkey: hotkeyLogic.flagDefaultFor(process.platform),
   // macOS only: keep the Dock icon while Typd runs. Off, Typd lives in the menu bar and the
@@ -56,11 +57,21 @@ function read() {
   // An old 'CommandOrControl+Shift+Space' is written the current way; anything unusable falls
   // back to the default rather than leaving Typd with no key at all.
   cache.hotkey = hotkeyLogic.normalize(cache.hotkey, process.platform, { sideButtons: true });
-  if (!['', 'on', 'off'].includes(cache.share)) cache.share = '';
+  cache.share = shareFrom(saved);
   if (cache.flagHotkey && !hotkeyLogic.validFlag(cache.flagHotkey, process.platform)) cache.flagHotkey = DEFAULTS.flagHotkey;
   if (!VARIANTS.includes(cache.modelVariant)) cache.modelVariant = DEFAULTS.modelVariant;
   if (!['', 'done'].includes(cache.walkthrough)) cache.walkthrough = 'done';
   return cache;
+}
+
+/**
+ * 'share' as saved: 'on' and 'off' as they are; never set, or '' (a consent screen from before
+ * 0.2.4 never answered), is 'on'. Anything else was not written by Typd (set() refuses it): it
+ * reads as 'off', so a hand edit is never taken for a yes.
+ */
+function shareFrom(saved) {
+  if (!saved || typeof saved !== 'object' || !('share' in saved) || saved.share === '' || saved.share === 'on') return 'on';
+  return 'off';
 }
 
 function write(s) {
@@ -83,7 +94,7 @@ function set(key, value) {
     if (!v.ok) return false;
     value = v.binding;
   }
-  if (key === 'share' && !['', 'on', 'off'].includes(value)) return false;
+  if (key === 'share' && !['on', 'off'].includes(value)) return false;
   if (key === 'modelVariant' && !VARIANTS.includes(value)) return false;
   if (key === 'walkthrough' && !['', 'done'].includes(value)) return false;
   if (key === 'flagHotkey' && value) {

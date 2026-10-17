@@ -37,8 +37,7 @@ contextBridge.exposeInMainWorld('typdHome', {
 
   sharing: {
     set: call('sharing:set'),
-    remove: call('sharing:delete'),
-    about: call('sharing:about')
+    remove: call('sharing:delete')
   },
 
   hotkey: {

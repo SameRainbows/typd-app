@@ -306,12 +306,12 @@ function register(d) {
   handle('walkthrough:practice', (on) => { practicing = on === true; return true; });
   handle('walkthrough:done', () => settings.set('walkthrough', 'done'));
 
-  // Sharing (the public beta). Turning it on always goes through the consent screen; off is
-  // immediate. Deleting empties the outbox and deletes what the server holds for this install.
+  // Sharing (public builds; on by default). The switch takes effect at once, either way: off
+  // deletes what still waits in the outbox. Deleting empties the outbox and deletes what the
+  // server holds for this install.
   handle('sharing:set', async (on) => {
     if (typeof on !== 'boolean' || !sharing.get()) return null;
-    if (on) { deps.askConsent(); return { asking: true, settings: settingsState() }; }
-    const r = await deps.chooseSharing(false);
+    const r = await deps.chooseSharing(on);
     return { ...r, settings: settingsState() };
   });
   handle('sharing:delete', async () => {
@@ -320,7 +320,6 @@ function register(d) {
     const r = await s.deleteShared();
     return { ...r, settings: settingsState() };
   });
-  handle('sharing:about', () => { if (!sharing.get()) return false; deps.askConsent(); return true; });
   handle('settings:open-recordings', () => {
     const dir = settings.recordingsDir();
     fs.mkdirSync(dir, { recursive: true });

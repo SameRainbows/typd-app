@@ -4,10 +4,15 @@
  * Sharing, without Electron, a window or the network: sharing.js and collect.js against a local
  * fake of typd-collect.
  *
- *   - consent gating: before the consent screen is answered, and after "Keep everything on my
- *     computer", nothing is queued and not one request is made -- not even enrollment
- *   - opting in: one enrollment, the key kept in share.json (never logged), every dictation
- *     uploaded with it, and never the screen context, the span or a window title
+ *   - public builds share by default (0.2.4): a choice never made ('' from a consent screen of
+ *     0.2.0-0.2.3 never answered) or 'on' queues every dictation, and the first send enrolls; an
+ *     explicit 'off' stays off: nothing queued, not one request, not even enrollment
+ *   - turning it on in Settings: one enrollment, the key kept in share.json (never logged), every
+ *     dictation uploaded with it, and never the screen context, the span or a window title
+ *   - public builds' limits, all silent: at most so many dictations and bytes a UTC day (kept
+ *     across restarts, a new day starts afresh), an outbox capped on disk, and the server's
+ *     Retry-After (a daily cap, storage full) held through wakes; a full bucket (507) waits at
+ *     least fullHoldS
  *   - enrollment refused (429) or offline: sharing stays on and enrolls with the first send
  *   - "That was wrong": marked in the outbox before it goes; sent to /v1/flag once it has gone;
  *     retried when offline; a note kept to one line; nothing to flag; and, with sharing off,
@@ -16,7 +21,7 @@
  *   - "Delete what I've shared": DELETE /v1/me, outbox emptied, key forgotten, sharing off;
  *     offline it says so and keeps the key
  *   - a refused key: stops (an old key), or retries (one made minutes ago); re-enrolls on opt-in
- *   - tester builds: the bundled key wins, no consent, no enrollment, the pause holds
+ *   - tester builds: the bundled key wins, no enrollment, the pause holds, no daily limit
  *   - collect.js's old API (typd-collect/e2e.mjs) still works
  *
  *   node bench/sharing.js
@@ -51,6 +56,7 @@ function fakeServer() {
   const s = {
     requests: [], items: new Map(), keys: new Map(), testerKeys: new Map(),
     enrollStatus: 201, uploadStatus: null, flagStatus: null, deleteStatus: null, refuse: new Set(),
+    enrollRetryAfter: '30', uploadRetryAfter: '',   // the Retry-After sent with a refusal ('' none)
     endpoint: null, server: null
   };
   const send = (res, status, body, headers = {}) => {
@@ -71,7 +77,7 @@ function fakeServer() {
       s.requests.push(r);
       try {
         if (req.method === 'POST' && req.url === '/v1/enroll') {
-          if (s.enrollStatus !== 201) return send(res, s.enrollStatus, { error: 'no' }, { 'Retry-After': '30' });
+          if (s.enrollStatus !== 201) return send(res, s.enrollStatus, { error: 'no' }, s.enrollRetryAfter ? { 'Retry-After': s.enrollRetryAfter } : {});
           const key = 'ik_' + crypto.randomBytes(32).toString('base64url');
           const id = 'i-' + crypto.createHash('sha256').update(key).digest('hex').slice(0, 20);
           s.keys.set(key, id);
@@ -81,7 +87,7 @@ function fakeServer() {
         const owner = who(req);
         if (req.method === 'POST' && req.url === '/v1/upload') {
           if (!owner) return send(res, 401, { error: 'unauthorized' });
-          if (s.uploadStatus) return send(res, s.uploadStatus, { error: 'later' }, { 'Retry-After': '1' });
+          if (s.uploadStatus) return send(res, s.uploadStatus, { error: 'later' }, s.uploadRetryAfter ? { 'Retry-After': s.uploadRetryAfter } : {});
           const form = await new Response(body, { headers: { 'Content-Type': req.headers['content-type'] } }).formData();
           const meta = JSON.parse(form.get('meta'));
           const audio = Buffer.from(await form.get('audio').arrayBuffer());
@@ -117,7 +123,10 @@ function fakeServer() {
   });
   s.count = (p, method) => s.requests.filter((q) => q.path === p && (!method || q.method === method)).length;
   s.itemsOf = (owner) => [...s.items.values()].filter((i) => i.owner === owner);
-  s.reset = () => { s.requests.length = 0; s.items.clear(); s.enrollStatus = 201; s.uploadStatus = null; s.flagStatus = null; s.deleteStatus = null; s.refuse.clear(); };
+  s.reset = () => {
+    s.requests.length = 0; s.items.clear(); s.enrollStatus = 201; s.uploadStatus = null; s.flagStatus = null; s.deleteStatus = null; s.refuse.clear();
+    s.enrollRetryAfter = '30'; s.uploadRetryAfter = '';
+  };
   return new Promise((resolve) => s.server.listen(0, '127.0.0.1', () => { s.endpoint = `http://127.0.0.1:${s.server.address().port}`; resolve(s); }));
 }
 
@@ -146,7 +155,8 @@ function make(server, opts = {}) {
     paused: opts.paused || (() => false),
     about: { appVersion: '0.2.0' },
     log: (...a) => logs.push(a.map(String).join(' ')),
-    now: opts.now
+    now: opts.now,
+    cap: opts.cap, daily: opts.daily, fullHoldS: opts.fullHoldS, dayFile: opts.dayFile
   });
   return { s, home, outbox: path.join(home, 'outbox'), keyFile: path.join(home, 'share.json'), choice: () => choice };
 }
@@ -157,31 +167,42 @@ const outboxFiles = (dir, ext) => { try { return fs.readdirSync(dir).filter((f) 
 
   /* ------------------------------------------------------------- consent */
 
-  section('consent gating: nothing before "Share my dictations"');
+  section('public builds: sharing is on by default; an explicit "off" stays off');
   {
     server.reset();
-    const t = make(server, { choice: '' });
-    check('the consent screen is due (choice not made yet)', t.s.needsConsent() === true);
-    check('status: unset, nothing shared', t.s.status().state === 'unset' && t.s.status().shared === false);
-    check('a dictation is not queued', t.s.add(dictation('secret one', { context: 'SCREEN', span: 'SPAN', title: 'TITLE' })) === false);
+    const t = make(server, { choice: '' });   // a consent screen of 0.2.0-0.2.3, never answered
+    check('never answered: on, nothing shared yet', t.s.status().state === 'on' && t.s.status().shared === false, t.s.status());
+    check('no consent step left in the API', !('needsConsent' in t.s));
     await t.s.start();
     t.s.wake(0);
-    await sleep(400);
-    check('not one request was made -- not even enrollment', server.requests.length === 0, server.requests);
-    check('the outbox does not exist', outboxFiles(t.outbox).length === 0);
-    check('no key file', !fs.existsSync(t.keyFile));
-    const info = t.s.lastInfo();
-    check('the last dictation is held in memory, for a flag', info && info.text === 'secret one' && info.needsConsent === true, info);
-    const r = await t.s.flag({ note: 'should be "secret won"' });
-    await sleep(200);
-    check('a flag with sharing off asks first, and sends nothing', r.state === 'ask' && server.requests.length === 0, r);
-
-    const off = make(server, { choice: 'off' });
-    check('"Keep everything on my computer": no consent screen again', off.s.needsConsent() === false && off.s.status().state === 'off');
-    off.s.add(dictation());
-    off.s.wake(0);
     await sleep(300);
-    check('and still nothing sent', server.requests.length === 0);
+    check('nothing to send: not one request, not even enrollment', server.requests.length === 0, server.requests);
+    check('a dictation is queued', t.s.add(dictation('first words', { context: 'SCREEN', span: 'SPAN', title: 'TITLE' })) === true);
+    check('the first send enrolls, then uploads it', await until(() => server.items.size === 1) && server.count('/v1/enroll') === 1);
+    const it = [...server.items.values()][0] || { meta: {} };
+    check('consent "all", never the screen context, the span or a title', it.meta.consent === 'all' &&
+      !('context' in it.meta) && !('span' in it.meta) && !('title' in it.meta) && !JSON.stringify(it.meta).includes('SCREEN'), it.meta);
+    check('the key is kept in share.json', Boolean(readKeyFile(t.keyFile)) && t.s.status().shared === true);
+    const info = t.s.lastInfo();
+    check('the last dictation is held for a flag, already shared', info && info.text === 'first words' && info.needsConsent === false, info);
+
+    const on = make(server, { choice: 'on' });   // a fresh 0.2.4 install: settings' default
+    check('the default ("on"): on', on.s.status().state === 'on' && on.s.add(dictation('a new install')) === true);
+    check('and sent', await until(() => server.items.size === 2));
+
+    server.reset();
+    const off = make(server, { choice: 'off' });   // chosen on the old consent screen, or in Settings
+    check('"off": off', off.s.status().state === 'off');
+    check('"off": a dictation is not queued', off.s.add(dictation('secret one')) === false);
+    await off.s.start();
+    off.s.wake(0);
+    await sleep(400);
+    check('"off": not one request was made -- not even enrollment', server.requests.length === 0, server.requests);
+    check('"off": the outbox does not exist, no key file', outboxFiles(off.outbox).length === 0 && !fs.existsSync(off.keyFile));
+    const r = await off.s.flag({ note: 'should be "secret won"' });
+    await sleep(200);
+    check('"off": a flag asks first, and sends nothing', r.state === 'ask' && server.requests.length === 0, r);
+    check('"off" is never turned back on by anything but choose("on")', off.choice() === 'off' && off.s.status().state === 'off');
   }
 
   section('"Share this one dictation so it can be fixed?" -- yes, for that one only');
@@ -208,10 +229,10 @@ const outboxFiles = (dir, ext) => { try { return fs.readdirSync(dir).filter((f) 
 
   /* -------------------------------------------------------------- opt in */
 
-  section('opting in');
+  section('turning it on in Settings');
   {
     server.reset();
-    const t = make(server, { choice: '' });
+    const t = make(server, { choice: 'off' });
     const r = await t.s.choose('on');
     check('choose("on") enrolls at once', r.ok && r.enrolled === true && server.count('/v1/enroll') === 1, r);
     const k = readKeyFile(t.keyFile);
@@ -235,16 +256,95 @@ const outboxFiles = (dir, ext) => { try { return fs.readdirSync(dir).filter((f) 
   {
     server.reset();
     server.enrollStatus = 429;
-    const t = make(server, { choice: '' });
+    server.enrollRetryAfter = '1';
+    const t = make(server, { choice: 'off' });
     const r = await t.s.choose('on');
     check('choose("on") -> on, not enrolled yet', r.ok && r.enrolled === false && t.choice() === 'on', r);
     t.s.add(dictation('waits for a key'));
     t.s.wake(0);
-    await sleep(400);
+    await until(() => server.count('/v1/enroll') >= 2);   // choose's, then the uploader's
+    await sleep(100);
     check('nothing uploaded without a key', server.count('/v1/upload') === 0 && outboxFiles(t.outbox, '.json').length === 1);
+    const tries = server.count('/v1/enroll');
     server.enrollStatus = 201;
     t.s.wake(0);
-    check('the server lets it in: enrolled and uploaded', await until(() => server.items.size === 1) && Boolean(readKeyFile(t.keyFile)));
+    await sleep(200);
+    check("a wake inside the server's Retry-After does not ask again", server.count('/v1/enroll') === tries);
+    await sleep(1000);
+    t.s.wake(0);
+    check('after it, the server lets it in: enrolled and uploaded', await until(() => server.items.size === 1) && Boolean(readKeyFile(t.keyFile)));
+  }
+
+  /* ------------------------------------------------- public builds' limits */
+
+  section('the daily limit (public builds)');
+  {
+    server.reset();
+    let clock = Date.parse('2026-10-17T10:00:00Z');
+    const home = path.join(tmp, 'daily');
+    const dayFile = path.join(home, 'share-day.json');
+    const t = make(server, { choice: 'on', daily: { items: 3, bytes: 1e9, file: dayFile }, now: () => clock });
+    const got = [1, 2, 3, 4].map((i) => t.s.add(dictation('day one, ' + i)));
+    check('3 a day: the fourth is not queued (add() just says false; nothing shown or thrown)', got.join() === 'true,true,true,false', got);
+    check('three uploaded', await until(() => server.items.size === 3));
+    await sleep(100);
+    check('the count is on disk', JSON.parse(fs.readFileSync(dayFile, 'utf8')).items === 3);
+    const again = make(server, { choice: 'on', daily: { items: 3, bytes: 1e9, file: dayFile }, now: () => clock });
+    check('a restart does not reset it', again.s.add(dictation('after a restart')) === false);
+    check('a flag on the one not queued asks, and a yes still sends it', (await again.s.flag({})).state === 'ask' &&
+      (await again.s.flag({ consent: true })).state === 'flagged' && await until(() => server.items.size === 4));
+    clock += 86400e3;
+    check('the next UTC day starts afresh', again.s.add(dictation('day two')) === true);
+    const bytesT = make(server, { choice: 'on', daily: { items: 100, bytes: 40000, file: path.join(home, 'bytes.json') } });
+    check('bytes count too: one 1-s dictation (32,044 B) fits 40 kB, a second does not',
+      bytesT.s.add(dictation('one second')) === true && bytesT.s.add(dictation('one more second')) === false);
+    for (const x of [t, again, bytesT]) await x.s.choose('off');   // nothing of theirs reaches later sections
+  }
+
+  section('the server is full or past a daily cap (public builds): silent, held, bounded');
+  {
+    server.reset();
+    server.uploadStatus = 507;
+    server.uploadRetryAfter = '1';
+    const t = make(server, { choice: 'on', fullHoldS: 2 });
+    await t.s.choose('on');
+    t.s.add(dictation('the bucket is full'));
+    check('507: refused once', await until(() => server.count('/v1/upload') === 1));
+    await sleep(300);
+    for (let i = 0; i < 5; i++) t.s.wake(0);   // a laptop woken and unlocked again and again
+    await sleep(700);
+    check('wakes inside the hold send nothing (fullHoldS beats a shorter Retry-After)', server.count('/v1/upload') === 1, server.count('/v1/upload'));
+    check('no error state: sharing still on, the item waits', t.s.status().state === 'on' && outboxFiles(t.outbox, '.json').length === 1);
+    check('only logged ("server storage full")', logs.some((l) => /server storage full/.test(l)));
+    server.uploadStatus = null;
+    await sleep(1200);
+    t.s.wake(0);
+    check('after the hold, it goes', await until(() => server.items.size === 1));
+
+    server.reset();
+    server.uploadStatus = 429;
+    server.uploadRetryAfter = '2';
+    const d = make(server, { choice: 'on' });
+    await d.s.choose('on');
+    d.s.add(dictation('over the per-install cap'));
+    await until(() => server.count('/v1/upload') === 1);
+    for (let i = 0; i < 5; i++) d.s.wake(0);
+    await sleep(800);
+    check('429 with Retry-After: no retry storm on wake', server.count('/v1/upload') === 1, server.count('/v1/upload'));
+
+    server.reset();
+    server.uploadStatus = 503;
+    const c = make(server, { choice: 'on', cap: 100000 });
+    await c.s.choose('on');
+    for (let i = 0; i < 6; i++) c.s.add(dictation('waiting ' + i));
+    await until(() => server.count('/v1/upload') >= 1);
+    await sleep(300);
+    const bytes = outboxFiles(c.outbox).reduce((n, f) => n + fs.statSync(path.join(c.outbox, f)).size, 0);
+    check('the outbox stays under its cap, oldest dropped (6 x 33 kB into 100 kB)', bytes <= 100000 && outboxFiles(c.outbox, '.json').length === 3, [bytes, outboxFiles(c.outbox, '.json').length]);
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'sharing.js'), 'utf8');
+    check("public builds' defaults: 50 a day, 20 MB a day, 100 MB on disk, 6 h after a 507",
+      /const DAILY_ITEMS = 50;/.test(src) && /const DAILY_BYTES = 20e6;/.test(src) && /const OUTBOX_CAP_PUBLIC = 100e6;/.test(src) && /const FULL_HOLD_S = 6 \* 3600;/.test(src));
+    for (const x of [t, d, c]) await x.s.choose('off');
   }
 
   /* ---------------------------------------------------------------- flag */
@@ -368,7 +468,7 @@ const outboxFiles = (dir, ext) => { try { return fs.readdirSync(dir).filter((f) 
     check('a server error: it says so and keeps the key', r3.ok === false && r3.reason === 'server' && fs.existsSync(off.keyFile), r3);
     server.deleteStatus = null;
     check('and deleting again works', (await off.s.deleteShared()).ok === true && !fs.existsSync(off.keyFile));
-    check('with no key at all, delete only empties the outbox', (await make(server, { choice: '' }).s.deleteShared()).ok === true);
+    check('with no key at all, delete only empties the outbox', (await make(server, { choice: 'on' }).s.deleteShared()).ok === true);
   }
 
   /* ---------------------------------------------------------- a refused key */
@@ -407,7 +507,7 @@ const outboxFiles = (dir, ext) => { try { return fs.readdirSync(dir).filter((f) 
     server.testerKeys.set(testerKey, 'tester_a');
     let paused = false;
     const t = make(server, { tester: { tester: 'tester_a', endpoint: server.endpoint, key: testerKey, with: 'Mehmet' }, choice: '', paused: () => paused });
-    check('mode tester, no consent screen', t.s.mode === 'tester' && t.s.needsConsent() === false);
+    check('mode tester, whatever the public choice says', t.s.mode === 'tester');
     const st = t.s.status();
     check('status as before: tester, with, on', st.mode === 'tester' && st.tester === 'tester_a' && st.with === 'Mehmet' && st.state === 'on', st);
     t.s.add(dictation('tester dictation'));
@@ -424,6 +524,9 @@ const outboxFiles = (dir, ext) => { try { return fs.readdirSync(dir).filter((f) 
     await t.s.flag({ consent: true, note: 'fix' });
     t.s.wake(0);
     check('yes: that one goes, even while paused', await until(() => server.items.size === 2) && [...server.items.values()].some((i) => i.meta.consent === 'flag'));
+    paused = false;
+    const many = Array.from({ length: 60 }, (_, i) => t.s.add(dictation('tester ' + i)));
+    check('no daily limit for a tester build (60 in a row queued)', many.every(Boolean));
   }
 
   /* ------------------------------------------------------------ collect API */
