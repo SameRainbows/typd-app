@@ -314,4 +314,7 @@ function settle(focus) {
   stop();
 }
 
-module.exports = { watch, stop, settle, findCorrection, similarity };
+// soundKey, similarity and isCommon are also pipeline/vocab.js's: one notion of "heard alike".
+const isCommon = (word) => common().has(String(word).toLowerCase());
+
+module.exports = { watch, stop, settle, findCorrection, similarity, soundKey, isCommon };

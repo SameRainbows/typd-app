@@ -332,6 +332,74 @@ select option { background: var(--card); color: var(--text); }
 .prose code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12px; background: var(--chip); padding: 1px 5px; border-radius: 4px; }
 .version { margin-top: 26px; }
 
+/* ------------------------------------------------------------ model rows */
+
+.model { align-items: flex-start; flex-wrap: wrap; }
+.model .label { flex: 1 1 300px; }
+.model select { flex: none; min-width: 150px; margin-top: 1px; }
+.model .model-now { color: var(--faint); font-size: 12px; margin-top: 4px; }
+.model-ask {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  margin-top: 10px; padding: 10px 12px; border-radius: 9px; background: var(--chip); font-size: 12.5px;
+}
+.model-ask-btns { display: flex; gap: 6px; }
+
+/* ------------------------------------------------------------ walkthrough */
+
+/* Five short steps over the whole window (home.js). The top strip still moves the window. */
+.walk {
+  position: fixed; inset: 0; z-index: 20;
+  display: flex; align-items: center; justify-content: center;
+  padding: calc(var(--bar-h) + 4px) 24px 24px;
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  backdrop-filter: blur(6px);
+  animation: fade 200ms ease;
+}
+.walk::before { content: ""; position: fixed; top: 0; left: 0; right: 0; height: var(--bar-h); -webkit-app-region: drag; }
+@keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+.walk-card {
+  width: min(540px, 100%); max-height: 100%; overflow-y: auto;
+  display: flex; flex-direction: column;
+  padding: 18px 26px 18px; border-radius: 16px;
+  background: var(--card); border: 1px solid var(--line); box-shadow: 0 12px 40px rgba(0, 0, 0, 0.12);
+  animation: rise 240ms var(--ease);
+  -webkit-app-region: no-drag;
+  outline: none;
+}
+.walk-head { display: flex; align-items: center; justify-content: space-between; }
+.walk-count { font-size: 11.5px; font-weight: 600; color: var(--faint); text-transform: uppercase; letter-spacing: 0.07em; font-variant-numeric: tabular-nums; }
+.walk-art { display: flex; justify-content: center; margin: 14px 0 10px; }
+.walk-art svg { width: 160px; height: 64px; display: none; }
+.walk[data-step="1"] [data-art="1"], .walk[data-step="2"] [data-art="2"], .walk[data-step="3"] [data-art="3"],
+.walk[data-step="4"] [data-art="4"], .walk[data-step="5"] [data-art="5"] { display: block; }
+.walk-art .ink { fill: var(--ink); }
+.walk-art .on { fill: var(--ink-on); }
+.walk-art .red { fill: var(--danger); }
+.walk-art .chip { fill: var(--chip-hover); }
+.walk-art .mark-sel { fill: var(--chip-hover); stroke: var(--line-firm); }
+.walk-art .field { fill: var(--card); stroke: var(--line-firm); }
+.walk-art .stroke { fill: none; stroke: var(--ink); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.walk-art .thick { stroke-width: 2.6; }
+.walk h1 { margin: 4px 0 8px; text-align: center; }
+.walk-body { color: var(--dim); text-align: center; line-height: 26px; }
+.walk-body .keys { margin: 0 2px; vertical-align: baseline; }
+.walk-try { margin-top: 14px; }
+.walk-try textarea {
+  width: 100%; resize: none; padding: 10px 12px; border-radius: 9px;
+  border: 1px solid var(--line-firm); background: var(--bg); color: var(--text);
+  font: 13.5px/1.5 var(--font-ui); outline: none;
+}
+.walk-try textarea:focus { border-color: var(--ink); }
+.walk-try textarea::placeholder { color: var(--faint); }
+.walk-hint { margin-top: 6px; font-size: 12px; color: var(--faint); min-height: 18px; }
+.walk-hint.ok-line { font-weight: 500; }
+.walk-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 18px; }
+.walk-dots { display: flex; gap: 6px; }
+.walk-dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--chip-hover); }
+.walk-dots i[data-on="true"] { background: var(--ink); }
+.walk-nav { display: flex; gap: 8px; }
+.walk-nav .btn { height: 30px; padding: 0 16px; }
+
 /* ------------------------------------------------------------------ toast */
 
 .toast {

@@ -1,5 +1,14 @@
 # What's new
 
+## 0.2.3 · October 2026
+
+- **Long dictations finish much sooner.** Typd now writes a long dictation while you are still talking, so the text arrives a second or two after you stop instead of many seconds later.
+- **Cleaner joins in long dictations.** No doubled or invented words where one piece meets the next, and full stops and capitals where they belong.
+- **Revising never pastes a broken result.** When nothing changed, when your instruction came back, or when part of your text went missing, your selection stays and Typd says so. You can now revise up to about 1,000 words at once.
+- **The right model for your computer.** Typd picks the full model or a lighter, faster one for your hardware. Change it under **Model** in Settings.
+- **Asks before big downloads.** On a metered connection, Typd asks before downloading a large new model. **Ask before downloading new models** in Settings makes it ask every time.
+- **A short walkthrough** on first start shows a dictation, a revision and **That was wrong**. **Show the walkthrough** in Settings opens it again.
+
 ## 0.2.2 · October 2026
 
 - **Mac permissions stay on.** Typd is now signed with its own certificate, so macOS keeps Accessibility, Microphone and Input Monitoring on when Typd updates itself. After this one update you may need to switch them on once more; from then on they stay.

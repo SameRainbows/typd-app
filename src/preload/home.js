@@ -47,6 +47,17 @@ contextBridge.exposeInMainWorld('typdHome', {
     cancel: call('hotkey:cancel')
   },
 
+  model: {
+    get: call('model:get'),
+    now: call('model:now'),
+    later: call('model:later')
+  },
+
+  walkthrough: {
+    practice: call('walkthrough:practice'),
+    done: call('walkthrough:done')
+  },
+
   news: call('news:get'),
   action: call('app:action'),
   pane: call('app:pane'),

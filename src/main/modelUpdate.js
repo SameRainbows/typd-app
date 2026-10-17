@@ -48,6 +48,21 @@
  * crashed the app counts the same: an unconfirmed current.json whose model fails at the next
  * launch is reverted. Too little disk (1.2 x what is left to download) skips the update until
  * the next check. A 429 from the server is retried after its Retry-After, never sooner.
+ *
+ * Variants. The manifest's top level is the full model (the 1.7B), what every Typd before variants
+ * follows; `variants` may add others under the same signature, e.g.
+ *   {version, files, model_json, ..., seq, variants: {light: {version, files, model_json, min_app, notes}}}
+ * Each check asks `variant()` which one this machine wants (hardware.js picks 'full' or 'light';
+ * Settings can pin one) and follows that entry, or the top level when the manifest has no such
+ * variant. Older Typd ignore the field: they read the top level as before.
+ *
+ * Asking first. A download over ASK_ABOVE_BYTES (counting only what is not already here: a partial
+ * download's bytes and files copied from disk are not counted) starts by itself on an unmetered
+ * connection; on a metered one, or one netcost.js cannot read, the updater stops at state 'ask' and
+ * waits for approve() ("Update now", tray or Settings) or later() ("Later": asked again after
+ * LATER_MS). With `askFirst()` (Settings: "Ask before downloading new models") every download asks.
+ * An approval holds for that version (state.json "approved"), so a download it started resumes by
+ * itself.
  */
 
 const fs = require('fs');
@@ -70,6 +85,9 @@ const RESERVED = ['manifest.json', 'model.json'];
 const ENDPOINT = 'https://typd-collect.mehmetdedeler.com';   // as sharing.js and appUpdate.js
 const SIG_PREFIX = 'typd-model-manifest/1\n';                 // what the signature covers, before the text
 const KID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const VARIANT_RE = /^[a-z][a-z0-9_-]{0,31}$/;
+const ASK_ABOVE_BYTES = 300e6;           // bigger downloads ask first on a metered connection
+const LATER_MS = 24 * 3600e3;            // "Later": asked again after a day
 
 /* ------------------------------------------------------------ on-disk layout */
 
@@ -145,6 +163,30 @@ function checkManifest(m) {
   if (m.min_app !== undefined && (typeof m.min_app !== 'string' || !/^\d+\.\d+\.\d+$/.test(m.min_app))) return 'bad min_app';
   if (m.seq !== undefined && (!Number.isSafeInteger(m.seq) || m.seq < 1)) return 'bad seq';
   return null;
+}
+
+/**
+ * The entry of `m` this machine follows: {entry, variant}. `want` is a variant name ('light'); the
+ * top level is 'full', and also the answer when the manifest has no such variant or its entry is
+ * not one this app can follow. A variant entry has its own version, files, model_json and notes, and
+ * its own min_app (else the top level's).
+ */
+function selectVariant(m, want) {
+  const vs = m && m.variants;
+  if (want && want !== 'full' && VARIANT_RE.test(want) && vs && typeof vs === 'object' && !Array.isArray(vs) && Object.prototype.hasOwnProperty.call(vs, want)) {
+    const v = vs[want];
+    if (v && typeof v === 'object' && !Array.isArray(v)) {
+      const entry = { version: v.version, files: v.files, model_json: v.model_json, min_app: v.min_app !== undefined ? v.min_app : m.min_app, notes: v.notes };
+      if (!checkManifest(entry)) return { entry, variant: want };
+    }
+  }
+  return { entry: m, variant: 'full' };
+}
+
+/** 1,107,404,576 -> '1.1 GB'; 611,093,000 -> '611 MB'. */
+function fmtSize(bytes) {
+  const n = Number(bytes) || 0;
+  return n >= 1e9 ? (n / 1e9).toFixed(1) + ' GB' : Math.max(1, Math.round(n / 1e6)) + ' MB';
 }
 
 /**
@@ -248,16 +290,27 @@ class Retry extends Error {
  *                 TYPD_NO_APP_UPDATE=1. Never sent with a file download.
  *   keys          {id: PEM}: the keys a manifest may be signed with (modelManifestKey.js; tests
  *                 pass a throwaway one)
+ *   variant       () => 'full'|'light'|... (or a Promise of it): the manifest entry to follow
+ *                 (modelChoice.js: the hardware's pick, or the one Settings pins); default 'full'
+ *   askFirst      () => boolean: ask before every download ("Ask before downloading new models")
+ *   networkCost   () => Promise<'metered'|'unmetered'|'unknown'> (netcost.js), asked only for a
+ *                 download over askAboveBytes
+ *   now           () => ms: the clock for "Later" (tests move it)
  */
 function createUpdater({
   config, modelsDir, bundledDir, appVersion = '0.0.0', fetch = globalThis.fetch, busy = () => false,
   switchModel = async () => {}, log = () => {}, online = () => true, statfs = (p) => fsp.statfs(p),
   rate = RATE, idleMs = IDLE_MS, firstCheckMs = FIRST_CHECK_MS, everyMs = CHECK_EVERY_MS, stats = () => ({}),
-  keys = require('./modelManifestKey').keys
+  keys = require('./modelManifestKey').keys,
+  variant = () => 'full', askFirst = () => false, networkCost = async () => 'unknown',
+  askAboveBytes = ASK_ABOVE_BYTES, laterMs = LATER_MS, now = () => Date.now()
 }) {
   const stateFile = path.join(modelsDir, 'state.json');
   const dirOf = (v) => path.join(modelsDir, v);
-  let state = 'idle';             // what line() says: idle, current, downloading, ready, failed, app, space, stopped, none, refused
+  let state = 'idle';             // what line() says: idle, current, downloading, ready, failed, app, space, stopped, none, refused, ask, later
+  let asking = null;              // {version, variant, bytes, why}: a download waiting for "Update now" (state ask or later)
+  let chosen = { want: 'full', got: null };   // the variant asked for, and the entry the last manifest gave
+  let started = false;
   let progress = { done: 0, total: 0 };
   let target = null;              // the version being fetched or switched to
   let running = null;
@@ -278,7 +331,12 @@ function createUpdater({
     lastLine = l;
     for (const fn of listeners) { try { fn(l); } catch { /* a listener's problem */ } }
   }
-  function set(s, extra = {}) { state = s; changed(); return { state: s, ...extra }; }
+  function set(s, extra = {}) {
+    state = s;
+    if (s !== 'ask' && s !== 'later') asking = null;
+    changed();
+    return { state: s, ...extra };
+  }
   // Bytes arrive in small chunks; the tray line only changes with the whole percent.
   let lastPct = -1;
   function progressed() {
@@ -440,6 +498,42 @@ function createUpdater({
     return null;
   }
 
+  /** Bytes still to download for `m`: what a partial download already holds and files copied from disk not counted. */
+  async function bytesToFetch(m) {
+    const partial = dirOf(m.version) + '.partial';
+    let need = 0;
+    for (const f of m.files) {
+      const have = await fsp.stat(path.join(partial, f.name)).then((st) => Math.min(st.size, f.size), () => 0);
+      if (have === 0 && (await localCopy(f))) continue;
+      need += f.size - have;
+    }
+    return need;
+  }
+
+  /**
+   * Before a download of `need` bytes of `m` (the `got` variant): null to go ahead, or the result of
+   * stopping at 'ask' (or 'later', inside a "Later" day). Approved versions go ahead (state.json).
+   */
+  async function askBefore(m, got, need) {
+    if (need <= 0) return null;
+    const s = readState();
+    if (s.approved && s.approved.version === m.version) return null;
+    let always = false;
+    try { always = Boolean(askFirst()); } catch { always = false; }
+    let why = 'setting';
+    if (!always) {
+      if (need <= askAboveBytes) return null;
+      try { why = await networkCost(); } catch { why = 'unknown'; }
+      if (why === 'unmetered') return null;
+    }
+    const until = s.later && s.later.version === m.version ? Number(s.later.until) || 0 : 0;
+    const left = until - now();
+    log(m.version, 'needs', fmtSize(need), '-', always ? 'asking first (the setting is on)' : 'the connection is ' + why + '; asking first', left > 0 ? '(asked to wait until ' + new Date(until).toISOString() + ')' : '');
+    asking = { version: m.version, variant: got, bytes: need, why };
+    if (left > 0) return { ...set('later'), next: Math.min(everyMs, left + 1000) };
+    return set('ask');
+  }
+
   /** Every file of `m` into <version>.partial/, checked; then the folder takes the version's name. */
   async function fetchVersion(m, tag) {
     const partial = dirOf(m.version) + '.partial';
@@ -594,35 +688,44 @@ function createUpdater({
       log('manifest refused: seq', m.seq, 'is older than', s.seq, 'already seen');
       return set('refused', { why: 'an older manifest than one already seen' });
     }
+    // The entry this machine follows: the variant it wants, else the top level (the full model).
+    let want = 'full';
+    try { want = String((await variant()) || 'full'); } catch { want = 'full'; }
+    const { entry: e, variant: got } = selectVariant(m, want);
+    if (chosen.want !== want || chosen.got !== got) { chosen = { want, got }; log('variant', want, want === got ? '' : '(not published: following ' + got + ')'); }
+
     let dirty = false;
     if (s.seq !== m.seq) { s.seq = m.seq; dirty = true; }
-    if (s.bad && s.bad.manifest === tag) { if (dirty) await writeState(s); return set('failed'); }
-    if (s.bad) { delete s.bad; dirty = true; }
+    // A version that failed is not tried again until the manifest changes; another variant of the same manifest may be.
+    if (s.bad && s.bad.manifest === tag && (s.bad.version == null || s.bad.version === e.version)) { if (dirty) await writeState(s); return set('failed'); }
+    if (s.bad && s.bad.manifest !== tag) { delete s.bad; dirty = true; }
     if (dirty) await writeState(s);
-    if (older(appVersion, m.min_app)) { log(m.version, 'needs Typd', m.min_app); return set('app'); }
+    if (older(appVersion, e.min_app)) { log(e.version, 'needs Typd', e.min_app); return set('app'); }
 
     const cur = readCurrent(modelsDir);
     const active = activeModel(modelsDir);
-    if (active && active.version === m.version) {
+    if (active && active.version === e.version) {
       if (!cur.confirmed) return set('current');   // its first warm start decides (warmed)
-      await tidy(m.version);
+      await tidy(e.version);
       return set('current');
     }
-    if (await bundledIs(m)) {
+    if (await bundledIs(e)) {
       if (!active) {
         target = null;
-        if (!s.bundled || s.bundled.version !== m.version) { const t = readState(); t.bundled = { version: m.version, model: m.model_json.model }; await writeState(t); }
+        if (!s.bundled || s.bundled.version !== e.version) { const t = readState(); t.bundled = { version: e.version, model: e.model_json.model }; await writeState(t); }
         await tidy(null);
         return set('current');
       }
-      return activate(null, tag, m.version);   // an app update brought it: no download
+      return activate(null, tag, e.version);   // an app update brought it, or back to the bundled model: no download
     }
-    target = m.version;
-    if (!isComplete(dirOf(m.version))) {
+    target = e.version;
+    if (!isComplete(dirOf(e.version))) {
       await tidy(active && active.version);
-      await fetchVersion(m, tag);
+      const waiting = await askBefore(e, got, await bytesToFetch(e));
+      if (waiting) return waiting;
+      await fetchVersion(e, tag);
     }
-    return activate(m.version, tag);
+    return activate(e.version, tag);
   }
 
   /** One check, never two at once. Resolves {state, next}: when the next check is due. */
@@ -632,7 +735,7 @@ function createUpdater({
       try {
         const r = await run();
         failures = 0;
-        return { ...r, next: everyMs };
+        return { next: everyMs, ...r };
       } catch (err) {
         if (revoked) { log('the server refused the key; updates stopped until restart'); return { ...set('stopped'), next: null }; }
         if (!(err instanceof Retry)) log('update error:', (err && err.stack) || err);
@@ -670,21 +773,53 @@ function createUpdater({
       case 'failed': return `Model ${label} · update failed`;
       case 'app': return `Model ${label} · update needs a newer Typd`;
       case 'space': return `Model ${label} · update needs more disk space`;
+      case 'ask': return `Model ${label} · new model available (${fmtSize(asking && asking.bytes)})`;
+      case 'later': return `Model ${label} · new model waiting (${fmtSize(asking && asking.bytes)})`;
       default: return `Model ${label}`;
     }
+  }
+
+  /** "Update now": this version may download, now and whenever its download resumes. */
+  async function approve() {
+    if (!asking) return false;
+    const s = readState();
+    s.approved = { version: asking.version, at: new Date(now()).toISOString() };
+    delete s.later;
+    await writeState(s);
+    log('approved:', asking.version, fmtSize(asking.bytes));
+    if (started) schedule(0); else changed();
+    return true;
+  }
+
+  /** "Later": ask again after laterMs (the scheduled checks keep running; none asks before then). */
+  async function later() {
+    if (!asking) return false;
+    const s = readState();
+    s.later = { version: asking.version, until: now() + laterMs };
+    await writeState(s);
+    log('later:', asking.version, 'asked again after', new Date(s.later.until).toISOString());
+    set('later');
+    if (started && !running) schedule(Math.min(everyMs, laterMs + 1000));
+    return true;
   }
 
   return {
     check,
     warmed,
     line,
+    approve,
+    later,
     onChange: (fn) => listeners.push(fn),
     /** Launch: first check after FIRST_CHECK_MS, then every 6 hours. */
-    start() { if (config) schedule(firstCheckMs); },
-    /** Back from sleep or offline: check soon (never before a 429's Retry-After). */
+    start() { if (config) { started = true; schedule(firstCheckMs); } },
+    /** Back from sleep or offline, or the model choice changed: check soon (never before a 429's Retry-After). */
     wake(ms = firstCheckMs) { if (config && !running) schedule(ms); },
     stop() { clearTimeout(timer); timer = null; },
-    get state() { return state; }
+    get state() { return state; },
+    /** A download waiting for "Update now": {version, variant, bytes, size, why, later}, else null. */
+    get pending() { return asking && (state === 'ask' || state === 'later') ? { ...asking, size: fmtSize(asking.bytes), later: state === 'later' } : null; },
+    /** The variant the last check wanted, and the one the manifest gave ({want, got}). */
+    get chosen() { return { ...chosen }; }
   };
 }
 
@@ -725,8 +860,11 @@ function findConfig({ userData, packaged, resourcesPath, repoDir = path.join(__d
  *   switchModel   () => Promise: restart the server on the model current.json names
  *   onWarm        local.onWarm: subscribes to every warm start's outcome
  *   changed       (line) => void: the tray line changed
+ *   variant       () => Promise<'full'|'light'>: which entry to follow (modelChoice.js)
+ *   askFirst      () => boolean: Settings' "Ask before downloading new models"
+ *   networkCost   () => Promise<'metered'|'unmetered'|'unknown'> (netcost.js)
  */
-function start({ bundledDir, busy, switchModel, onWarm, changed }) {
+function start({ bundledDir, busy, switchModel, onWarm, changed, variant, askFirst, networkCost }) {
   if (main || !electron || process.env.TYPD_MODEL_DIR) return main;
   if (process.env.TYPD_NO_MODEL_UPDATE === '1') { debug('model updates off: TYPD_NO_MODEL_UPDATE=1'); return main; }
   const { app, powerMonitor, net } = electron;
@@ -742,7 +880,10 @@ function start({ bundledDir, busy, switchModel, onWarm, changed }) {
     online: () => !net || typeof net.isOnline !== 'function' || net.isOnline(),
     // Packaged builds only, and never with TYPD_NO_APP_UPDATE=1 (versionStats.js decides): the
     // developer's own machine runs from source and is never counted.
-    stats: () => require('./versionStats').statsHeaders()
+    stats: () => require('./versionStats').statsHeaders(),
+    ...(variant ? { variant } : {}),
+    ...(askFirst ? { askFirst } : {}),
+    ...(networkCost ? { networkCost } : {})
   });
   if (onWarm) onWarm((r) => main.warmed(r));
   if (changed) main.onChange(changed);
@@ -759,4 +900,20 @@ function line() {
   return main ? main.line() : null;
 }
 
-module.exports = { start, line, createUpdater, activeModel, activeVersion, versionOf, readCurrent, isComplete, checkManifest, checkSignature, labelOf, older, sha256File, readConfig, findConfig, ENDPOINT, SIG_PREFIX };
+/** Whether this build follows model updates at all (so the model choice means something). */
+const following = () => Boolean(main && main.line() !== null);
+/** A download waiting for "Update now", or null. */
+const pending = () => (main ? main.pending : null);
+/** "Update now" / "Later" (the tray, Settings). */
+const approve = () => (main ? main.approve() : Promise.resolve(false));
+const later = () => (main ? main.later() : Promise.resolve(false));
+/** The model choice changed in Settings: check again soon. */
+const recheck = (ms = 1500) => { if (main) main.wake(ms); };
+/** {want, got} from the last check. */
+const chosen = () => (main ? main.chosen : null);
+
+module.exports = {
+  start, line, following, pending, approve, later, recheck, chosen,
+  createUpdater, activeModel, activeVersion, versionOf, readCurrent, isComplete, checkManifest, checkSignature, selectVariant, fmtSize, labelOf, older, sha256File, readConfig, findConfig,
+  ENDPOINT, SIG_PREFIX, ASK_ABOVE_BYTES, LATER_MS
+};

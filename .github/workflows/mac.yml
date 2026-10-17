@@ -1,0 +1,352 @@
+# Build Typd for macOS: the official build, signed with Typd's own certificate.
+#
+# Only a maintainer can start it (Actions > macOS > Run workflow, or `gh workflow run mac.yml`).
+# It never runs on a push or a pull request, so code from a fork never runs with its secrets.
+#
+# What it makes (never a tester build: this repository holds no tester key):
+#   Typd-<version>-mac-<arch>.dmg           the app with the current dictation model inside, checked
+#                                            by scripts/public-build.js verify (no key file, nothing
+#                                            private in app.asar, the model in place), and its
+#                                            .public.json record;
+#   Typd-<version>-update-mac-<arch>.zip    the app-update package (scripts/app-update-package.js:
+#                                            no model, carries nothing) and its .zip.json record;
+#   SHA256SUMS.
+# They are attached to a DRAFT release named build-<run id>. A draft and its files are visible only
+# to the repository's maintainers. Nothing is uploaded as a workflow artifact: a public
+# repository's artifacts can be downloaded by anyone signed in to GitHub. An app update goes out
+# only when a maintainer signs its manifest with a key that never leaves the maintainer's computer
+# (README "App updates"); this workflow cannot publish one.
+#
+# The model is not in git. scripts/fetch-model.js downloads the live one through the public routes
+# a packaged Typd uses, after checking the manifest's Ed25519 signature with the app's own key
+# (src/main/modelManifestKey.js) and each file's sha256. MODEL_LICENSE.txt covers it.
+#
+# Code signing (docs/MAC.md "Code signing"): every app is signed with Typd's own self-signed
+# certificate (secrets MAC_CODESIGN_P12 and MAC_CODESIGN_P12_PASSWORD, imported into a keychain of
+# its own by scripts/mac-signing-import.sh and deleted at the end; the certificate's public
+# fingerprint is in scripts/mac-signing.json). So every build has the same designated requirement,
+# and macOS keeps Typd's Accessibility, Microphone and Input Monitoring switches across updates.
+# It is not an Apple Developer ID: Gatekeeper still asks on a downloaded copy's first open.
+#
+# The token is read-only (the repository's default). This job may write contents only to create
+# the draft release, and only the release step gets the token. No action from outside this
+# repository is used (the repository allows none): the checkout is plain git (the repository is
+# public, so it needs no token), and Node.js comes from nodejs.org, checked against a pinned sha256.
+
+name: macOS
+
+on:
+  workflow_dispatch:
+    inputs:
+      arch:
+        description: Which Macs to build for
+        type: choice
+        options: [both, arm64, x64]
+        default: both
+
+permissions:
+  contents: read
+
+# A build never cancels another one.
+concurrency:
+  group: mac-${{ github.run_id }}
+  cancel-in-progress: false
+
+env:
+  ARCHS: ${{ inputs.arch == 'both' && 'arm64 x64' || inputs.arch || 'arm64 x64' }}
+
+jobs:
+  build:
+    if: github.repository == 'SameRainbows/typd-app'
+    runs-on: macos-14
+    timeout-minutes: 120
+    permissions:
+      contents: write   # only for the draft release (the last steps); no other step gets the token
+    steps:
+      - name: Check out this commit (plain git, no token)
+        run: |
+          set -e
+          git init -q .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git fetch -q --depth 1 origin "$GITHUB_SHA"
+          git checkout -q --detach FETCH_HEAD
+          git log -1 --format='%H %s'
+
+      - name: Node.js 24 (nodejs.org, sha256 pinned)
+        env:
+          NODE_VERSION: v24.22.0
+          NODE_SHA256: 6a9724d9b50a5f22b4816cded441b5a8d9ddae546191a5e5b7efa5a5e2ee26d5   # node-v24.22.0-darwin-arm64.tar.gz
+        run: |
+          set -e
+          test "$(uname -m)" = arm64
+          f="node-$NODE_VERSION-darwin-arm64.tar.gz"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$f" "https://nodejs.org/dist/$NODE_VERSION/$f"
+          echo "$NODE_SHA256  $RUNNER_TEMP/$f" | shasum -a 256 -c -
+          tar -xzf "$RUNNER_TEMP/$f" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/node-$NODE_VERSION-darwin-arm64/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/node-$NODE_VERSION-darwin-arm64/bin/node" --version
+
+      - name: No tester build, ever
+        run: |
+          set -e
+          test -z "${TYPD_TESTER_CONFIG:-}${TYPD_TESTER_DEV:-}${TYPD_TESTER_JSON:-}"
+          if find . -path ./node_modules -prune -o \( -name 'tester.json' -o -name 'tester.*.json' -o -name 'model-updates.json' \) -print | grep .; then
+            echo "a tester or key file is in the checkout"; exit 1
+          fi
+          echo "no tester variables, no tester or key files"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Bench, model updates and the self-test's decisions
+        run: node bench/updates.js
+
+      - name: Bench, wiring and the hotkey (a key press never takes Typd down)
+        run: node bench/wiring.js && node bench/hotkeys.js
+
+      - name: Download the dictation model (signed manifest, sha256 of every file)
+        run: |
+          set -o pipefail
+          node scripts/fetch-model.js --accept-license | tee fetch-model.log
+          ver=$(sed -n 's/^Model \([A-Za-z0-9._-]*\): .*/\1/p' fetch-model.log | head -n 1)
+          test -n "$ver"
+          echo "MODEL_VERSION=$ver" >> "$GITHUB_ENV"
+          cat models/typd-dictate/model.json
+          ls -la models/typd-dictate
+
+      - name: Fetch llama.cpp for macOS (b11351)
+        run: node scripts/fetch-llama-mac.js $ARCHS
+
+      - name: Build uiohook-napi with its start handshake fixed
+        # The key's event tap. uiohook-napi's start could hang Typd's main thread for good at
+        # launch (scripts/build-uiohook-mac.js says how); this builds it from source, fixed, for
+        # each arch. node-gyp-build loads it in place of the shipped prebuild.
+        run: node scripts/build-uiohook-mac.js $ARCHS
+
+      - name: Typd's signing certificate, in a keychain of its own
+        # scripts/after-pack.js and scripts/app-update-package.js sign with it (TYPD_MAC_SIGN_*).
+        env:
+          MAC_CODESIGN_P12: ${{ secrets.MAC_CODESIGN_P12 }}
+          MAC_CODESIGN_P12_PASSWORD: ${{ secrets.MAC_CODESIGN_P12_PASSWORD }}
+        run: bash scripts/mac-signing-import.sh
+
+      - name: Package (signed with Typd's certificate)
+        run: |
+          # Naming the target makes the arch flags replace build.mac.target's arch list
+          # (electron-builder ignores CLI archs when only the config names targets).
+          flags=""
+          for a in $ARCHS; do flags="$flags --$a"; done
+          unset TYPD_TESTER_CONFIG
+          npx electron-builder --mac dmg $flags --publish never
+          ls -la dist
+
+      - name: Inspect the app
+        run: |
+          set -e
+          for a in $ARCHS; do
+            app=$( [ "$a" = arm64 ] && echo "$PWD/dist/mac-arm64/Typd.app" || echo "$PWD/dist/mac/Typd.app" )
+            echo "== $app"
+            codesign --verify --deep --strict --verbose=2 "$app"
+            codesign -dv "$app" 2>&1 | grep -E 'Signature|Identifier|Format|Authority|TeamIdentifier'
+            # One code identity for every build: ai.typd.app and Typd's certificate (scripts/mac-signing.json).
+            dr=$(codesign -d -r- "$app" 2>&1 | sed -n 's/^designated => //p')
+            echo "designated requirement: $dr"
+            echo "$dr" | grep -q 'identifier "ai.typd.app"'
+            echo "$dr" | grep -qi "$(node -p "require('./scripts/mac-signing.json').sha1")"
+            echo "- $a: \`$dr\`" >> "$GITHUB_STEP_SUMMARY"
+            # Gatekeeper: not notarized and not Developer ID, so a downloaded copy's first open is
+            # refused (docs/MAC.md). Printed, not a gate.
+            spctl --assess --type execute -vv "$app" 2>&1 || true
+            plutil -p "$app/Contents/Info.plist" | grep -E 'LSUIElement|NSMicrophoneUsageDescription|NSAppleEventsUsageDescription|LSMinimumSystemVersion|CFBundleIdentifier'
+            test "$(plutil -extract LSUIElement raw -o - "$app/Contents/Info.plist")" = true
+            ls -la "$app/Contents/Resources/llama" "$app/Contents/Resources/models/typd-dictate"
+            file "$app/Contents/Resources/llama/llama-server"
+            test -x "$app/Contents/Resources/llama/llama-server"
+            if [ -e "$app/Contents/Resources/tester.json" ]; then echo "the app must not contain tester.json"; exit 1; fi
+            if find "$app/Contents/Resources/app.asar.unpacked" -path '*sherpa*' | grep -q .; then echo "sherpa-onnx should not be packaged"; exit 1; fi
+            # The keyboard hook's native module loads from the signed bundle (no hook is started).
+            ELECTRON_RUN_AS_NODE=1 "$app/Contents/MacOS/Typd" -e "require(process.argv[1]); console.log('uiohook-napi loads')" "$app/Contents/Resources/app.asar/node_modules/uiohook-napi"
+            # ... and it is the fixed build (scripts/build-uiohook-mac.js), not the prebuild.
+            ELECTRON_RUN_AS_NODE=1 "$app/Contents/MacOS/Typd" -e "const p = require(process.argv[1]).resolve(process.argv[2]); console.log('uiohook-napi from', p); if (!/build\/Release\/uiohook_napi\.node$/.test(p)) process.exit(1)" "$app/Contents/Resources/app.asar/node_modules/node-gyp-build" "$app/Contents/Resources/app.asar/node_modules/uiohook-napi"
+            lipo -archs "$app/Contents/Resources/app.asar.unpacked/node_modules/uiohook-napi/build/Release/uiohook_napi.node"
+          done
+
+      - name: Smoke test, CPU (arm64)
+        if: contains(env.ARCHS, 'arm64')
+        run: |
+          R=dist/mac-arm64/Typd.app/Contents/Resources
+          node scripts/smoke-llama.js --server $R/llama/llama-server --models $R/models/typd-dictate --gpu-layers 0 --port 8790
+
+      - name: Smoke test, Metal (arm64)
+        if: contains(env.ARCHS, 'arm64')
+        # The runner is a VM whose paravirtual GPU is not a real Mac's; a Metal failure here is
+        # reported but does not fail the build. The CPU test above is the gate.
+        continue-on-error: true
+        run: |
+          R=dist/mac-arm64/Typd.app/Contents/Resources
+          node scripts/smoke-llama.js --server $R/llama/llama-server --models $R/models/typd-dictate --gpu-layers 99 --port 8791
+
+      - name: Smoke test, as the app starts (arm64)
+        if: contains(env.ARCHS, 'arm64')
+        # No -ngl: the app's own path. Its self-test transcribes the fixture on Metal first, and on
+        # wrong text restarts on the CPU and tests again. A gate: this is what a Mac user's Typd does.
+        run: |
+          R=dist/mac-arm64/Typd.app/Contents/Resources
+          node scripts/smoke-llama.js --server $R/llama/llama-server --models $R/models/typd-dictate --port 8793 2>&1 | tee smoke-default.log
+          grep -E 'self-test|path chosen' smoke-default.log
+
+      - name: Smoke test, CPU (x64 under Rosetta)
+        if: contains(env.ARCHS, 'x64')
+        continue-on-error: true
+        run: |
+          R=dist/mac/Typd.app/Contents/Resources
+          node scripts/smoke-llama.js --server $R/llama/llama-server --models $R/models/typd-dictate --gpu-layers 0 --port 8792
+
+      - name: App-update packages (README "App updates")
+        # The app without its model, signed again with Typd's certificate (the same designated
+        # requirement as the dmg's app; the record says so), carrying nothing, with the record
+        # publish_app_update.py reads.
+        run: |
+          set -e
+          for a in $ARCHS; do
+            app=$( [ "$a" = arm64 ] && echo dist/mac-arm64/Typd.app || echo dist/mac/Typd.app )
+            node scripts/app-update-package.js mac --app "$app" --arch "$a" --out dist/update
+          done
+          ls -la dist/update
+          node -e "for (const f of require('fs').readdirSync('dist/update').filter((n) => n.endsWith('.zip.json'))) { const r = require('./dist/update/' + f); console.log(f, 'carry', JSON.stringify(r.carry), 'signed', r.signature && r.signature.how, '|', r.signature && r.signature.designated); if (r.carry.length) process.exit(1); }"
+
+      - name: Model choice and network cost on a real Mac (informational)
+        # src/main/hardware.js and src/main/netcost.js, the raw answers logged. A runner is neither
+        # metered nor in Low Data Mode, so "unmetered" is expected; anything else is for a look.
+        continue-on-error: true
+        run: |
+          node -e "const h = require('./src/main/hardware'); h.detect().then((hw) => console.log('hardware:', JSON.stringify(hw), JSON.stringify(h.pick(hw))))"
+          node -e "const cp = require('child_process'); require('./src/main/netcost').probe({ run: async (f, a) => { const r = cp.spawnSync(f, a, { encoding: 'utf8', timeout: 20000 }); console.log('raw:', JSON.stringify(r.stdout), JSON.stringify(r.stderr)); return { code: r.status, stdout: r.stdout || '' }; } }).then((r) => console.log('netcost.probe():', r))"
+
+      - name: Launch the packaged app (arm64)
+        if: contains(env.ARCHS, 'arm64')
+        # Starts Typd.app as a user would and checks that it brings up its own llama-server from
+        # inside the bundle, on 127.0.0.1:8737, and that its self-test reaches a verdict.
+        # Informational: on a runner nobody can grant the microphone, accessibility or input
+        # monitoring, so the rest of the app is not exercised.
+        continue-on-error: true
+        run: |
+          APP="$PWD/dist/mac-arm64/Typd.app"
+          # No model download and no app update from CI; no walkthrough window.
+          TYPD_DEBUG=1 TYPD_NO_MODEL_UPDATE=1 TYPD_NO_APP_UPDATE=1 TYPD_NO_WALKTHROUGH=1 "$APP/Contents/MacOS/Typd" > app.log 2>&1 &
+          pid=$!
+          ok=0
+          for i in $(seq 1 120); do
+            if curl -sf http://127.0.0.1:8737/health; then ok=1; break; fi
+            sleep 1
+          done
+          echo
+          for i in $(seq 1 90); do
+            if grep -qE 'path chosen|failed its self-test' app.log; then break; fi
+            sleep 1
+          done
+          grep -E '\[typd:local\] (self-test|path chosen|model .* ready)' app.log || { echo "no self-test verdict in app.log"; ok=0; }
+          pgrep -fl llama-server || true
+          pgrep -fl llama-server | grep -q "$APP/Contents/Resources/llama/llama-server" || ok=0
+          kill $pid 2>/dev/null || true
+          sleep 2
+          pkill -f "$APP/Contents/Resources/llama/llama-server" || true
+          echo "--- app.log (tail)"; tail -60 app.log
+          test $ok = 1
+
+      - name: Close the Typd window, stay running (arm64)
+        if: contains(env.ARCHS, 'arm64')
+        # Closing the Typd window must not take Typd's key with it. scripts/mac-close-check.sh
+        # opens and closes the window in the packaged app (TYPD_TEST_CLOSE_HOME), presses keys
+        # before, during and after, dictates with Right ⌘ after the close, then quits Typd. Two
+        # passes: started from this shell (the runner's privacy rights) and started as Finder
+        # starts it (its own app to macOS, no switches on yet). A gate.
+        run: |
+          chmod +x scripts/mac-close-check.sh
+          fail=0
+          IDLE=0 scripts/mac-close-check.sh exec "$PWD/dist/mac-arm64/Typd.app" || fail=1
+          IDLE=0 scripts/mac-close-check.sh open "$PWD/dist/mac-arm64/Typd.app" open-no-switches || fail=1
+          test $fail = 0
+
+      - name: Let Typd through macOS privacy as its own app (arm64, runner only)
+        if: contains(env.ARCHS, 'arm64')
+        # The runner's VM lets the privacy (TCC) databases be written: grant ai.typd.app
+        # Accessibility, Input Monitoring, posting events and the microphone here, so the next pass
+        # can press its key. Best effort.
+        continue-on-error: true
+        run: |
+          now=$(date +%s)
+          grant() {
+            sudo sqlite3 "$1" "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version, flags, last_modified) VALUES ('$2', 'ai.typd.app', 0, 2, 4, 1, 0, $now);" && echo "granted $2" || echo "could not grant $2"
+          }
+          SYS="/Library/Application Support/com.apple.TCC/TCC.db"
+          USR="$HOME/Library/Application Support/com.apple.TCC/TCC.db"
+          for svc in kTCCServiceAccessibility kTCCServiceListenEvent kTCCServicePostEvent; do grant "$SYS" $svc; done
+          grant "$USR" kTCCServiceMicrophone
+          sudo sqlite3 "$SYS" "SELECT service, client, auth_value FROM access WHERE client = 'ai.typd.app';" || true
+          csrutil status || true
+
+      - name: Close the Typd window, stay running, its own app with its switches on (arm64)
+        if: contains(env.ARCHS, 'arm64')
+        # The open pass again, now that Typd holds its permissions as itself (a user's Mac after the
+        # permission dialog), with a minute alone after the close. Then eight more launches, each
+        # of which must come up and quit: uiohook-napi's start used to hang Typd at launch here.
+        run: |
+          chmod +x scripts/mac-launch-loop.sh
+          fail=0
+          scripts/mac-close-check.sh open "$PWD/dist/mac-arm64/Typd.app" open-switches-on || fail=1
+          scripts/mac-launch-loop.sh "$PWD/dist/mac-arm64/Typd.app" 8 || fail=1
+          test $fail = 0
+
+      - name: The app inside each dmg checked for keys (scripts/public-build.js verify)
+        run: |
+          set -e
+          test -z "${TYPD_TESTER_CONFIG:-}"
+          want=$(node -p "require('./scripts/mac-signing.json').sha1")
+          for a in $ARCHS; do
+            dmg=$(ls dist/Typd-*-mac-$a.dmg)
+            mnt="$RUNNER_TEMP/typd-dmg-$a"
+            mkdir -p "$mnt"
+            hdiutil attach "$dmg" -nobrowse -readonly -mountpoint "$mnt"
+            codesign --verify --deep --strict "$mnt/Typd.app"
+            codesign -d -r- "$mnt/Typd.app" 2>&1 | grep designated | grep -qi "$want"
+            node scripts/public-build.js verify --app "$mnt/Typd.app" --platform "mac-$a" --installer "$dmg"
+            hdiutil detach "$mnt"
+          done
+          ls -la dist/*.dmg dist/*.dmg.public.json
+          cat dist/*.dmg.public.json
+
+      - name: Attach the builds to a draft release (visible to maintainers only)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          version=$(node -p "require('./package.json').version")
+          tag="build-${GITHUB_RUN_ID}"
+          mkdir -p dist/release
+          for f in dist/*.dmg dist/*.dmg.public.json dist/update/*.zip dist/update/*.zip.json; do ln "$f" dist/release/; done
+          (cd dist/release && shasum -a 256 * > SHA256SUMS && cat SHA256SUMS)
+          for f in dist/release/*; do
+            size=$(stat -f %z "$f")
+            if [ "$size" -ge 2147483648 ]; then echo "$f is $size bytes: over GitHub's 2 GiB limit for a release file"; exit 1; fi
+          done
+          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --draft --target "$GITHUB_SHA" \
+            --title "Build ${GITHUB_RUN_ID}: Typd $version" \
+            --notes "Draft (maintainers only): CI build of ${GITHUB_SHA::7}, Typd $version, model $MODEL_VERSION, archs $ARCHS. Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          for f in dist/release/*; do
+            ok=0
+            for i in 1 2 3 4; do
+              if gh release upload "$tag" "$f" --repo "$GITHUB_REPOSITORY" --clobber; then ok=1; break; fi
+              echo "upload of $(basename "$f") failed (try $i); retrying"; sleep $((15 * i))
+            done
+            test $ok = 1
+          done
+          want=$(ls dist/release | wc -l | tr -d ' ')
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft,assets --jq '"draft: \(.isDraft)", (.assets[] | "\(.name)  \(.size)")'
+          test "$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = true
+          test "$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets | length')" = "$want"
+          echo "- draft release \`$tag\`: $want files (Typd $version, model $MODEL_VERSION)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove the signing keychain
+        if: always()
+        run: bash scripts/mac-signing-import.sh --delete

@@ -117,6 +117,12 @@ Packaging (unsigned): `npm run dist:win` (NSIS installer) or `npm run dist:mac` 
 must run on a Mac, which signs the app ad hoc). `scripts/before-pack.js` ships only the model that
 `models/typd-dictate/model.json` names. See [docs/MAC.md](docs/MAC.md) for the Mac details.
 
+The official macOS builds come from [.github/workflows/mac.yml](.github/workflows/mac.yml). Only a
+maintainer can start it, and it never runs on pushes or pull requests. It signs the app with
+Typd's own certificate and puts the dmg and the app-update package on a draft release, which only
+maintainers can see. An app update reaches users only after a maintainer signs it, with a key that
+is never on GitHub.
+
 `TYPD_DEBUG=1` logs what the pipeline, selection reading and updates are doing.
 
 ## Tests
