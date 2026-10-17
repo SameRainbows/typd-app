@@ -146,14 +146,15 @@ check('the overlay reports devices for the tray menu',
 check('the pill is pinned dark, whatever the system theme',
   /<html[^>]*data-scheme="dark"/.test(html) && !/@media \(prefers-color-scheme/.test(read('src/renderer/overlay.css')));
 
-/* --------------------------------------------- the consent and flag windows */
+/* ------------------------------------------------ the "That was wrong" window */
 
-// The public beta's two questions (ask-window.js, preload/ask.js, renderer/consent.* and
-// flag.*): the same silent seams as the Typd window, and the promises the consent screen makes.
-section('the consent and "That was wrong" windows');
+// Sharing's one question (ask-window.js, preload/ask.js, renderer/flag.*): the same silent seams
+// as the Typd window. Since 0.2.4 there is no consent screen (public builds share unless turned
+// off in Settings; the walkthrough's first screen says so).
+section('the "That was wrong" window, and no consent screen');
 const aMain = read('src/main/ask-window.js');
 const aPre = read('src/preload/ask.js');
-for (const page of ['consent', 'flag']) {
+for (const page of ['flag']) {
   const pHtml = read('src/renderer/' + page + '.html');
   const pJs = read('src/renderer/' + page + '.js');
   const pIds = [...new Set([...pJs.matchAll(/\$\('([^']+)'\)/g)].map((m) => m[1]))];
@@ -173,25 +174,42 @@ check('every handler goes through handle(), which checks the page',
   (aMain.match(/ipcMain\.handle\(/g) || []).length === 1 && /const kind = pageOf\(e\);\s*return kind \? fn\(kind/.test(aMain));
 const aEvents = (aPre.match(/const EVENTS = \[([^\]]+)\]/) || [, ''])[1];
 const aSent = [...new Set([...aMain.matchAll(/send\('([a-z]+:[a-z-]+)'/g)].map((m) => m[1]))];
-const aListened = [...new Set(['consent', 'flag'].flatMap((p) => [...read('src/renderer/' + p + '.js').matchAll(/api\.on\('([^']+)'/g)].map((m) => m[1])))];
+const aListened = [...new Set(['flag'].flatMap((p) => [...read('src/renderer/' + p + '.js').matchAll(/api\.on\('([^']+)'/g)].map((m) => m[1])))];
 const aNotAllowed = [...aSent, ...aListened].filter((c) => !aEvents.includes("'" + c + "'"));
 check('every event sent or listened for is allowed by preload/ask.js', !aNotAllowed.length, aNotAllowed.join(', '));
 
-const cHtml = read('src/renderer/consent.html');
-const choices = [...cHtml.matchAll(/<button class="([^"]+)" type="button" id="(share|keep)">([^<]+)<\/button>/g)];
-check('consent: two buttons of the same class (equal), with the agreed words',
-  choices.length === 2 && choices[0][1] === choices[1][1] &&
-  choices.some((c) => c[3] === 'Share my dictations to improve Typd') && choices.some((c) => c[3] === 'Keep everything on my computer'));
-check("consent: says what is never shared, and asks under-18s for a parent's OK",
-  /Never shared/.test(cHtml) && /screen/.test(cHtml) && /window titles/.test(cHtml) && /Under 18\? Ask a parent/.test(cHtml));
 check('flag: asks "Share this one dictation so it can be fixed?"', /Share this one dictation so it can be fixed\?/.test(read('src/renderer/flag.html')));
-check('main opens the consent screen only while it is unanswered',
-  /needsConsent\(\) && !stub && !preview\) \{/.test(main) && /const askConsent = \(\) => \{ if \(s\.needsConsent\(\)\) ask\.open\('consent'\); \};/.test(main) &&
-  (main.match(/ask\.open\('consent'\)/g) || []).length === 2);   // and askConsent, from Settings
-check("after an app update's quiet relaunch, not until someone is at the keyboard",
-  /if \(appUpdater && appUpdater\.firstStart\) appUpdate\.whenUserActive\(askConsent\); else setTimeout\(askConsent, 2500\);/.test(main));
-check('a consent screen closed unanswered means off, never on', /deps\.choose\(false\)/.test(aMain) && !/deps\.choose\(true\)/.test(aMain));
+check('no consent screen: no page, no window kind, nothing in main opens one',
+  !fs.existsSync(path.join(__dirname, '..', 'src', 'renderer', 'consent.html')) && !fs.existsSync(path.join(__dirname, '..', 'src', 'renderer', 'consent.js')) &&
+  !/consent\.html/.test(aMain) && !/ask:consent/.test(aMain + aPre) && !/ask\.open\('consent'\)/.test(main) && !/needsConsent|askConsent/.test(main + read('src/main/home-window.js')));
 check('main queues a dictation only through sharing.add', /sharing\.add\(current, event\.text\)/.test(main) && !/collect\.add\(/.test(main));
+
+// Sharing on by default in public builds (0.2.4), and how it is said and undone.
+section('sharing on by default (public builds)');
+const sSrc = read('src/main/settings.js'), shSrc = read('src/main/sharing.js'), hwSrc = read('src/main/home-window.js');
+check("settings: 'share' defaults to 'on'", /\n\s*share: 'on',/.test(sSrc.replace(/\r\n/g, '\n')));
+check("settings: a saved '' (never answered) or no value reads 'on'; 'off' is kept; anything else is 'off'",
+  /cache\.share = shareFrom\(saved\);/.test(sSrc) && /saved\.share === '' \|\| saved\.share === 'on'\) return 'on';\s*return 'off';/.test(sSrc));
+check("settings: only 'on' or 'off' can be set", /if \(key === 'share' && !\['on', 'off'\]\.includes\(value\)\) return false;/.test(sSrc));
+check("sharing: only 'off' is off for a public build; a tester build keeps its key and pause",
+  /const sharingOn = \(\) => \(mode === 'tester' \? !paused\(\) : choice\.get\(\) !== 'off'\);/.test(shSrc));
+check('Settings: the switch works at once both ways (no window in between)',
+  /handle\('sharing:set', async \(on\) => \{[\s\S]*?const r = await deps\.chooseSharing\(on\);/.test(hwSrc) && !/sharing:about/.test(hwSrc + read('src/preload/home.js')));
+const rowAt = hHtml.indexOf('id="betaRow"'), recAt = hHtml.indexOf('id="recTitle"'), modelAt = hHtml.indexOf('id="modelRow"');
+check('Settings: "Share dictations" sits right after "Keep recordings", before the model rows', recAt > 0 && rowAt > recAt && rowAt < modelAt);
+check('Settings: "What\u2019s shared" opens the list in place, with what is never shared and the update-check line',
+  /id="betaWhat" hidden/.test(hHtml) && /\$\('betaWhat'\)\.hidden = !open;/.test(hJs) && /Never shared: what\u2019s on your screen, text you had selected, window titles, or anything when you\u2019re not dictating\./.test(hHtml));
+const LINE = 'Help improve Typd: your dictations are shared to train the model. Turn off anytime in Settings.';
+check('walkthrough: the line, word for word, on step 1 only, in a public build with sharing on',
+  hJs.includes("var SHARE_LINE = '" + LINE + "';") && /var note = step === 1 && publicSharing\(\) \? SHARE_LINE : '';/.test(hJs) &&
+  /return Boolean\(sh && sh\.mode === 'beta' && sh\.state === 'on'\);/.test(hJs) && /id="walkNote" hidden/.test(hHtml));
+check('TYPD_NO_SHARE=1 turns sharing off for the run (CI launches)', /if \(process\.env\.TYPD_NO_SHARE === '1'\) return main;/.test(shSrc));
+for (const f of ['scripts/mac-close-check.sh', 'scripts/mac-launch-loop.sh', '.github/workflows/mac.yml']) {
+  const t = read(f);
+  const launches = (t.match(/open "\$APP" --env|"\$APP\/Contents\/MacOS\/Typd" > app\.log|"\$BIN" > "\$LOG"|launchctl setenv TYPD_DEBUG/g) || []).length;
+  const noShare = (t.match(/TYPD_NO_SHARE/g) || []).length;
+  check(f + ': every launch of the packaged app shares nothing (TYPD_NO_SHARE=1)', launches > 0 && noShare >= launches, [launches, noShare]);
+}
 
 /* -------------------------------------------------------- staying running */
 

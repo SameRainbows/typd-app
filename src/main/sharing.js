@@ -1,29 +1,32 @@
 'use strict';
 
 /**
- * Sharing dictations with the developer -- only ever with consent.
+ * Sharing dictations with the developer, to improve Typd's model. Dictating itself never needs
+ * the network: an item is queued only after its text was pasted, and sent from the outbox later.
  *
- * Law 1 says your voice never leaves the machine, and by default it does not: nothing is queued
- * or sent until the person says so. There are two ways to say so.
- *
- *   The public beta (any packaged build). On first run one plain screen (consent-window) asks:
- *   "Share my dictations to improve Typd" or "Keep everything on my computer", two equal
- *   buttons, and nothing is sent until the first is picked. Settings can change it any time.
- *   Choosing to share enrolls this install with typd-collect (POST /v1/enroll): an anonymous,
- *   random key, kept in <userData>/share.json and nowhere else. "Delete what I've shared"
- *   deletes everything stored for that key on the server (DELETE /v1/me), empties the outbox
- *   here, forgets the key and turns sharing off.
+ *   Public builds (any packaged build without a tester key). Sharing is ON by default (since
+ *   0.2.4; settings 'share'). The first screen of the first-run walkthrough says so in one line,
+ *   and Settings > "Share dictations" turns it off at once (what still waits in the outbox is
+ *   deleted). An install that chose 'off' -- on the consent screen of 0.2.0-0.2.3, or in
+ *   Settings -- stays off; one that never answered that screen counts as on (settings.js).
+ *   The first item to send enrolls this install with typd-collect (POST /v1/enroll): an
+ *   anonymous, random key, kept in <userData>/share.json and nowhere else. "Delete what I've
+ *   shared" deletes everything stored for that key on the server (DELETE /v1/me), empties the
+ *   outbox here, forgets the key and turns sharing off. A public install shares at most
+ *   DAILY_ITEMS dictations / DAILY_BYTES of audio a UTC day, keeps at most OUTBOX_CAP_PUBLIC
+ *   waiting on disk, and waits FULL_HOLD_S after the server says its storage is full -- all
+ *   silently, with nothing shown.
  *
  *   A tester build (a tester.json bundled in the app's resources: README "Tester builds"). The
- *   tester agreed in person; the bundled key wins, there is no consent screen, and Settings
- *   keeps its one line with a pause -- exactly as before the beta.
+ *   tester agreed in person; the bundled key wins, and Settings keeps its one line with a
+ *   pause -- exactly as before.
  *
  * "That was wrong" (the tray, or a hotkey): flags the last dictation. If it was shared, it is
  * marked -- in the outbox if it has not gone yet, else on the server (POST /v1/flag) -- with an
- * optional one-line note. If it was not (sharing off), Typd asks once, for that dictation only:
- * "Share this one dictation so it can be fixed?" Only a yes sends it, marked consent 'flag'.
- * The last dictation's audio is held in memory for that, never written anywhere, and forgotten
- * after an hour or at the next dictation.
+ * optional one-line note. If it was not (sharing off, or past the day's limit), Typd asks once,
+ * for that dictation only: "Share this one dictation so it can be fixed?" Only a yes sends it,
+ * marked consent 'flag'. The last dictation's audio is held in memory for that, never written
+ * anywhere, and forgotten after an hour or at the next dictation.
  *
  * What one item carries, and never carries, is collect.js's business; so is the outbox.
  */
@@ -40,6 +43,12 @@ const FRESH_KEY_MS = 10 * 60e3;   // a new key can take a minute to reach every 
 const LAST_KEEP_MS = 3600e3;      // the last dictation's audio is forgotten after an hour
 const ENROLL_TIMEOUT_MS = 20e3;
 const START_DELAY_MS = 20e3;      // a restart resumes the outbox once launch has settled
+// Public builds only (testers keep collect.js's defaults): what one install may send a UTC day,
+// what may wait on disk, and how long to wait once the server's storage is full (507).
+const DAILY_ITEMS = 50;
+const DAILY_BYTES = 20e6;
+const OUTBOX_CAP_PUBLIC = 100e6;
+const FULL_HOLD_S = 6 * 3600;
 
 /** <userData>/share.json: {endpoint, key, id, enrolledAt}, checked; null if absent or not sane. */
 function readKeyFile(file) {
@@ -64,22 +73,33 @@ async function writeKeyFile(file, rec) {
  * The policy, Electron-free (bench/sharing.js drives it against a fake server).
  *
  *   tester     readConfig(tester.json) or null: a bundled tester key wins over everything
- *   endpoint   the public beta's server
+ *   endpoint   the public builds' server
  *   keyFile    <userData>/share.json
  *   dir        the outbox
- *   choice     {get, set}: settings 'share' -- '' (not asked yet), 'on' or 'off'
+ *   choice     {get, set}: settings 'share' -- 'on' (the default) or 'off'. Only 'off' is off:
+ *              '' (a consent screen from before 0.2.4, never answered) counts as on
  *   paused     () => boolean: a tester build's pause (settings 'sharePaused')
+ *   dayFile    public builds: where the daily limit's count is kept (default <dir>/../share-day.json)
+ *   cap, daily, fullHoldS   override the public builds' limits (bench/sharing.js); testers get
+ *              collect.js's defaults (2 GB, no daily limit, the server's Retry-After)
  */
 function createSharing({
   tester = null, endpoint = ENDPOINT, keyFile, dir, choice, paused = () => false,
-  about = {}, fetch = globalThis.fetch, log = () => {}, now = Date.now, cap
+  about = {}, fetch = globalThis.fetch, log = () => {}, now = Date.now, cap, daily, fullHoldS, dayFile
 }) {
   const mode = tester ? 'tester' : 'beta';
   let keyRec = mode === 'beta' ? readKeyFile(keyFile) : null;
   let enrolling = null;
   let last = null;   // {rec, name, at}: the last finished dictation, in memory only
 
-  const sharingOn = () => (mode === 'tester' ? !paused() : choice.get() === 'on');
+  const sharingOn = () => (mode === 'tester' ? !paused() : choice.get() !== 'off');
+  const limits = mode === 'beta'
+    ? {
+        cap: cap === undefined ? OUTBOX_CAP_PUBLIC : cap,
+        daily: daily === undefined ? { items: DAILY_ITEMS, bytes: DAILY_BYTES, file: dayFile || path.join(path.dirname(dir), 'share-day.json') } : daily,
+        fullHoldS: fullHoldS === undefined ? FULL_HOLD_S : fullHoldS
+      }
+    : { cap, daily: null, fullHoldS: 0 };
 
   async function enroll() {
     const res = await fetch(endpoint + '/v1/enroll', {
@@ -115,7 +135,8 @@ function createSharing({
     ensureKey: mode === 'beta' ? ensureKey : null,
     dir,
     paused: () => !sharingOn(),
-    log, about, fetch, cap,
+    log, about, fetch, now,
+    cap: limits.cap, daily: limits.daily, fullHoldS: limits.fullHoldS,
     // A tester key refused means the tester was removed: stop. An install key refused within
     // minutes of its enrollment has probably not reached that data centre yet: try again.
     on401: () => !(mode === 'beta' && keyRec && keyRec.enrolledAt && now() - Date.parse(keyRec.enrolledAt) < FRESH_KEY_MS)
@@ -131,20 +152,16 @@ function createSharing({
   return {
     mode,
 
-    /** True until the person has answered the consent screen (public beta only). */
-    needsConsent: () => mode === 'beta' && !['on', 'off'].includes(choice.get()),
-
     /**
      * For Settings. Tester: {mode, tester, with, state: 'on'|'paused'|'stopped'} as before.
-     * Beta: {mode, state: 'unset'|'on'|'off'|'stopped', shared, id}; `shared` says a key exists,
-     * so something may be stored on the server and "Delete what I've shared" applies.
+     * Public: {mode: 'beta', state: 'on'|'off'|'stopped', shared, id}; `shared` says a key
+     * exists, so something may be stored on the server and "Delete what I've shared" applies.
      */
     status() {
       if (mode === 'tester') return { mode, ...collector.status(), with: tester.with, tester: tester.tester };
-      const c = choice.get();
       return {
         mode,
-        state: collector.isRevoked() ? 'stopped' : c === 'on' ? 'on' : c === 'off' ? 'off' : 'unset',
+        state: collector.isRevoked() ? 'stopped' : sharingOn() ? 'on' : 'off',
         shared: Boolean(keyRec),
         id: keyRec ? keyRec.id : null
       };
@@ -163,9 +180,9 @@ function createSharing({
     },
 
     /**
-     * Public beta: 'on' (enrolls now if it can; if offline, at the first send) or 'off' (what is
-     * still waiting in the outbox is deleted; a dictation shared on its own still goes).
-     * Returns {ok, enrolled?}.
+     * Public builds, from Settings: 'on' (enrolls now if it can; if offline, at the first send)
+     * or 'off' (what is still waiting in the outbox is deleted; a dictation shared on its own
+     * still goes). Returns {ok, enrolled?}.
      */
     async choose(value) {
       if (mode !== 'beta' || !['on', 'off'].includes(value)) return { ok: false };
@@ -220,7 +237,7 @@ function createSharing({
     },
 
     /**
-     * "Delete what I've shared" (public beta): stop the uploader, empty the outbox, delete
+     * "Delete what I've shared" (public builds): stop the uploader, empty the outbox, delete
      * everything stored for this install's key on the server, forget the key, sharing off.
      * Returns {ok, deleted} or {ok: false, reason: 'offline'|'server'}; on failure the key is
      * kept so it can be tried again (the outbox is already empty and sharing is off).
@@ -279,10 +296,15 @@ function instance() {
   const { app, powerMonitor } = electron;
   // Development: a tester key only with TYPD_TESTER_DEV=1 -- the repo root is where the developer
   // runs their own Typd every day, and a stray tester.json there once queued the developer's
-  // dictations under a tester's name (2026-10-09) -- and the public beta's consent screen only
-  // with TYPD_SHARE_DEV=1 (and TYPD_COLLECT_URL to point it at a local wrangler dev).
+  // dictations under a tester's name (2026-10-09) -- and the public builds' sharing only with
+  // TYPD_SHARE_DEV=1. It is on by default, so point it at a local wrangler dev with
+  // TYPD_COLLECT_URL, or it shares with the real server.
   const devTester = !app.isPackaged && process.env.TYPD_TESTER_DEV === '1';
   const devBeta = !app.isPackaged && process.env.TYPD_SHARE_DEV === '1';
+  // TYPD_NO_SHARE=1: no sharing at all in this run, whatever settings say -- nothing queued, no
+  // request, no flag shortcut (CI's launches of a packaged build: scripts/mac-close-check.sh,
+  // mac-launch-loop.sh, mac.yml). Settings are not changed by it.
+  if (process.env.TYPD_NO_SHARE === '1') return main;
   // Packaged: <resources>/tester.json, or after a macOS app update the copy kept from the version it
   // replaced (src/main/carried.js).
   const tester = app.isPackaged || devTester

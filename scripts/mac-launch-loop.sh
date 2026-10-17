@@ -22,7 +22,7 @@ for n in $(seq 1 "$N"); do
   LOG="$RUNNER_TEMP/launch-$n.log"
   rm -f "$LOG" "$LOG.err"
   t0=$(date +%s)
-  open "$APP" --env TYPD_DEBUG=1 --env TYPD_NO_MODEL_UPDATE=1 --env TYPD_NO_WALKTHROUGH=1 --stdout "$LOG" --stderr "$LOG.err"   # no model download from production; no walkthrough window
+  open "$APP" --env TYPD_DEBUG=1 --env TYPD_NO_MODEL_UPDATE=1 --env TYPD_NO_WALKTHROUGH=1 --env TYPD_NO_SHARE=1 --stdout "$LOG" --stderr "$LOG.err"   # no model download from production; no walkthrough window; no sharing
   pid=0
   for i in $(seq 1 40); do pid=$(pgrep -nf "$BIN" || echo 0); [ "$pid" -gt 0 ] && break; sleep 0.5; done
 
