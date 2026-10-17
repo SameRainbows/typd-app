@@ -4,8 +4,8 @@
 
 | Your Mac | File |
 |---|---|
-| Apple chip (M1, M2, M3, M4…) | `Typd-0.2.2-mac-arm64.dmg` |
-| Intel chip | `Typd-0.2.2-mac-x64.dmg` |
+| Apple chip (M1, M2, M3, M4…) | `Typd-0.2.3-mac-arm64.dmg` |
+| Intel chip | `Typd-0.2.3-mac-x64.dmg` |
 
 To check which chip you have, open the Apple menu  → **About This Mac** and look at **Chip** (or
 **Processor**). You need macOS 13.3 (Ventura) or newer. The download is about 650 MB because the
