@@ -13,6 +13,11 @@
  *
  * beforePack runs before electron-builder resolves extraResources (app-builder-lib
  * platformPackager.doPack), so the staged folder is always the current one.
+ *
+ * TYPD_NO_BUNDLED_MODEL=1 (public installers, scripts/public-build.js; the Mac CI's public dmg):
+ * no model at all. The folder holds only NO_MODEL.txt, so the app has no bundled model and
+ * downloads the one its hardware suits at its first launch (src/main/modelUpdate.js). Tester
+ * builds always bundle theirs (after-pack.js refuses the combination).
  */
 
 const fs = require('fs');
@@ -24,6 +29,17 @@ module.exports = async function beforePack(context) {
   const projectDir = (context.packager && context.packager.projectDir) || process.cwd();
   const src = path.join(projectDir, 'models', 'typd-dictate');
   const dst = path.join(projectDir, STAGE);
+
+  if (process.env.TYPD_NO_BUNDLED_MODEL === '1') {
+    fs.rmSync(dst, { recursive: true, force: true });
+    fs.mkdirSync(dst, { recursive: true });
+    fs.writeFileSync(path.join(dst, 'NO_MODEL.txt'),
+      'This Typd ships without its speech model. At its first launch it downloads the one that suits\n' +
+      'this computer (full or light), checks its signature and every file\'s sha256, and keeps it in\n' +
+      'its user folder (models/). Source: src/main/modelUpdate.js.\n');
+    console.log('  • typd: no dictation model in this build (TYPD_NO_BUNDLED_MODEL=1): downloaded at first launch');
+    return;
+  }
 
   let spec;
   try {

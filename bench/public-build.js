@@ -72,8 +72,8 @@ function fakeApp(name, change = () => {}, asarExtra = {}) {
 
 const keyFile = path.join(tmp, 'tester.bench.json');
 fs.writeFileSync(keyFile, JSON.stringify({ tester: 'bench', key: KEY }));
-function verify(app, installer, platform = 'win-x64') {
-  const r = spawnSync(process.execPath, [SCRIPT, 'verify', '--app', app, '--platform', platform, ...(installer ? ['--installer', installer] : [])], {
+function verify(app, installer, platform = 'win-x64', expect = null) {
+  const r = spawnSync(process.execPath, [SCRIPT, 'verify', '--app', app, '--platform', platform, ...(installer ? ['--installer', installer] : []), ...(expect ? ['--expect-model', expect] : [])], {
     encoding: 'utf8', env: { ...process.env, TYPD_PUBLIC_EXTRA_KEY_FILES: keyFile }
   });
   const out = (r.stdout || '') + (r.stderr || '');
@@ -161,6 +161,37 @@ print(json.dumps(pa.public_record_problems(p, len(b), hashlib.sha256(b).hexdiges
   a = fakeApp('nomodel', (app) => fs.rmSync(path.join(app, 'resources', 'models', 'typd-dictate', 'mm.gguf')));
   r = verify(a.app, a.installer);
   check(r.status === 1 && /model_ok: false/.test(r.out), 'no mmproj: fails', r.out);
+
+  // 9b. a model-less public build (0.2.5): no model at all, llama-server there
+  const modelLess = (app) => {
+    const dir = path.join(app, 'resources', 'models', 'typd-dictate');
+    for (const f of fs.readdirSync(dir)) fs.rmSync(path.join(dir, f));
+    fs.writeFileSync(path.join(dir, 'NO_MODEL.txt'), 'downloaded at first launch');
+  };
+  a = fakeApp('modelless', modelLess);
+  r = verify(a.app, a.installer, 'win-x64', 'no');
+  const mrec = fs.existsSync(a.installer + '.public.json') ? JSON.parse(fs.readFileSync(a.installer + '.public.json', 'utf8')) : null;
+  check(r.status === 0 && mrec && mrec.ok && mrec.bundled_model === false && mrec.model === null && mrec.model_bytes === 0 &&
+    mrec.checks.model_ok === true && mrec.checks.model_absent === true && mrec.checks.bundled_model === false,
+  'a model-less app (no model, llama-server there): passes; the record says bundled_model false, model null', r.out);
+  if (fs.existsSync(path.join(research, 'publish_app.py'))) {
+    const py = `import sys, json, hashlib; sys.path.insert(0, ${JSON.stringify(research)}); import publish_app as pa; from pathlib import Path
+p = Path(${JSON.stringify(a.installer)}); b = p.read_bytes()
+print(json.dumps(pa.public_record_problems(p, len(b), hashlib.sha256(b).hexdigest())))`;
+    const x = spawnSync('python', ['-c', py], { encoding: 'utf8' });
+    check(x.status === 0 && x.stdout.trim() === '[]', "publish_app.py accepts a model-less build's record too", x.stdout + x.stderr);
+  }
+  r = verify(a.app, a.installer, 'win-x64', 'yes');
+  check(r.status === 1 && /expected a bundled model/.test(r.out), '--expect-model yes on a model-less app: fails', r.out);
+  a = fakeApp('bundled-expect');
+  r = verify(a.app, a.installer, 'win-x64', 'no');
+  check(r.status === 1 && /expected a model-less build/.test(r.out), '--expect-model no on an app with its model: fails', r.out);
+  a = fakeApp('stray-gguf', (app) => { modelLess(app); fs.writeFileSync(path.join(app, 'resources', 'models', 'typd-dictate', 'x.gguf'), crypto.randomBytes(1000)); });
+  r = verify(a.app, a.installer, 'win-x64', 'no');
+  check(r.status === 1 && /model files are in the app/.test(r.out), 'no model.json but a .gguf left in the app: fails', r.out);
+  a = fakeApp('no-server', (app) => { modelLess(app); fs.rmSync(path.join(app, 'resources', 'llama', 'llama-server.exe')); });
+  r = verify(a.app, a.installer, 'win-x64', 'no');
+  check(r.status === 1 && /llama-server is missing/.test(r.out), 'model-less without llama-server: fails', r.out);
 
   // 10. the asar reader on a real build, if there is one
   let main = ROOT;

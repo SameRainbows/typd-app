@@ -63,6 +63,16 @@
  * LATER_MS). With `askFirst()` (Settings: "Ask before downloading new models") every download asks.
  * An approval holds for that version (state.json "approved"), so a download it started resumes by
  * itself.
+ *
+ * No model at all (a public installer since 0.2.5 ships without one; tester builds still bundle
+ * theirs). With nothing bundled and nothing downloaded, the first model is what Typd needs before it
+ * can dictate, so the same path runs in a hurry: the first check FIRST_NEED_MS after launch instead
+ * of a minute, no RATE throttle, retries every NEED_BACKOFF_MIN_MS..NEED_BACKOFF_MAX_MS, and while
+ * offline a cheap look every OFFLINE_POLL_MS (no request is made until the system says it is
+ * online). The variant is the hardware's pick, as for any update; the signature, the sha256 of every
+ * file, resuming with Range, the disk-space check and asking first on a metered connection are
+ * exactly as above. needed() tells the app how far it is (for the tray, Home and the walkthrough);
+ * before any manifest was read, the size is an estimate per variant (EXPECTED_BYTES).
  */
 
 const fs = require('fs');
@@ -88,6 +98,15 @@ const KID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const VARIANT_RE = /^[a-z][a-z0-9_-]{0,31}$/;
 const ASK_ABOVE_BYTES = 300e6;           // bigger downloads ask first on a metered connection
 const LATER_MS = 24 * 3600e3;            // "Later": asked again after a day
+// No model yet (a model-less public install): see "No model at all" above.
+const FIRST_NEED_MS = 1500;
+const NEED_BACKOFF_MIN_MS = 10e3;
+const NEED_BACKOFF_MAX_MS = 120e3;
+const NEED_EVERY_MS = 15 * 60e3;         // a check that found nothing to download (no manifest, refused)
+const OFFLINE_POLL_MS = 15e3;
+// What the first download is about, before the manifest says exactly: the live versions' sizes
+// (r24_1p7b_rev128 with its mmproj and adapter: 1,602,588,192 B; light_soup_r20kd: 611,092,960 B).
+const EXPECTED_BYTES = { full: 1.6e9, light: 611e6 };
 
 /* ------------------------------------------------------------ on-disk layout */
 
@@ -303,7 +322,9 @@ function createUpdater({
   rate = RATE, idleMs = IDLE_MS, firstCheckMs = FIRST_CHECK_MS, everyMs = CHECK_EVERY_MS, stats = () => ({}),
   keys = require('./modelManifestKey').keys,
   variant = () => 'full', askFirst = () => false, networkCost = async () => 'unknown',
-  askAboveBytes = ASK_ABOVE_BYTES, laterMs = LATER_MS, now = () => Date.now()
+  askAboveBytes = ASK_ABOVE_BYTES, laterMs = LATER_MS, now = () => Date.now(),
+  firstNeedMs = FIRST_NEED_MS, needBackoffMinMs = NEED_BACKOFF_MIN_MS, needBackoffMaxMs = NEED_BACKOFF_MAX_MS,
+  needEveryMs = NEED_EVERY_MS, offlinePollMs = OFFLINE_POLL_MS, expectedBytes = EXPECTED_BYTES
 }) {
   const stateFile = path.join(modelsDir, 'state.json');
   const dirOf = (v) => path.join(modelsDir, v);
@@ -346,7 +367,19 @@ function createUpdater({
 
   /* ------------------------------------------------- what this machine runs */
 
-  function bundledSpec() { return readJson(path.join(bundledDir, 'model.json')); }
+  function bundledSpec() { return bundledDir ? readJson(path.join(bundledDir, 'model.json')) : null; }
+
+  /** Is there a model to dictate with: a complete downloaded version, or a bundled model whose files are there? */
+  function haveModel() {
+    if (activeModel(modelsDir)) return true;
+    const spec = bundledSpec();
+    if (!spec || typeof spec.model !== 'string' || typeof spec.mmproj !== 'string') return false;
+    try {
+      return fs.statSync(path.join(bundledDir, spec.model)).size > 0 && fs.statSync(path.join(bundledDir, spec.mmproj)).size > 0;
+    } catch {
+      return false;
+    }
+  }
 
   /** sha256 of a file we did not download, cached by path, size and mtime (state.json). */
   async function knownSha(file) {
@@ -422,7 +455,7 @@ function createUpdater({
 
   let windowAt = 0, windowBytes = 0;
   async function throttle(n) {
-    if (!rate) return;
+    if (!rate || !haveModel()) return;   // the first model: Typd cannot dictate until it is here
     const now = Date.now();
     if (now - windowAt > 10e3) { windowAt = now; windowBytes = 0; }
     windowBytes += n;
@@ -663,14 +696,24 @@ function createUpdater({
   async function run() {
     if (!config) return { state: 'off' };
     if (revoked) return set('stopped');
-    if (!online()) throw new Retry('offline');
+    const needed = !haveModel();
+    // The entry this machine follows: the variant it wants (asked first, so even an offline first
+    // launch names the right size), else the top level (the full model) if the manifest lacks it.
+    let want = 'full';
+    try { want = String((await variant()) || 'full'); } catch { want = 'full'; }
+    if (chosen.want !== want) { chosen = { want, got: chosen.got }; changed(); }
+    if (!online()) {
+      if (needed) set('offline');
+      throw new Retry('offline', needed ? offlinePollMs : undefined);
+    }
     let res;
     try {
       let extra = {};
       try { extra = stats() || {}; } catch { extra = {}; }   // counting must never stop a check
       res = await fetch(routes() + '/manifest', { headers: { ...extra, ...auth() }, signal: AbortSignal.timeout(30e3) });
     } catch (err) {
-      throw new Retry('manifest: ' + ((err && err.message) || err));
+      if (needed) set('offline');   // the server cannot be reached: to the person waiting, the same as offline
+      throw new Retry('manifest: ' + ((err && err.message) || err), needed ? offlinePollMs : undefined);
     }
     if (res.status === 404) { await res.body?.cancel().catch(() => {}); return set('none'); }
     if (!res.ok) await refused(res, 'manifest');
@@ -688,11 +731,8 @@ function createUpdater({
       log('manifest refused: seq', m.seq, 'is older than', s.seq, 'already seen');
       return set('refused', { why: 'an older manifest than one already seen' });
     }
-    // The entry this machine follows: the variant it wants, else the top level (the full model).
-    let want = 'full';
-    try { want = String((await variant()) || 'full'); } catch { want = 'full'; }
     const { entry: e, variant: got } = selectVariant(m, want);
-    if (chosen.want !== want || chosen.got !== got) { chosen = { want, got }; log('variant', want, want === got ? '' : '(not published: following ' + got + ')'); }
+    if (chosen.got !== got) { chosen = { want, got }; log('variant', want, want === got ? '' : '(not published: following ' + got + ')'); }
 
     let dirty = false;
     if (s.seq !== m.seq) { s.seq = m.seq; dirty = true; }
@@ -735,12 +775,14 @@ function createUpdater({
       try {
         const r = await run();
         failures = 0;
-        return { next: everyMs, ...r };
+        // Still no model (no manifest, refused, a newer Typd needed, waiting for an answer): look again sooner.
+        return { next: haveModel() ? everyMs : needEveryMs, ...r };
       } catch (err) {
         if (revoked) { log('the server refused the key; updates stopped until restart'); return { ...set('stopped'), next: null }; }
         if (!(err instanceof Retry)) log('update error:', (err && err.stack) || err);
         failures++;
-        let next = err.after || Math.min(BACKOFF_MAX_MS, BACKOFF_MIN_MS * 2 ** (failures - 1));
+        const hurry = !haveModel();
+        let next = err.after || Math.min(hurry ? needBackoffMaxMs : BACKOFF_MAX_MS, (hurry ? needBackoffMinMs : BACKOFF_MIN_MS) * 2 ** (failures - 1));
         if (!err.after) next = next / 2 + Math.random() * (next / 2);
         next = Math.min(Math.max(next, 1000), err.after ? 86400e3 : everyMs);
         if (/429/.test(err.message)) notBefore = Date.now() + next;
@@ -765,6 +807,19 @@ function createUpdater({
     if (!config) return null;
     const label = activeLabel();
     const pct = progress.total ? Math.floor((100 * progress.done) / progress.total) : 0;
+    if (!haveModel()) {
+      const n = needed();
+      switch (state) {
+        case 'downloading': return `Speech model · downloading ${pct} % of ${n.size}`;
+        case 'retrying': return `Speech model · downloading ${pct} % of ${n.size} (paused)`;
+        case 'ready': return 'Speech model · getting ready';
+        case 'ask': case 'later': return `Speech model · ${n.size} to download`;
+        case 'offline': return 'Speech model · waiting for the internet';
+        case 'space': return `Speech model · needs more disk space (${n.size})`;
+        case 'app': return 'Speech model · needs a newer Typd';
+        default: return 'Speech model · not downloaded yet';
+      }
+    }
     switch (state) {
       case 'current': return `Model ${label} · up to date`;
       case 'downloading': return `Model ${label} · updating ${pct} %`;
@@ -803,21 +858,48 @@ function createUpdater({
     return true;
   }
 
+  /**
+   * The first model, while there is none: {state, done, total, pct, bytes, size, estimate, version,
+   * variant}; null once a model is here. `bytes` is what the download is (the manifest's sizes, or
+   * EXPECTED_BYTES for the variant this machine wants before any manifest was read: estimate true).
+   */
+  function needed() {
+    if (haveModel()) return null;
+    const want = chosen.got || chosen.want || 'full';
+    const known = progress.total || (asking && asking.bytes) || 0;
+    const bytes = known || expectedBytes[want] || expectedBytes.full;
+    const pct = progress.total ? Math.floor((100 * progress.done) / progress.total) : 0;
+    return {
+      state, done: progress.total ? progress.done : 0, total: progress.total || 0, pct, bytes, size: fmtSize(bytes),
+      estimate: !known, version: target || (asking && asking.version) || null, variant: want, why: asking ? asking.why : null
+    };
+  }
+
   return {
     check,
     warmed,
     line,
+    needed,
+    haveModel,
     approve,
     later,
     onChange: (fn) => listeners.push(fn),
-    /** Launch: first check after FIRST_CHECK_MS, then every 6 hours. */
-    start() { if (config) { started = true; schedule(firstCheckMs); } },
+    /** Launch: first check after FIRST_CHECK_MS (FIRST_NEED_MS with no model at all), then every 6 hours. */
+    start() {
+      if (!config) return;
+      started = true;
+      if (!haveModel()) {
+        // Which variant, before the first check: so needed() names the right size at once.
+        Promise.resolve().then(() => variant()).then((w) => { if (w && !chosen.got) { chosen = { ...chosen, want: String(w) }; changed(); } }, () => {});
+      }
+      schedule(haveModel() ? firstCheckMs : firstNeedMs);
+    },
     /** Back from sleep or offline, or the model choice changed: check soon (never before a 429's Retry-After). */
     wake(ms = firstCheckMs) { if (config && !running) schedule(ms); },
     stop() { clearTimeout(timer); timer = null; },
     get state() { return state; },
-    /** A download waiting for "Update now": {version, variant, bytes, size, why, later}, else null. */
-    get pending() { return asking && (state === 'ask' || state === 'later') ? { ...asking, size: fmtSize(asking.bytes), later: state === 'later' } : null; },
+    /** A download waiting for "Update now": {version, variant, bytes, size, why, later, first}, else null. first: there is no model yet. */
+    get pending() { return asking && (state === 'ask' || state === 'later') ? { ...asking, size: fmtSize(asking.bytes), later: state === 'later', first: !haveModel() } : null; },
     /** The variant the last check wanted, and the one the manifest gave ({want, got}). */
     get chosen() { return { ...chosen }; }
   };
@@ -900,6 +982,9 @@ function line() {
   return main ? main.line() : null;
 }
 
+/** The first model's download while there is no model (see createUpdater's needed()), else null. */
+const needed = () => (main ? main.needed() : null);
+
 /** Whether this build follows model updates at all (so the model choice means something). */
 const following = () => Boolean(main && main.line() !== null);
 /** A download waiting for "Update now", or null. */
@@ -913,7 +998,7 @@ const recheck = (ms = 1500) => { if (main) main.wake(ms); };
 const chosen = () => (main ? main.chosen : null);
 
 module.exports = {
-  start, line, following, pending, approve, later, recheck, chosen,
+  start, line, needed, following, pending, approve, later, recheck, chosen,
   createUpdater, activeModel, activeVersion, versionOf, readCurrent, isComplete, checkManifest, checkSignature, selectVariant, fmtSize, labelOf, older, sha256File, readConfig, findConfig,
-  ENDPOINT, SIG_PREFIX, ASK_ABOVE_BYTES, LATER_MS
+  ENDPOINT, SIG_PREFIX, ASK_ABOVE_BYTES, LATER_MS, EXPECTED_BYTES
 };
