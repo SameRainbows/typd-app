@@ -808,6 +808,7 @@ function startWalkthrough(afterUpdate) {
 let notedAsk = null;
 function modelChanged() {
   modelMissing();   // the first model's progress, for the tray's first line and Home
+  status.set({ interim: modelUpdate.interim() });   // light first: Home says the light model stands in, and how far the full one is
   refreshTray();
   home.changed('model');
   const p = modelUpdate.pending();
@@ -1031,7 +1032,9 @@ app.whenReady().then(() => {
       // hardware takes the GPU path; until then, and on any other PC, llama.cpp runs on the processor.
       cuda: local.cuda,
       cudaWanted: () => choice.cuda(),
-      switchBackend
+      switchBackend,
+      // Automatic (not a pin): on a slow link the light model stands in while the full one downloads.
+      automatic: () => choice.automatic()
     });
   }
   warmModel();
