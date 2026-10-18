@@ -24,7 +24,7 @@
  *
  * Memory is llama-server's peak working set (the OS's own peak, Get-Process PeakWorkingSet64: what the
  * research measured as "resident"), read after the model has loaded and again after the clips. Windows only
- * for the real part. Nothing here touches Typd's own server (port 8737): it uses TYPD_LLAMA_PORT 8796.
+ * for the real part. Nothing here touches Typd's own server (port 8737): it uses TYPD_LLAMA_PORT 18796 (--port).
  */
 
 const fs = require('fs');
@@ -151,10 +151,31 @@ function wer(ref, hyp) {
 
 async function textOf(gen) { let t = ''; for await (const x of gen) t = x; return t; }
 
+/**
+ * The public installer's llama.cpp: the folder without the CUDA backend (it comes as the CUDA pack, on the
+ * GPU path only). Run from vendor/llama as it is, llama.cpp would load CUDA on an NVIDIA machine and put the
+ * encoder on the GPU, which is not what a CPU-only computer runs. A copy in the temp folder, once.
+ */
+function cpuOnly(exe) {
+  const dir = path.dirname(exe);
+  if (!fs.existsSync(path.join(dir, 'ggml-cuda.dll')) || args.includes('--cuda')) return exe;
+  const sum = require('crypto').createHash('sha256').update(fs.readFileSync(path.join(dir, 'mtmd.dll'))).digest('hex').slice(0, 12);
+  const out = path.join(os.tmpdir(), 'typd-cpu-llama-' + sum);
+  if (!fs.existsSync(path.join(out, 'llama-server.exe'))) {
+    fs.mkdirSync(out, { recursive: true });
+    for (const n of fs.readdirSync(dir)) {
+      if (/^(ggml-cuda|cublas.*|cudart.*)\.dll$/i.test(n) || (/-impl\.dll$/i.test(n) && n !== 'llama-server-impl.dll')) continue;
+      if (/\.(dll|exe)$/i.test(n)) fs.copyFileSync(path.join(dir, n), path.join(out, n));
+    }
+  }
+  return path.join(out, 'llama-server.exe');
+}
+
 async function real() {
   const modelDir = opt('model', path.join(RESEARCH, 'models', 'md_soup_r20kd_ship'));
-  const server = opt('server', path.join(ROOT, 'vendor', 'llama', 'llama-server.exe'));
-  const serverBefore = opt('server-before', path.resolve(ROOT, '..', 'Typd-0.2.5', 'vendor', 'llama', 'llama-server.exe'));
+  const server = cpuOnly(opt('server', path.join(ROOT, 'vendor', 'llama', 'llama-server.exe')));
+  const serverBefore = cpuOnly(opt('server-before', path.resolve(ROOT, '..', 'Typd-0.2.5', 'vendor', 'llama', 'llama-server.exe')));
+  console.log('  llama-server:', server, '| before:', serverBefore);
   const modes = opt('modes', 'before,low').split(',');
   const parts = opt('parts', 'mem,long,early,revise').split(',');
   const maxMB = Number(opt('max-mb', 900));
@@ -171,7 +192,7 @@ async function real() {
   for (const mode of modes) {
     section(`real llama-server, ${mode} (${path.basename(modelDir)}, CPU)`);
     const env = {
-      TYPD_MODEL_DIR: modelDir, TYPD_LLAMA_PORT: '8796', TYPD_GPU_LAYERS: '0',
+      TYPD_MODEL_DIR: modelDir, TYPD_LLAMA_PORT: opt('port', '18796'), TYPD_GPU_LAYERS: '0',
       TYPD_LLAMA_SERVER: mode === 'before' ? serverBefore : server,
       TYPD_LOW_MEMORY: mode === 'low' ? '1' : '0',
       ...(mode === 'before' ? { TYPD_CONV_GROUP: '0' } : {}),
