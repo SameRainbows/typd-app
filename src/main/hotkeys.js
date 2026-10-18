@@ -2,6 +2,7 @@
 
 const { globalShortcut, systemPreferences } = require('electron');
 const logic = require('./hotkey-logic');
+const life = require('./lifelog');
 
 /**
  * One key, one session.
@@ -92,6 +93,28 @@ function guard(fn) {
  * hook freely (rearm), so there close() still stops it.
  */
 let macTap = null;
+
+/*
+ * macOS: what the event tap's watchdog in Typd's uiohook build saw (scripts/build-uiohook-mac.js):
+ * { running, enabled (1 on, 0 off, -1 none, -2 port gone), timeouts and userInput (times macOS
+ * switched the tap off, each switched straight back on), rearmed (times the watchdog found it off
+ * and switched it on), checks (watchdog ticks: a count that stops means the tap's thread is stuck) }.
+ * null where the build has no such function (Windows' prebuild, an unpatched build).
+ */
+let nativeAddon;
+function tapHealth() {
+  if (!MAC) return null;
+  if (nativeAddon === undefined) {
+    try {
+      const dir = require('path').dirname(require.resolve('uiohook-napi/package.json'));
+      nativeAddon = require(require.resolve('node-gyp-build', { paths: [dir] }))(dir);
+    } catch {
+      nativeAddon = null;
+    }
+  }
+  if (!nativeAddon || typeof nativeAddon.tapHealth !== 'function') return null;
+  try { return nativeAddon.tapHealth(); } catch { return null; }
+}
 
 /** Stop the shared hook for good: at quit only. */
 function stopHook() {
@@ -198,6 +221,7 @@ function registerHotkeys({ onPress, onRelease, onCancel, onAltDown, binding, int
   const startWhenAllowed = (uIOhook, reason) => {
     if (waiting) return;
     console.log('[typd:hotkey] ' + label(BOUND) + ' is waiting: ' + reason);
+    life.log('key', label(BOUND) + ' waiting: ' + reason);
     waiting = setInterval(() => {
       if (!macTrusted()) return;
       try {
@@ -208,6 +232,7 @@ function registerHotkeys({ onPress, onRelease, onCancel, onAltDown, binding, int
         macTap = uIOhook;
         trigger.reset();
         console.log('[typd:hotkey] ' + label(BOUND) + ' is listening');
+        life.log('key', label(BOUND) + ' listening (the event tap started once allowed)');
       } catch (err) {
         if (process.env.TYPD_DEBUG) console.log('[typd:hotkey] start', err && err.message);
       }
@@ -268,10 +293,11 @@ function registerHotkeys({ onPress, onRelease, onCancel, onAltDown, binding, int
         uIOhook.start();   // macOS: a no-op when the tap already runs (kept across key changes)
         hook = uIOhook;
         if (MAC) macTap = uIOhook;
-        if (MAC && !already) console.log('[typd:hotkey] ' + label(BOUND) + ' is listening');
+        if (MAC && !already) { console.log('[typd:hotkey] ' + label(BOUND) + ' is listening'); life.log('key', label(BOUND) + ' listening'); }
       }
     } catch (err) {
       if (process.env.TYPD_DEBUG) console.log('[typd:hotkey]', err);
+      life.log('key', label(BOUND) + ' could not start: ' + life.errorLine(err));
       if (MAC && uio && attached) startWhenAllowed(uio.uIOhook, String((err && err.message) || err));
       else { ok = false; why = "Typd couldn't listen for " + label(BOUND) + '.'; }
     }
@@ -300,6 +326,12 @@ function registerHotkeys({ onPress, onRelease, onCancel, onAltDown, binding, int
 
     /** Key events this binding has heard (the CI check in mac.yml compares them). */
     get keysHeard() { return seen; },
+
+    /** macOS: the event tap's health (tapHealth above), with whether this binding uses it. */
+    health() {
+      const h = tapHealth();
+      return h ? { ...h, running: Boolean(hook && hook === macTap) } : null;
+    },
 
     /** One line on whether the key can be heard right now (debug logs, the CI check). */
     state() {
@@ -416,4 +448,4 @@ function registerFlagHotkey(binding, dictationKey, onFlag) {
   };
 }
 
-module.exports = { registerHotkeys, registerFlagHotkey, stopHook, BINDING: label(BINDING), label, tapKey, DEFAULT_BINDING };
+module.exports = { registerHotkeys, registerFlagHotkey, stopHook, tapHealth, BINDING: label(BINDING), label, tapKey, DEFAULT_BINDING };

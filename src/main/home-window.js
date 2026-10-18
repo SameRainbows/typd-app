@@ -11,6 +11,7 @@ const status = require('./status');
 const brand = require('./brand');
 const hotkeyLogic = require('./hotkey-logic');
 const { VOCAB_FILE } = require('./pipeline/context');
+const life = require('./lifelog');
 
 /**
  * The Typd window: Home, History, Dictionary, Settings and What's new (ROADMAP, Law 2).
@@ -314,6 +315,13 @@ function register(d) {
     const r = await deps.chooseSharing(on);
     return { ...r, settings: settingsState() };
   });
+  // "Send my past dictations" (backfill.js): the kept recordings not shared yet, sent slowly, once.
+  handle('sharing:backfill', async () => {
+    const s = sharing.get();
+    if (!s || !s.backfill) return null;
+    const r = await s.backfill.request('settings');
+    return { ...r, settings: settingsState() };
+  });
   handle('sharing:delete', async () => {
     const s = sharing.get();
     if (!s) return null;
@@ -395,21 +403,23 @@ function bringForward() {
 const debug = (...args) => { if (process.env.TYPD_DEBUG) console.log('[typd:home]', ...args); };
 
 /**
- * macOS: the Dock icon. With "Show Typd in the Dock" on it stays while Typd runs, and a
- * click on it opens this window (index.js, 'activate'). Off (the default) Typd is a menu-bar
- * app: the icon shows only while this window is open, so it is findable with ⌘Tab, and goes
- * when the window closes. Hiding the icon never quits Typd; the menu-bar icon and the key
- * stay. Called at launch, when the setting changes, and as the window opens and closes.
+ * macOS: the Dock icon follows "Show Typd in the Dock" and nothing else. On, it stays while Typd
+ * runs, and a click on it opens this window (index.js, 'activate'). Off (the default) Typd is a
+ * menu-bar app (LSUIElement) all the time: no Dock icon, no app menu, not in ⌘Tab -- also while
+ * this window is open. Until 0.2.4 the icon came with the window and went when it closed, which
+ * flipped the app from a regular to an accessory app at every close -- the prime suspect when a
+ * tester's Mac lost Typd at the red X, menu-bar icon and all (not reproduced in CI on macOS 14,
+ * 15, 26 or 27). Reliability wins over ⌘Tab. Called at launch and when the setting changes,
+ * never as the window opens or closes.
  */
 function syncDock() {
   if (!MAC || !app.dock) return;
-  const open = Boolean(win && !win.isDestroyed());
-  const want = Boolean(settings.get('showInDock')) || open;
+  const want = Boolean(settings.get('showInDock'));
   try {
     const shown = app.dock.isVisible();
-    if (want && !shown) app.dock.show();
-    else if (!want && shown) app.dock.hide();
-    debug('dock', want ? 'shown' : 'hidden', open ? '(window open)' : '');
+    if (want && !shown) { app.dock.show(); life.log('dock', 'icon shown (the setting is on)'); }
+    else if (!want && shown) { app.dock.hide(); life.log('dock', 'icon hidden (the setting is off)'); }
+    debug('dock', want ? 'shown' : 'hidden');
   } catch (err) {
     debug('dock:', err && err.message);
   }
@@ -446,10 +456,9 @@ function open(section = 'home', opts = {}) {
   // Nothing in this window navigates or opens windows; refuse both outright.
   win.webContents.on('will-navigate', (e) => e.preventDefault());
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-  win.once('ready-to-show', () => {
-    syncDock();   // findable with ⌘Tab while it is open
-    bringForward();
-  });
+  win.once('ready-to-show', () => bringForward());   // no Dock icon for it (syncDock)
+  const openedAt = Date.now();
+  life.log('window open', s + (opts.by ? ', from ' + opts.by : ''));
   // Closing the window only closes the window: Typd, its menu-bar icon and its key stay
   // (nothing here or in index.js quits on a close). Each step is on its own, so one that
   // fails cannot leave the others undone -- the picker's pause above all, which would
@@ -462,7 +471,7 @@ function open(section = 'home', opts = {}) {
     };
     step('revert', () => revert());                     // a key that was never heard is not kept
     step('pause', () => deps.pauseHotkey(false));       // nor is the picker's pause
-    step('dock', () => syncDock());
+    life.log('window closed', 'after ' + Math.round((Date.now() - openedAt) / 1000) + ' s; Typd keeps running');
     debug('window closed; Typd keeps running');
   });
   win.loadFile(PAGE, { query: { section: s, capture: opts.capture ? '1' : '', walkthrough: opts.walkthrough ? '1' : '' } });
@@ -482,6 +491,11 @@ function isOpen() {
   return Boolean(win && !win.isDestroyed());
 }
 
+/** The window itself while it exists, else null (the CI's test hook, test-life.js, reads its place). */
+function current() {
+  return win && !win.isDestroyed() ? win : null;
+}
+
 function isFocused() {
   return Boolean(win && !win.isDestroyed() && win.isFocused());
 }
@@ -491,4 +505,4 @@ function changed(what) {
   send('home:changed', { what });
 }
 
-module.exports = { register, open, close, isOpen, isFocused, isPracticing, heard, changed, setLoginItem, loginItem, syncDock };
+module.exports = { register, open, close, isOpen, current, isFocused, isPracticing, heard, changed, setLoginItem, loginItem, syncDock };

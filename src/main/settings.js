@@ -33,7 +33,9 @@ const DEFAULTS = {
   modelVariant: 'auto',
   // Ask before every model download. Off: downloads over 300 MB ask first only on a metered connection.
   askBeforeModelDownload: false,
-  // The first-run walkthrough (home window): '' until it has been shown once, then 'done'.
+  // The first-run walkthrough (home window): 'due' on a fresh install until it has been shown once,
+  // then 'done'; '' (never decided) becomes one of the two at launch (walkthroughFor). Fresh installs
+  // only: an update, or any install that ran Typd before, never sees it (since 0.2.4).
   walkthrough: ''
 };
 
@@ -60,7 +62,7 @@ function read() {
   cache.share = shareFrom(saved);
   if (cache.flagHotkey && !hotkeyLogic.validFlag(cache.flagHotkey, process.platform)) cache.flagHotkey = DEFAULTS.flagHotkey;
   if (!VARIANTS.includes(cache.modelVariant)) cache.modelVariant = DEFAULTS.modelVariant;
-  if (!['', 'done'].includes(cache.walkthrough)) cache.walkthrough = 'done';
+  if (!['', 'due', 'done'].includes(cache.walkthrough)) cache.walkthrough = 'done';
   return cache;
 }
 
@@ -96,7 +98,7 @@ function set(key, value) {
   }
   if (key === 'share' && !['on', 'off'].includes(value)) return false;
   if (key === 'modelVariant' && !VARIANTS.includes(value)) return false;
-  if (key === 'walkthrough' && !['', 'done'].includes(value)) return false;
+  if (key === 'walkthrough' && !['', 'due', 'done'].includes(value)) return false;
   if (key === 'flagHotkey' && value) {
     const v = hotkeyLogic.validFlag(value, process.platform);
     if (!v) return false;
@@ -120,6 +122,41 @@ function isFirstRun() {
   return firstRun;
 }
 
+/**
+ * A fresh install: nothing an earlier Typd leaves behind is here -- no settings.json (as this
+ * launch found it, before isFirstRun() writes one), no history, no app-update state, no model it
+ * downloaded or carried over from the version it replaced, no kept recordings. Decided once, at
+ * the first call (index.js makes it before anything of this launch can write them).
+ */
+let fresh = null;
+function isFreshInstall() {
+  if (fresh !== null) return fresh;
+  read();
+  const appData = app.getPath('appData');
+  const userData = app.getPath('userData');
+  const traces = [
+    path.join(appData, 'typd', 'history.json'),
+    path.join(userData, 'app-update'),
+    path.join(userData, 'carried'),
+    path.join(userData, 'models'),
+    path.join(appData, 'Typd', 'recordings')
+  ];
+  fresh = Boolean(firstRun) && !traces.some((p) => { try { return fs.existsSync(p); } catch { return false; } });
+  return fresh;
+}
+
+/**
+ * What 'walkthrough' should say now. 'done' stays done. A fresh install's first start makes it
+ * 'due' (and it stays due until it is shown, should that first launch end early); anything else
+ * -- an update's first start, or an install that ran Typd before the walkthrough existed or before
+ * this rule ('' saved) -- makes it 'done', so it never appears.
+ */
+function walkthroughFor({ fresh: isFresh, afterUpdate, current = get('walkthrough') }) {
+  if (current === 'done' || afterUpdate) return 'done';
+  if (current === 'due') return 'due';
+  return isFresh ? 'due' : 'done';
+}
+
 function onChange(fn) { listeners.push(fn); }
 
 /** Where "Keep recordings" puts each dictation's audio. */
@@ -127,4 +164,4 @@ function recordingsDir() {
   return path.join(app.getPath('appData'), 'Typd', 'recordings');
 }
 
-module.exports = { get, set, onChange, isFirstRun, recordingsDir, HOTKEYS, DEFAULTS };
+module.exports = { get, set, onChange, isFirstRun, isFreshInstall, walkthroughFor, recordingsDir, HOTKEYS, DEFAULTS };
