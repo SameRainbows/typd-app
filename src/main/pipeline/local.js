@@ -352,8 +352,8 @@ const CONTEXT_FULL = 4096;
  * With the window that small, one request must never need more than it holds: long dictations are cut
  * into smaller pieces (longLimits()), the screen context is trimmed to LOW_MAX_CONTEXT, and a revision
  * whose selection does not fit is refused with the usual message (revise(), maxReviseChars()).
- * The encoder's conv front end one chunk at a time (MTMD_QWEN3A_CONV_GROUP=1) is on in every mode: see
- * serverEnv(). Measured, the light model on the CPU: bench/low-memory.js and CHANGELOG 0.2.6.
+ * The encoder's conv front end one chunk at a time (MTMD_QWEN3A_CONV_GROUP=1) is on in low-memory mode and
+ * on the processor: see serverEnv(). Measured, the light model on the CPU: bench/low-memory.js, CHANGELOG 0.2.7.
  */
 const LOW_CONTEXT = 1280;
 const LOW_ARGS = ['-fa', 'on', '-ctk', 'q8_0', '-ctv', 'q4_0', '--no-repack'];
@@ -434,22 +434,29 @@ function serverArgs(layers, low = lowMemory.on) {
 
 /*
  * The audio encoder's conv front end one 100-frame chunk at a time (Typd's llama.cpp patch,
- * patches/llama.cpp/, built by scripts/build-mtmd.js): the same output, its compute buffer 554 -> 21 MiB
- * on the light model. Every mode: it is free on the full model too (CHANGELOG 0.2.6). A llama.cpp
- * without the patch ignores the variable. TYPD_CONV_GROUP overrides it (0: the stock graph).
+ * patches/llama.cpp/, built by scripts/build-mtmd.js): its compute buffer 554 -> 21 MiB on the light model
+ * (148 -> 21 MiB of VRAM for the 1.7B's encoder on CUDA). On the processor the output is identical (the same
+ * float operations, chunk by chunk). On CUDA it is not: smaller batches take other kernels, the encoder's
+ * numbers move in the last bits, and 15 of 40 AASR clips of the full model came out worded a little
+ * differently (dictation-research results/small/conv_gpu_encoder_check.log, 2026-10-18). So the full model
+ * on the GPU keeps the stock graph, as before; the patch runs in low-memory mode (where every lever is
+ * measured as one) and whenever the server runs on the processor (layers '0'). A llama.cpp without the
+ * patch ignores the variable. TYPD_CONV_GROUP overrides it (0: the stock graph; N: groups of N).
  */
-function serverEnv(base) {
+function serverEnv(base, layers = '0', low = lowMemory.on) {
   const g = process.env.TYPD_CONV_GROUP;
   const env = { ...base };
-  if (g === '0') { delete env.MTMD_QWEN3A_CONV_GROUP; return env; }
-  env.MTMD_QWEN3A_CONV_GROUP = g && /^\d+$/.test(g) ? g : '1';
+  delete env.MTMD_QWEN3A_CONV_GROUP;
+  if (g === '0') return env;
+  if (g && /^\d+$/.test(g)) env.MTMD_QWEN3A_CONV_GROUP = g;
+  else if (low || String(layers) === '0') env.MTMD_QWEN3A_CONV_GROUP = '1';
   return env;
 }
 
 function launch(layers) {
   const run = spawnOptions();
   if (run.cwd !== path.dirname(SERVER)) debug('starting llama-server with the CUDA pack in', run.cwd);
-  const child = spawn(SERVER, serverArgs(layers), { windowsHide: true, cwd: run.cwd, env: serverEnv(run.env), stdio: ['ignore', 'ignore', process.env.TYPD_DEBUG ? 'inherit' : 'ignore'] });
+  const child = spawn(SERVER, serverArgs(layers), { windowsHide: true, cwd: run.cwd, env: serverEnv(run.env, layers), stdio: ['ignore', 'ignore', process.env.TYPD_DEBUG ? 'inherit' : 'ignore'] });
   child.on('exit', (code) => {
     debug('server exited', code);
     if (proc === child) proc = null;

@@ -77,9 +77,11 @@ function rules() {
   for (const a of [low, full]) {
     check(`${a === low ? 'low' : 'full'}: -ub 256 -np 1 --cache-ram 0 --no-warmup as before`, val(a, '-ub') === '256' && val(a, '-np') === '1' && val(a, '--cache-ram') === '0' && a.includes('--no-warmup'));
   }
-  check('the encoder runs one conv chunk at a time in every mode (MTMD_QWEN3A_CONV_GROUP=1)', local.serverEnv({}).MTMD_QWEN3A_CONV_GROUP === '1');
+  check('low-memory mode: the encoder runs one conv chunk at a time (MTMD_QWEN3A_CONV_GROUP=1)', local.serverEnv({}, '99', true).MTMD_QWEN3A_CONV_GROUP === '1');
+  check('on the processor (-ngl 0), any mode: one conv chunk at a time (identical output there)', local.serverEnv({}, '0', false).MTMD_QWEN3A_CONV_GROUP === '1');
+  check('the full model on the GPU in normal mode: the stock graph, as before (not identical on CUDA)', !('MTMD_QWEN3A_CONV_GROUP' in local.serverEnv({ MTMD_QWEN3A_CONV_GROUP: '1' }, '99', false)));
   process.env.TYPD_CONV_GROUP = '0';
-  check('TYPD_CONV_GROUP=0: the stock graph (variable unset)', !('MTMD_QWEN3A_CONV_GROUP' in local.serverEnv({ MTMD_QWEN3A_CONV_GROUP: '4' })));
+  check('TYPD_CONV_GROUP=0: the stock graph (variable unset)', !('MTMD_QWEN3A_CONV_GROUP' in local.serverEnv({ MTMD_QWEN3A_CONV_GROUP: '4' }, '0', true)));
   delete process.env.TYPD_CONV_GROUP;
 
   section('3. no request outgrows the window (long dictations, revise)');

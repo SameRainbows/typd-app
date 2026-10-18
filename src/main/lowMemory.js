@@ -12,7 +12,8 @@
  *     for the light model);
  *   - long dictations in pieces small enough for that window, and revisions capped to fit it;
  *   - the audio encoder's conv front end one chunk at a time (MTMD_QWEN3A_CONV_GROUP=1, Typd's llama.cpp
- *     patch), which every mode gets: the same output, its buffer 554 -> 21 MiB.
+ *     patch): its buffer 554 -> 21 MiB. The processor gets it in every mode (identical output there);
+ *     the GPU only in low-memory mode (on CUDA the wording can move a little: local.js serverEnv()).
  * The light model on the CPU: ~1.4 GB -> ~0.8 GB resident.
  *
  * Settings > Low-memory mode: 'auto' (default), 'on' or 'off'. Automatic turns it on for
