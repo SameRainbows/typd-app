@@ -483,6 +483,9 @@ async function pageChecks(headless) {
   try {
     console.log('    browser: ' + path.basename(h.exe) + ', headless');
     const ready = 'document.readyState === "complete" && Array.isArray(window.__calls)';
+    // Full motion here whatever the machine says: the macOS CI runner has Reduce Motion on, and the
+    // reduced case has its own checks below (reducedChecks).
+    await S('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }] });
     await load('popup.html', ready);
     const { calls, emit, attr, box, mouse, centre, scale } = pageHelpers(h);
     const LONG = 'So the plan for tomorrow is to meet at nine, go over the quarterly numbers with the whole team, then ' +
