@@ -20,7 +20,7 @@ require('./pipeline/local').configure({ lowMemory: () => settings.get('lowMemory
 const inject = require('./inject');
 const learn = require('./learn');
 const dictionary = require('./dictionary');
-const sharing = require('./sharing');   // public builds: on unless turned off in Settings; tester builds: their key
+const sharing = require('./sharing');   // public builds: asked (walkthrough or the small screen), Settings; tester builds: their key
 const ask = require('./ask-window');    // the "That was wrong" window
 const modelUpdate = require('./modelUpdate');   // every packaged build (no key: the public routes) and the developer's machines
 const appUpdate = require('./appUpdate');       // packaged builds: a newer signed Typd, installed while you are away
@@ -468,9 +468,11 @@ async function endSession() {
 
         if (!result.ok) {
           keepHistory(current, event.text, 'copied');
-          // The life log: a paste that fell back to the clipboard (never the text). Sharing follows a
-          // pasted dictation only, so a PC whose every paste fails shares nothing -- this says why.
+          // The life log: a paste that fell back to the clipboard (never the text).
           life.log('dictation', 'not pasted, ' + (result.copied ? 'copied instead' : 'not copied') + ': ' + result.reason);
+          // Copied instead ("Copied — press Ctrl+V"): the text is good and in the person's hands, so it
+          // is shared like a pasted one when sharing is on (marked pasted: false; sharing.js).
+          if (result.copied) sharing.add(current, event.text, { pasted: false });
           send('session:error', {
             message: result.copied
               ? 'Copied — press ' + (MAC ? '⌘V' : 'Ctrl+V') + ' to paste'
@@ -660,17 +662,43 @@ function openFlag() {
   ask.open('flag');
 }
 
-/** Settings switched sharing on or off. */
+/**
+ * Sharing switched on or off: Settings, the walkthrough's first screen, or the small screen
+ * (sharing.answer: Don't share on an install that shared under 0.2.6's default deletes it too).
+ */
 async function chooseSharing(share) {
   const s = sharing.get();
   if (!s) return { ok: false };
-  const r = await s.choose(share ? 'on' : 'off');
+  const r = await s.answer(share ? 'on' : 'off');
   home.changed('sharing');
   return r;
 }
 
+/**
+ * "Help make Typd better?" (ask-window.js 'share'): once, at the first launch of 0.2.7 on an install
+ * first started from 2026-10-18 15:00 UTC on that was never asked (settings 'shareAsk' 'due':
+ * settings.js shareRule). Not the walkthrough: a fresh install is asked on its first screen. It
+ * counts as shown once it opens; closed without an answer, sharing stays off ('ask') and Settings
+ * has the switch. After an app update's quiet relaunch it waits until someone is at the keyboard.
+ */
+function startShareAsk(afterUpdate) {
+  const due = () => !stub && !preview && settings.get('shareAsk') === 'due' && settings.get('share') === 'ask' &&
+    Boolean(sharing.get()) && sharing.get().mode === 'beta' && settings.get('walkthrough') !== 'due';
+  if (!due()) return;
+  const show = () => {
+    if (!due()) return;
+    if (MAC && require('./permissions-mac').isAsking()) { setTimeout(show, 1000); return; }
+    settings.set('shareAsk', 'done');
+    life.log('sharing', 'asked: the small screen (an install from after the cutoff, never asked)');
+    ask.open('share');
+  };
+  if (afterUpdate) appUpdate.whenUserActive(() => setTimeout(show, 1500));
+  else setTimeout(show, 3500);
+}
+
 ask.register({
   sharing: () => sharing.get(),
+  answer: (share) => chooseSharing(share),
   flagged: (r) => {
     if (r.state === 'flagged') note(r.how === 'shared' ? 'Shared to fix it — thank you' : 'Flagged — thank you');
   }
@@ -1232,12 +1260,13 @@ app.whenReady().then(() => {
     app.on('did-resign-active', () => life.log('active', 'Typd stopped being the active app'));
   }
 
-  // Sharing asks nothing at launch: public builds share unless turned off in Settings (since
-  // 0.2.4), and the walkthrough's first screen says so (sharing.js). There is no consent screen.
-
   // The walkthrough: once, in the Typd window, on the first launch of an installed Typd (after the
   // Mac permission dialog), and never into an app update's quiet relaunch.
   startWalkthrough(Boolean(appUpdater && appUpdater.firstStart));
+
+  // Sharing (0.2.7): a fresh install is asked on the walkthrough's first screen; an install first
+  // started after the cutoff that was never asked, in one small screen, once (startShareAsk).
+  startShareAsk(Boolean(appUpdater && appUpdater.firstStart));
 
   // First run: start at login is on by default, so make it so -- the installed app's own
   // login entry, or the Startup shortcut when run from source.

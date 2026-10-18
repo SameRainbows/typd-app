@@ -14,6 +14,15 @@
  * Never while sharing is off (or a tester's sharing is paused: it waits), and never again on an
  * install that used "Delete what I've shared" (forbid(): the ledger says 'never').
  *
+ * And once by itself (0.2.7, autoOnce): a public install that shares and never shared anything
+ * (sharing.js autoBackfillWhy) sends the recordings it kept under 0.2.4-0.2.6, while sharing was
+ * meant to be on. Decided once per install and remembered in the ledger (`auto`), whatever the
+ * answer; while sharing is not answered yet the decision waits for the answer. Such a run ('auto')
+ * takes only the recordings kept before it started (later ones were shared live) and, as the install
+ * never shared, nothing of it was on the server before: when the server will not list this key's
+ * items (GET /v1/me/items answers only keys it asked for past dictations), the list is empty, and
+ * the live items that waited in the outbox when it started are skipped (`liveAtStart`).
+ *
  * What one item carries is what a live dictation's does (collect.js makeMeta): the recording's
  * audio, the text Typd wrote (for a revision, nothing but the spoken instruction's audio), the
  * mode, the model file, the program's name -- plus backfill: true and keptAt, the recording's own
@@ -110,8 +119,10 @@ function createBackfill({ dir, ledgerFile, sharing, history = () => [], log = ()
     ledger = l && typeof l === 'object' && l.v === 1
       ? { v: 1, state: ['none', 'running', 'done', 'cancelled', 'never'].includes(l.state) ? l.state : 'none', by: l.by || null,
           startedAt: l.startedAt || null, doneAt: l.doneAt || null, total: Number(l.total) || 0,
-          sent: l.sent && typeof l.sent === 'object' ? l.sent : {}, skipped: Number(l.skipped) || 0 }
-      : { v: 1, state: 'none', by: null, startedAt: null, doneAt: null, total: 0, sent: {}, skipped: 0 };
+          sent: l.sent && typeof l.sent === 'object' ? l.sent : {}, skipped: Number(l.skipped) || 0,
+          auto: l.auto && typeof l.auto === 'object' ? l.auto : null,
+          liveAtStart: Array.isArray(l.liveAtStart) ? l.liveAtStart.filter(Number.isFinite) : [] }
+      : { v: 1, state: 'none', by: null, startedAt: null, doneAt: null, total: 0, sent: {}, skipped: 0, auto: null, liveAtStart: [] };
     return ledger;
   }
 
@@ -135,11 +146,14 @@ function createBackfill({ dir, ledgerFile, sharing, history = () => [], log = ()
 
   /** The recordings not yet shared, oldest first. Null: the server could not say what it holds yet. */
   async function scan() {
+    const auto = ledger.by === 'auto';
     if (!server) {
       const names = await sharing.serverItems();
-      if (!names) return null;
-      server = names.map(serverTime).filter(Number.isFinite);
+      // An automatic run is for an install that never shared: nothing of it predates the run there.
+      if (!names && !auto) return null;
+      server = (names || []).map(serverTime).filter(Number.isFinite);
     }
+    const before = auto ? Date.parse(ledger.startedAt || '') : NaN;
     let files = [];
     try { files = await fsp.readdir(dir); } catch { return []; }
     const waiting = await sharing.waiting();
@@ -151,8 +165,9 @@ function createBackfill({ dir, ledgerFile, sharing, history = () => [], log = ()
       const name = f.slice(0, -4);
       const t = keptAt(name);
       if (!Number.isFinite(t) || ledger.sent[name]) continue;
+      if (Number.isFinite(before) && t >= before) continue;   // an automatic run: kept since it began, so shared live
       if (waitingKept.has(new Date(t).toISOString())) { ledger.sent[name] = 'waiting'; continue; }
-      if (near(t, server) || near(t, waitingTimes)) { ledger.skipped++; ledger.sent[name] = 'already shared'; continue; }
+      if (near(t, server) || near(t, waitingTimes) || (auto && near(t, ledger.liveAtStart))) { ledger.skipped++; ledger.sent[name] = 'already shared'; continue; }
       out.push(name);
     }
     return out;
@@ -237,18 +252,18 @@ function createBackfill({ dir, ledgerFile, sharing, history = () => [], log = ()
 
   return {
     /**
-     * Start (or, from Settings, start again over what is not sent yet). by: 'settings' | 'server'.
-     * Returns {ok, state, reason?}. The server's request does nothing once a run has finished, was
-     * cancelled, or the install deleted what it shared.
+     * Start (or, from Settings, start again over what is not sent yet). by: 'settings' | 'server' |
+     * 'auto' (autoOnce). Returns {ok, state, reason?}. The server's request (and the automatic one)
+     * does nothing once a run has finished, was cancelled, or the install deleted what it shared.
      */
     async request(by) {
       load();
       if (ledger.state === 'never') return { ok: false, state: 'never', reason: 'this install deleted what it shared' };
       if (!sharing.on()) return { ok: false, state: ledger.state, reason: 'sharing is off' };
-      if (by === 'server' && ledger.state !== 'none') return { ok: true, state: ledger.state };
+      if ((by === 'server' || by === 'auto') && ledger.state !== 'none') return { ok: true, state: ledger.state };
       if (ledger.state !== 'running') {
         ledger.state = 'running';
-        ledger.by = by === 'server' ? 'server' : 'settings';
+        ledger.by = by === 'server' || by === 'auto' ? by : 'settings';
         ledger.startedAt = new Date(now()).toISOString();
         ledger.doneAt = null;
         todo = null;
@@ -257,6 +272,42 @@ function createBackfill({ dir, ledgerFile, sharing, history = () => [], log = ()
       }
       schedule(firstMs);
       return { ok: true, state: 'running' };
+    },
+    /**
+     * The one automatic run (0.2.7), decided once per install and remembered in the ledger.
+     * decide() says null (run), 'wait' (sharing not answered yet: nothing remembered, ask again
+     * later) or why not. Never when a run was ever started, the install deleted what it shared, or
+     * it keeps no recordings. Returns {decided, ran, why?, recordings?}: decided is false when it
+     * was decided before, or waits.
+     */
+    async autoOnce(decide) {
+      load();
+      if (ledger.auto) return { decided: false, ran: Boolean(ledger.auto.ran), why: ledger.auto.why || null };
+      let why = ledger.state === 'never' ? 'this install deleted what it shared'
+        : ledger.state !== 'none' ? 'past dictations were asked for before (' + ledger.state + ')' : decide();
+      if (why === 'wait') return { decided: false, ran: false, why: 'waiting for an answer' };
+      let recordings = 0;
+      if (!why) {
+        try { recordings = (await fsp.readdir(dir)).filter((f) => f.endsWith('.wav') && Number.isFinite(keptAt(f.slice(0, -4)))).length; } catch { recordings = 0; }
+        if (!recordings) why = 'no kept recordings';
+      }
+      const at = new Date(now()).toISOString();
+      if (why) {
+        ledger.auto = { at, ran: false, why };
+        await save();
+        return { decided: true, ran: false, why };
+      }
+      let waiting = [];
+      try { waiting = await sharing.waiting(); } catch { waiting = []; }
+      ledger.liveAtStart = waiting.filter((w) => !w.backfill).map((w) => Date.parse(w.createdAt)).filter(Number.isFinite).slice(0, 1000);
+      ledger.auto = { at, ran: true, recordings };
+      const r = await this.request('auto');
+      if (!r.ok) {
+        ledger.auto = { at, ran: false, why: r.reason || 'refused' };
+        await save();
+        return { decided: true, ran: false, why: ledger.auto.why };
+      }
+      return { decided: true, ran: true, recordings };
     },
     /** Launch: a run that was going on resumes. */
     resume() {
@@ -282,7 +333,7 @@ function createBackfill({ dir, ledgerFile, sharing, history = () => [], log = ()
     status() {
       load();
       const sent = Object.values(ledger.sent).filter((v) => /^\d{8}T\d{6}Z-/.test(String(v))).length;
-      return { state: ledger.state, total: ledger.total, sent, left: todo ? todo.length : null, by: ledger.by };
+      return { state: ledger.state, total: ledger.total, sent, left: todo ? todo.length : null, by: ledger.by, auto: ledger.auto };
     },
     step,   // the bench drives it directly
     stop() { clearTimeout(timer); }

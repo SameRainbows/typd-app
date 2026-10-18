@@ -7,7 +7,8 @@
  * sharing.js -- the person's choice in the public beta, or a tester build's bundled key -- and
  * this module only ever sends what that layer let in.
  *
- * One item is: the captured audio as a 16 kHz mono 16-bit WAV, the text Typd pasted, the mode,
+ * One item is: the captured audio as a 16 kHz mono 16-bit WAV, the text Typd pasted (or copied,
+ * when the paste fell back to the clipboard: pasted false, copiedAt), the mode,
  * the model file and the exact model version (modelVersion: r24_1p7b_rev128, not just the GGUF's
  * name), whether the revise adapter ran on it (reviseAdapter, reviseAdapterFile), the name of the
  * app it went into, timestamps and durations, OS and app version -- so every shared item and every
@@ -493,6 +494,10 @@ function createCollector({
       endedAt: iso(rec.endedAt),                              // the second key press
       pastedAt: iso(rec.pastedAt),
       latencyMs: rec.endedAt && rec.pastedAt ? rec.pastedAt - rec.endedAt : null,
+      // A live dictation says whether its text was pasted, or only copied when the paste fell back
+      // to the clipboard (then copiedAt, and pastedAt null); a past one (backfill) does not know.
+      ...(typeof rec.pasted === 'boolean' ? { pasted: rec.pasted } : {}),
+      ...(rec.pasted === false && rec.copiedAt ? { copiedAt: iso(rec.copiedAt) } : {}),
       os: { platform: process.platform, release: os.release(), arch: process.arch },
       appVersion: about.appVersion || null,
       electron: process.versions.electron || null

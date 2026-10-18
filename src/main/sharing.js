@@ -2,13 +2,19 @@
 
 /**
  * Sharing dictations with the developer, to improve Typd's model. Dictating itself never needs
- * the network: an item is queued only after its text was pasted, and sent from the outbox later.
+ * the network: an item is queued only after its text landed (pasted, or copied when the paste fell
+ * back to the clipboard), and sent from the outbox later.
  *
- *   Public builds (any packaged build without a tester key). Sharing is ON by default (since
- *   0.2.4; settings 'share'). The first screen of the first-run walkthrough says so in one line,
- *   and Settings > "Share dictations" turns it off at once (what still waits in the outbox is
- *   deleted). An install that chose 'off' -- on the consent screen of 0.2.0-0.2.3, or in
- *   Settings -- stays off; one that never answered that screen counts as on (settings.js).
+ *   Public builds (any packaged build without a tester key). Since 0.2.7 sharing is ASKED (settings
+ *   'share': 'on', 'off', or 'ask' = not answered yet, which queues nothing and sends nothing): a
+ *   fresh install on the walkthrough's first screen, an install first started from 2026-10-18 15:00
+ *   UTC on in one small screen at its next launch (ask-window.js 'share'): "Help make Typd better?",
+ *   Share / Don't share, nothing preselected. Installs first started before that (the people who
+ *   agreed in person while 0.2.4-0.2.6 shared by default) stay on; an explicit 'off' stays off
+ *   (settings.js shareRule). Settings > "Share dictations" switches it either way at once (off
+ *   deletes what still waits in the outbox). Answering Don't share on an install that shared under
+ *   0.2.6's default (it has a key) deletes what it shared, as "Delete what I've shared" does
+ *   (answer()); offline, that delete is retried at later launches until it goes.
  *   The first item to send enrolls this install with typd-collect (POST /v1/enroll): an
  *   anonymous, random key, kept in <userData>/share.json and nowhere else. "Delete what I've
  *   shared" deletes everything stored for that key on the server (DELETE /v1/me), empties the
@@ -33,7 +39,8 @@
  * Past dictations (backfill.js): kept recordings never shared go out once, slowly -- from
  * Settings > "Send my past dictations", or when the server asks for this key (GET /v1/me says
  * {backfill: true}; typd-collect's allowlist). Never while sharing is off; never again after
- * "Delete what I've shared".
+ * "Delete what I've shared". And once by itself (0.2.7, autoBackfillWhy): on an install that shares
+ * and never shared anything -- its 0.2.4-0.2.6 recordings, kept while sharing was meant to be on.
  */
 
 const fs = require('fs');
@@ -63,7 +70,9 @@ function readKeyFile(file) {
     const k = JSON.parse(fs.readFileSync(file, 'utf8'));
     const endpoint = checkEndpoint(k && k.endpoint);
     if (!endpoint || !KEY_RE.test(k.key) || !ID_RE.test(k.id)) return null;
-    return { endpoint, key: k.key, id: k.id, enrolledAt: typeof k.enrolledAt === 'string' ? k.enrolledAt : null };
+    const rec = { endpoint, key: k.key, id: k.id, enrolledAt: typeof k.enrolledAt === 'string' ? k.enrolledAt : null };
+    if (k.deleteWanted === true) rec.deleteWanted = true;   // Don't share answered, the delete not through yet
+    return rec;
   } catch {
     return null;
   }
@@ -90,8 +99,8 @@ const ITEM_RE = /^\d{8}T\d{6}Z-[0-9a-f]{16}$/;
  *   endpoint   the public builds' server
  *   keyFile    <userData>/share.json
  *   dir        the outbox
- *   choice     {get, set}: settings 'share' -- 'on' (the default) or 'off'. Only 'off' is off:
- *              '' (a consent screen from before 0.2.4, never answered) counts as on
+ *   choice     {get, set}: settings 'share' -- 'on', 'off' or 'ask' (not answered: off). Only 'on'
+ *              is on (settings.js turns the older '' into 'on' or 'ask'); set() takes 'on' or 'off'
  *   paused     () => boolean: a tester build's pause (settings 'sharePaused')
  *   dayFile    public builds: where the daily limit's count is kept (default <dir>/../share-day.json)
  *   cap, daily, fullHoldS   override the public builds' limits (bench/sharing.js); testers get
@@ -108,6 +117,9 @@ function createSharing({
 }) {
   const mode = tester ? 'tester' : 'beta';
   let keyRec = mode === 'beta' ? readKeyFile(keyFile) : null;
+  // Whether this install had shared before this run began (a key is made by the first send): the
+  // one automatic backfill is only for installs that never shared (autoBackfillWhy).
+  const hadKey = Boolean(keyRec);
   let enrolling = null;
   let last = null;   // {rec, name, at}: the last finished dictation, in memory only
 
@@ -139,7 +151,8 @@ function createSharing({
     if (run.notQueued[reason] === 1) tell('not queued', reason + ' (the first this run)');
   }
 
-  const sharingOn = () => (mode === 'tester' ? !paused() : choice.get() !== 'off');
+  const sharingOn = () => (mode === 'tester' ? !paused() : choice.get() === 'on');
+  const unanswered = () => mode === 'beta' && choice.get() === 'ask';
   const limits = mode === 'beta'
     ? {
         cap: cap === undefined ? OUTBOX_CAP_PUBLIC : cap,
@@ -226,6 +239,8 @@ function createSharing({
       return {
         mode,
         state: collector.isRevoked() ? 'stopped' : sharingOn() ? 'on' : 'off',
+        // 'on', 'off', or 'ask': not answered yet (the walkthrough's first screen, the small screen).
+        choice: unanswered() ? 'ask' : sharingOn() ? 'on' : 'off',
         shared: Boolean(keyRec),
         id: keyRec ? keyRec.id : null
       };
@@ -237,7 +252,7 @@ function createSharing({
      */
     add(rec) {
       last = { rec, name: null, at: now() };
-      if (!sharingOn()) { kept(mode === 'tester' ? 'sharing is paused' : 'sharing is off'); return false; }
+      if (!sharingOn()) { kept(mode === 'tester' ? 'sharing is paused' : unanswered() ? 'sharing not chosen yet' : 'sharing is off'); return false; }
       if (collector.isRevoked()) { kept('the server refused this key'); return false; }
       const name = collector.queue(mode === 'beta' ? { ...rec, consent: 'all' } : rec);
       last.name = name;
@@ -254,7 +269,7 @@ function createSharing({
     diagnostics() {
       let waiting = 0;
       try { waiting = fs.readdirSync(dir).filter((n) => n.endsWith('.json')).length; } catch { /* no outbox yet */ }
-      const state = collector.isRevoked() ? 'stopped' : sharingOn() ? 'on' : mode === 'tester' ? 'paused' : 'off';
+      const state = collector.isRevoked() ? 'stopped' : sharingOn() ? 'on' : mode === 'tester' ? 'paused' : unanswered() ? 'not chosen yet (off)' : 'off';
       const held = collector.heldUntil();
       const notQueued = Object.entries(run.notQueued).map(([k, v]) => k + ' x' + v).join(', ');
       return [
@@ -282,6 +297,10 @@ function createSharing({
         return { ok: true };
       }
       if (collector.isRevoked()) { await forgetKey(); collector.reset(); }   // refused before: start afresh
+      if (keyRec && keyRec.deleteWanted) {   // a Don't share whose delete never went: superseded by this yes
+        keyRec = { endpoint: keyRec.endpoint, key: keyRec.key, id: keyRec.id, enrolledAt: keyRec.enrolledAt };
+        await writeKeyFile(keyFile, keyRec).catch(() => {});
+      }
       choice.set('on');
       try {
         await ensureKey();
@@ -291,6 +310,54 @@ function createSharing({
         track('no key yet, will retry', why(err));
         return { ok: true, enrolled: false };
       }
+    },
+
+    /**
+     * The person's answer, from the walkthrough's first screen, the small screen or Settings' switch:
+     * 'on' or 'off', as choose(). Don't share on an install not asked before that shared under
+     * 0.2.6's default (it had a key when this run began: something went) also deletes what it
+     * shared (deleteShared: DELETE /v1/me -- everything stored for the key, a dictation flagged and
+     * shared on its own since included -- the outbox emptied, the key forgotten). If that delete
+     * cannot go now, the key file says so (deleteWanted) and retryDelete() tries again at later
+     * launches. Returns choose()'s answer, or deleteShared()'s with deletedShared: true.
+     */
+    async answer(value) {
+      if (mode !== 'beta' || !['on', 'off'].includes(value)) return { ok: false };
+      if (value === 'off' && unanswered() && hadKey && keyRec) {
+        log('answered: do not share; deleting what this install shared');
+        tell('answered', "don't share; deleting what this install shared");
+        const r = await this.deleteShared();
+        if (!r.ok && keyRec) {
+          keyRec = { ...keyRec, deleteWanted: true };
+          await writeKeyFile(keyFile, keyRec).catch(() => {});
+        }
+        return { ...r, deletedShared: true };
+      }
+      if (unanswered()) tell('answered', value === 'on' ? 'share' : "don't share");
+      return this.choose(value);
+    },
+
+    /** Launch: a Don't share whose delete did not go through (offline) is tried again. */
+    async retryDelete() {
+      if (mode !== 'beta' || !keyRec || !keyRec.deleteWanted) return null;
+      const r = await this.deleteShared();
+      tell('delete after "don\'t share"', r.ok ? 'done' : 'not yet: ' + (r.reason || 'failed'));
+      return r;
+    },
+
+    /**
+     * The one automatic backfill (0.2.7, backfill.js autoOnce): null when it should run now, 'wait'
+     * while sharing is not answered yet (it is decided once the person answers), else why not. Only
+     * a public install that shares, is not a fresh one, and never shared anything before this run.
+     */
+    autoBackfillWhy({ fresh = false } = {}) {
+      if (mode !== 'beta') return 'a tester build';
+      if (fresh) return 'a fresh install';
+      if (unanswered()) return 'wait';
+      if (!sharingOn()) return 'sharing is off';
+      if (collector.isRevoked()) return 'the server refused this key';
+      if (hadKey) return 'this install has shared before';
+      return null;
     },
 
     /** What a flag would act on: null, or {text, mode, at, needsConsent}. */
@@ -414,7 +481,7 @@ function instance() {
   // Development: a tester key only with TYPD_TESTER_DEV=1 -- the repo root is where the developer
   // runs their own Typd every day, and a stray tester.json there once queued the developer's
   // dictations under a tester's name (2026-10-09) -- and the public builds' sharing only with
-  // TYPD_SHARE_DEV=1. It is on by default, so point it at a local wrangler dev with
+  // TYPD_SHARE_DEV=1. Once sharing is on it shares, so point it at a local wrangler dev with
   // TYPD_COLLECT_URL, or it shares with the real server.
   const devTester = !app.isPackaged && process.env.TYPD_TESTER_DEV === '1';
   const devBeta = !app.isPackaged && process.env.TYPD_SHARE_DEV === '1';
@@ -462,6 +529,16 @@ function instance() {
     const t = setTimeout(() => main.start(), START_DELAY_MS);
     if (t.unref) t.unref();
     backfill.resume();
+    // Don't share answered while offline: the delete it owes goes as soon as it can.
+    const td = setTimeout(() => { main.retryDelete().catch(() => {}); }, START_DELAY_MS / 2);
+    if (td.unref) td.unref();
+    // 0.2.7: past dictations, once by itself, for an install that shares and never shared anything
+    // (autoBackfillWhy; backfill.autoOnce remembers the decision in its ledger). Decided now -- the
+    // run's first step waits as any run's does -- or, while sharing is not answered, once it is.
+    const autoBackfill = () => backfill.autoOnce(() => main.autoBackfillWhy({ fresh: settings.isFreshInstall() })).then((r) => {
+      if (r && r.decided) require('./lifelog').log('backfill', r.ran ? 'past dictations: sending them once, by itself (' + r.recordings + ' kept recordings; this install never shared)' : 'past dictations: not sent by itself: ' + r.why);
+    }).catch((err) => lifeNote('auto backfill failed', why(err)));
+    autoBackfill();
     // Does the server ask this key for its past dictations? Once a while after launch, then every
     // ASK_EVERY_MS; only while sharing is on, and only until a run has started (backfill.request).
     const ask = () => {
@@ -481,6 +558,7 @@ function instance() {
     for (const ev of ['resume', 'unlock-screen']) powerMonitor.on(ev, () => main.wake());
     settings.onChange((key, value) => {
       if (key === 'sharePaused' && !value) main.wake(1000);
+      if (key === 'share') autoBackfill();   // answered: the automatic backfill is decided now
     });
   });
   return main;
@@ -490,10 +568,11 @@ function instance() {
 instance();
 
 /**
- * Called once per session, after its text was pasted successfully (src/main/index.js).
- * Never throws and never waits.
+ * Called once per session, after its text landed (src/main/index.js): pasted, or -- { pasted: false }
+ * -- copied to the clipboard when the paste fell back ("Copied — press Ctrl+V"). Never throws and
+ * never waits.
  */
-function add(session, text) {
+function add(session, text, { pasted = true } = {}) {
   try {
     const s = instance();
     // A stub session's text never came from its audio; it would be a wrong label.
@@ -518,7 +597,10 @@ function add(session, text) {
       reviseAdapter: session.reviseAdapter || false,
       engine,
       endedAt: session.endedAt || null,
-      pastedAt: Date.now()
+      // The item says which: pasted (pastedAt) or only copied (pasted: false, copiedAt).
+      pasted: pasted !== false,
+      pastedAt: pasted !== false ? Date.now() : null,
+      copiedAt: pasted !== false ? null : Date.now()
     });
   } catch (err) {
     debug('add failed', err && err.message);
