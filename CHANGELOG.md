@@ -1,6 +1,11 @@
 # What's new
 
-## 0.2.6 · October 2026
+## 0.2.8 · October 2026
+
+- **Sharing is your choice.** A new install asks on its first screen whether to share your dictations (audio and text) to help train Typd's model, with nothing pre-selected, and shares nothing until you choose **Share**. Installs from before this change that were never asked see the same short question once; choosing **Don't share** there also deletes anything they had already shared. You can change it anytime in Settings.
+- **Copied dictations count too.** When sharing is on, a dictation Typd could not paste and left on the clipboard ("Copied — press Ctrl+V") is shared like any other.
+- **Low-memory mode.** On computers without a strong GPU, Typd's model now uses about 0.8 GB of memory instead of 1.4 GB, with the same accuracy. Long dictations are written in shorter pieces, and in this mode you can revise up to about 250 words at a time. It is on automatically with the Light model or on a computer with less than 8 GB of memory; **Settings → Low-memory mode** turns it on or off.
+- **Steadier on slow processors.** A long dictation on a slow computer is given more time to start writing before Typd calls it stuck.
 
 - **The ✕ and ✓ on the recording pill work again.** On some Windows PCs a click went straight through the pill. The buttons now take every click, on Windows and on a Mac, and the pill still never takes the focus from the app you are typing in. Typd also no longer watches every mouse move on the computer while the pill is up, so the pointer stays smooth while Typd is busy.
 - **Dictate sooner on a new PC with an NVIDIA GPU.** If the full model would take more than a few minutes to download, Typd first fetches the smaller Light model so you can dictate right away, then gets the full model in the background and switches to it the next time you are not dictating. Home says which model you are using and how far the full one is.
