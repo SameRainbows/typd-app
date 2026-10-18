@@ -860,7 +860,7 @@ function createUpdater({
   async function followPack(m, tag) {
     if (!cuda || !cuda.id || !cuda.packsDir) { if (packState !== 'off') setPack('off'); return null; }
     await cuda.prepare();
-    if (cuda.have()) { packTarget = null; packHurry = false; await cuda.tidy(); return setPack('current'); }
+    if (cuda.have()) { packTarget = null; packHurry = false; await cuda.tidy({ partials: false }); return setPack('current'); }
     let wanted = false;
     try { wanted = Boolean(await cudaWanted()); } catch { wanted = false; }
     if (!wanted) { packTarget = null; packHurry = false; return setPack('unwanted'); }

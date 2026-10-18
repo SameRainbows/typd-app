@@ -387,7 +387,10 @@ const modelReqs = (s) => s.fileRequests().filter((q) => !q.url.includes('/' + PA
     publishAll(s);
     s.requests = [];
     const p = profile(s, { hw: 'nvidia4', bundledModel: MODELS.full, bundledCuda: DLLS });
+    fs.mkdirSync(path.join(p.packsDir, PACK + '.partial'), { recursive: true });   // a download begun before, now not needed
+    fs.writeFileSync(path.join(p.packsDir, PACK + '.partial', ZIP), PACKZIP.subarray(0, 100));
     const r = await p.u.check();
+    check('a pack download left from before is deleted: the backend is here', !exists(path.join(p.packsDir, PACK + '.partial')));
     check('nothing is downloaded: the model is the manifest\'s, the CUDA backend is this build\'s ("bundled")',
       r.state === 'current' && s.fileRequests().length === 0 && p.cuda.state() === 'bundled' && p.u.packState === 'current', { r, reqs: s.fileRequests(), cs: p.cuda.state() });
     check('llama-server starts beside them as before (no pack folder)', p.cuda.dir() === null && !p.ev.length);
