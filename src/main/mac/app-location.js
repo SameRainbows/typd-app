@@ -89,7 +89,7 @@ async function offerMove() {
     life('location', 'handing over to ' + there);
     // After this copy has quit (one Typd at a time: a second copy quits at once).
     require('child_process').spawn('/bin/sh', ['-c', 'sleep 1.5; /usr/bin/open "$0"', there], { detached: true, stdio: 'ignore' }).unref();
-    app.quit();
+    if (quitFor) quitFor('handing over to the Typd in Applications');
     return true;
   }
   try {
@@ -112,7 +112,7 @@ async function offerMove() {
  * The paths LaunchServices holds for ai.typd.app (`lsregister -dump`, streamed: on a Mac with many apps it
  * is tens of MB). In the dump a bundle's "path:" line comes before its "identifier:" line.
  */
-function registeredPaths(id = 'ai.typd.app', ms = 20000) {
+function registeredPaths(id = 'ai.typd.app', ms = 8000) {
   return new Promise((resolve) => {
     const found = new Set();
     let child;
@@ -163,4 +163,5 @@ async function tidy(settings, { force = false, scan = false } = {}) {
   return { gone, registered };
 }
 
-module.exports = { offerMove, tidy, place, bundlePath, registeredPaths, isOffering: () => offering };
+let quitFor = null;   // index.js's quit(by): the one place Typd quits from
+module.exports = { offerMove, tidy, place, bundlePath, registeredPaths, isOffering: () => offering, quitWith: (fn) => { quitFor = fn; } };

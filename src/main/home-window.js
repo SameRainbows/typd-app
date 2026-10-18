@@ -387,7 +387,7 @@ function register(d) {
   });
   handle('mic:reset', () => {
     if (!MAC) return { state: 'granted' };
-    return require('./permissions-mac').resetMic('the Typd window').then((r) => {
+    return require('./permissions-mac').resetMic('the Typd window').then((r) => {   // r.state 'restarting': Typd starts again
       if (deps.permsChanged) deps.permsChanged();
       return r;
     });
