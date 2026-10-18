@@ -99,9 +99,9 @@ function keep(dir, ms, meta, { wav = true, broken = false } = {}) {
   return name;
 }
 const T0 = Date.parse('2026-10-05T09:00:00.000Z');
-const SECRET_CONTEXT = 'CONTEXT-FROM-ANOTHER-APP-7731';
-const SECRET_SPAN = 'HIGHLIGHTED-SPAN-TEXT-9124';
-const baseMeta = (extra) => ({ mode: 'dictate', output: 'hello there', seconds: 1, ms: 420, model: 'r24_1p7b-q4_k_m.gguf', app: 'notes', context: SECRET_CONTEXT, span: null, ...extra });
+const MARK_CONTEXT = 'CONTEXT-FROM-ANOTHER-APP-7731';
+const MARK_SPAN = 'HIGHLIGHTED-SPAN-TEXT-9124';
+const baseMeta = (extra) => ({ mode: 'dictate', output: 'hello there', seconds: 1, ms: 420, model: 'r24_1p7b-q4_k_m.gguf', app: 'notes', context: MARK_CONTEXT, span: null, ...extra });
 
 function setup(label, { tester = true, daily, now } = {}) {
   const root = path.join(tmp, label);
@@ -137,7 +137,7 @@ const backfilled = (server) => [...server.items.values()].filter((m) => m.backfi
     // r2 was shared live: the server holds an item made 1.2 s after it was kept.
     server.items.set('tester_a/' + new Date(T0 + 61.2e3).toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z') + '-aaaaaaaaaaaaaaaa', { live: true });
     const r3 = keep(S.recDir, T0 + 120e3, baseMeta({ mode: 'revise', guard: 'deleted too much', output: 'refused' }));
-    const r4 = keep(S.recDir, T0 + 180e3, baseMeta({ mode: 'revise', output: 'the rewrite of ' + SECRET_SPAN, span: SECRET_SPAN }));
+    const r4 = keep(S.recDir, T0 + 180e3, baseMeta({ mode: 'revise', output: 'the rewrite of ' + MARK_SPAN, span: MARK_SPAN }));
     const r5 = keep(S.recDir, T0 + 240e3, { mode: 'dictate', seconds: 1, ms: 300, model: 'm.gguf', app: 'mail' });   // its text lost
     const r7 = keep(S.recDir, T0 + 300e3, baseMeta({}), { broken: true });
     const r8 = keep(S.recDir, T0 + 360e3, null);   // a .wav with no .json and nothing in History
@@ -165,7 +165,7 @@ const backfilled = (server) => [...server.items.values()].filter((m) => m.backfi
     check('a revision carries no text (only its spoken instruction)', rev && rev.output === null && rev.outputChars > 0, rev);
     check('from History when its .json lost the text', sent.some((m) => m.output === 'text from history'));
     const all = server.bodies.join('\n');
-    check('never the screen context or the highlighted span, in any request', !all.includes(SECRET_CONTEXT) && !all.includes(SECRET_SPAN) && !/"context"|"span"/.test(all));
+    check('never the screen context or the highlighted span, in any request', !all.includes(MARK_CONTEXT) && !all.includes(MARK_SPAN) && !/"context"|"span"/.test(all));
     const led = JSON.parse(fs.readFileSync(path.join(S.userData, 'backfill.json'), 'utf8'));
     check('the ledger: done, every recording accounted for', led.state === 'done' && Object.keys(led.sent).length === 7 && led.skipped === 4, led);
     void r2; void r3; void r7; void r8;
