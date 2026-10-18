@@ -1,5 +1,10 @@
 # What's new
 
+## 0.2.5 · October 2026
+
+- **A much smaller download.** The installer no longer carries the speech model. On its first start Typd downloads the one that suits your computer (about 0.6 GB, or 1.6 GB on a PC with a strong NVIDIA GPU), checks it, and from then on works offline. The tray, Home and the walkthrough show how far it is, and on a metered connection Typd asks first.
+- **GPU acceleration when your PC can use it (Windows).** On a PC with an NVIDIA GPU of 4 GB or more, Typd downloads NVIDIA's GPU libraries (about 340 MB) after the model and switches to them by itself as soon as you are not dictating. Until then, and on every other PC, Typd runs on the processor, so you can dictate right away. A PC that updates from an earlier Typd keeps the libraries it has and downloads nothing.
+
 ## 0.2.4 · October 2026
 
 - **Closing the Typd window on a Mac keeps Typd running.** The red button closes only the window; Typd, its menu-bar icon and its key stay. Typd no longer appears in the Dock while its window is open (turn on **Show Typd in the Dock** in Settings if you want it there).
