@@ -25,6 +25,21 @@
  * when hook_run() fails (the original unlocked a mutex it did not hold). node-gyp-build
  * prefers build/Release over the shipped prebuilds, so the packaged app loads this build.
  * Windows keeps the prebuild.
+ *
+ * Two more patches (0.2.4, after a tester's Mac lost Typd on closing its window):
+ *  - the event tap (libuiohook/src/darwin/input_hook.c): libuiohook switched the tap back on
+ *    when macOS turned it off for a slow answer (kCGEventTapDisabledByTimeout) but not when
+ *    macOS turned it off for user input (kCGEventTapDisabledByUserInput): that tap stayed off,
+ *    and the key went deaf with Typd still running. Both are switched back on now and counted,
+ *    and a watchdog timer on the tap's own run loop checks every 2 s that the tap is on (and
+ *    switches it on if not), counting its ticks so a stuck tap thread shows as a count that
+ *    stops. src/lib/addon.c exports the counts as tapHealth() (hotkeys.js reads it; the life log
+ *    records changes).
+ *  - the JS callback (src/lib/addon.c): when a listener threw, uiohook-napi passed the failed
+ *    napi_call_function to napi_fatal_error, which aborts the process -- no dialog, no log, Typd
+ *    and its menu-bar icon simply gone (uiohook-napi issue #50). Typd's listeners are guarded
+ *    (hotkeys.js), and now a throw that gets through anyway costs that one event: the exception
+ *    is cleared and the hook carries on.
  */
 
 const fs = require('fs');
@@ -36,6 +51,8 @@ const DIR = path.join(__dirname, '..', 'node_modules', 'uiohook-napi');
 const FILE = path.join(DIR, 'src', 'lib', 'uiohook_worker.c');
 const OUT = path.join(DIR, 'build', 'Release', 'uiohook_napi.node');
 const MARK = '/* Typd: the start handshake waits for a state (scripts/build-uiohook-mac.js) */';
+const TAP_MARK = '/* Typd: the event tap health and its watchdog (scripts/build-uiohook-mac.js) */';
+const ADDON_MARK = '/* Typd: tapHealth() and a JS throw that is not fatal (scripts/build-uiohook-mac.js) */';
 
 const EDITS = [
   {
@@ -110,24 +127,155 @@ const EDITS = [
   }
 ];
 
-/** The patched source, or null when `src` already has it. Throws if an edit does not fit. */
-function patched(src, version) {
+const TAP_EDITS = [
+  {
+    what: 'the health counters and the watchdog',
+    from: 'static event_runloop_info *hook = NULL;\n',
+    to: 'static event_runloop_info *hook = NULL;\n\n' + TAP_MARK + '\n' +
+      '// Times macOS switched the tap off (each switched straight back on in hook_event_proc), times\n' +
+      '// the watchdog found it off and switched it on, whether it is on (1, 0; -1 no tap; -2 its port\n' +
+      '// is gone) and the watchdog ticks. Written on the tap thread, read by addon.c tapHealth().\n' +
+      'volatile int typd_tap_timeouts = 0;\n' +
+      'volatile int typd_tap_user_input = 0;\n' +
+      'volatile int typd_tap_rearmed = 0;\n' +
+      'volatile int typd_tap_enabled = -1;\n' +
+      'volatile int typd_tap_checks = 0;\n' +
+      'static CFRunLoopTimerRef typd_watchdog = NULL;\n\n' +
+      'static void typd_watchdog_proc(CFRunLoopTimerRef timer, void *info) {\n' +
+      '    typd_tap_checks++;\n' +
+      '    if (hook == NULL || hook->port == NULL) { typd_tap_enabled = -1; return; }\n' +
+      '    if (!CFMachPortIsValid(hook->port)) { typd_tap_enabled = -2; return; }\n' +
+      '    if (!CGEventTapIsEnabled(hook->port)) {\n' +
+      '        CGEventTapEnable(hook->port, true);\n' +
+      '        typd_tap_rearmed++;\n' +
+      '    }\n' +
+      '    typd_tap_enabled = CGEventTapIsEnabled(hook->port) ? 1 : 0;\n' +
+      '}\n'
+  },
+  {
+    what: 'a tap switched off for user input is switched back on too, and both are counted',
+    from: '            if (type == (CGEventType) kCGEventTapDisabledByTimeout) {\n' +
+      '                logger(LOG_LEVEL_WARN, "%s [%u]: CGEventTap timeout!\\n",\n' +
+      '                        __FUNCTION__, __LINE__);\n',
+    to: '            if (type == (CGEventType) kCGEventTapDisabledByTimeout || type == (CGEventType) kCGEventTapDisabledByUserInput) {\n' +
+      '                logger(LOG_LEVEL_WARN, "%s [%u]: CGEventTap timeout!\\n",\n' +
+      '                        __FUNCTION__, __LINE__);\n' +
+      '                if (type == (CGEventType) kCGEventTapDisabledByTimeout) { typd_tap_timeouts++; } else { typd_tap_user_input++; }\n'
+  },
+  {
+    what: 'the watchdog runs on the tap run loop while it runs',
+    from: '            // Start the hook thread runloop.\n' +
+      '            CFRunLoopRun();\n',
+    to: '            // Typd: the watchdog, every 2 s on this run loop (typd_watchdog_proc).\n' +
+      '            typd_tap_checks = 0;\n' +
+      '            typd_watchdog = CFRunLoopTimerCreate(kCFAllocatorDefault, CFAbsoluteTimeGetCurrent() + 2.0, 2.0, 0, 0, typd_watchdog_proc, NULL);\n' +
+      '            if (typd_watchdog != NULL) {\n' +
+      '                CFRunLoopAddTimer(event_loop, typd_watchdog, kCFRunLoopDefaultMode);\n' +
+      '            }\n\n' +
+      '            // Start the hook thread runloop.\n' +
+      '            CFRunLoopRun();\n\n' +
+      '            if (typd_watchdog != NULL) {\n' +
+      '                CFRunLoopTimerInvalidate(typd_watchdog);\n' +
+      '                CFRelease(typd_watchdog);\n' +
+      '                typd_watchdog = NULL;\n' +
+      '            }\n' +
+      '            typd_tap_enabled = -1;\n'
+  }
+];
+
+const ADDON_EDITS = [
+  {
+    what: 'a listener that throws is not fatal',
+    from: '  status = napi_call_function(env, global, js_callback, 1, &event_obj, NULL);\n' +
+      '  NAPI_FATAL_IF_FAILED(status, "tsfn_to_js_proxy", "napi_call_function");\n',
+    to: '  status = napi_call_function(env, global, js_callback, 1, &event_obj, NULL);\n' +
+      '  if (status != napi_ok) {\n' +
+      '    // Typd: a throw costs this one event, never the process (it was napi_fatal_error: an abort).\n' +
+      '    bool pending = false;\n' +
+      '    if (napi_is_exception_pending(env, &pending) == napi_ok && pending) {\n' +
+      '      napi_value ignored;\n' +
+      '      napi_get_and_clear_last_exception(env, &ignored);\n' +
+      '    }\n' +
+      '  }\n'
+  },
+  {
+    what: 'tapHealth()',
+    from: 'NAPI_MODULE_INIT() {\n',
+    to: ADDON_MARK + '\n' +
+      '#ifdef __APPLE__\n' +
+      'extern volatile int typd_tap_timeouts, typd_tap_user_input, typd_tap_rearmed, typd_tap_enabled, typd_tap_checks;\n' +
+      '#endif\n\n' +
+      'static void typd_set_int(napi_env env, napi_value obj, const char* name, int value) {\n' +
+      '  napi_value v;\n' +
+      '  if (napi_create_int32(env, value, &v) == napi_ok) napi_set_named_property(env, obj, name, v);\n' +
+      '}\n\n' +
+      'napi_value AddonTapHealth(napi_env env, napi_callback_info info) {\n' +
+      '  napi_value obj;\n' +
+      '  if (napi_create_object(env, &obj) != napi_ok) return NULL;\n' +
+      '#ifdef __APPLE__\n' +
+      '  typd_set_int(env, obj, "enabled", typd_tap_enabled);\n' +
+      '  typd_set_int(env, obj, "timeouts", typd_tap_timeouts);\n' +
+      '  typd_set_int(env, obj, "userInput", typd_tap_user_input);\n' +
+      '  typd_set_int(env, obj, "rearmed", typd_tap_rearmed);\n' +
+      '  typd_set_int(env, obj, "checks", typd_tap_checks);\n' +
+      '#endif\n' +
+      '  return obj;\n' +
+      '}\n\n' +
+      'NAPI_MODULE_INIT() {\n'
+  },
+  {
+    what: 'tapHealth() exported',
+    from: '  status = napi_set_named_property(env, exports, "keyTap", export_fn);\n' +
+      '  NAPI_FATAL_IF_FAILED(status, "NAPI_MODULE_INIT", "napi_set_named_property");\n',
+    to: '  status = napi_set_named_property(env, exports, "keyTap", export_fn);\n' +
+      '  NAPI_FATAL_IF_FAILED(status, "NAPI_MODULE_INIT", "napi_set_named_property");\n\n' +
+      '  status = napi_create_function(env, NULL, 0, AddonTapHealth, NULL, &export_fn);\n' +
+      '  NAPI_FATAL_IF_FAILED(status, "NAPI_MODULE_INIT", "napi_create_function");\n' +
+      '  status = napi_set_named_property(env, exports, "tapHealth", export_fn);\n' +
+      '  NAPI_FATAL_IF_FAILED(status, "NAPI_MODULE_INIT", "napi_set_named_property");\n'
+  }
+];
+
+/** Every patched file: where it is in uiohook-napi, its mark, its edits. */
+const FILES = [
+  { rel: 'src/lib/uiohook_worker.c', mark: MARK, edits: EDITS },
+  { rel: 'libuiohook/src/darwin/input_hook.c', mark: TAP_MARK, edits: TAP_EDITS },
+  { rel: 'src/lib/addon.c', mark: ADDON_MARK, edits: ADDON_EDITS }
+];
+
+/** `src` with `edits` applied, or null when it already has `mark`. Throws if an edit does not fit. */
+function applyEdits(src, mark, edits, label) {
   src = src.replace(/\r\n/g, '\n');
-  if (src.includes(MARK)) return null;
-  for (const e of EDITS) {
+  if (src.includes(mark)) return null;
+  for (const e of edits) {
     const n = src.split(e.from).length - 1;
-    if (n !== 1) throw new Error(`uiohook-napi ${version}: cannot apply "${e.what}" (found ${n} times); check the patch against this version`);
+    if (n !== 1) throw new Error(`${label}: cannot apply "${e.what}" (found ${n} times); check the patch against this version`);
     src = src.replace(e.from, () => e.to);
   }
   return src;
 }
 
+/** The patched uiohook_worker.c, or null when `src` already has it. Throws if an edit does not fit. */
+function patched(src, version) {
+  return applyEdits(src, MARK, EDITS, `uiohook-napi ${version}`);
+}
+
+/** Every file's patched text ({rel: text|null}), from the sources in `dir` (bench/hotkeys.js). */
+function patchedFiles(dir = DIR) {
+  const version = require(path.join(dir, 'package.json')).version;
+  const out = {};
+  for (const f of FILES) out[f.rel] = applyEdits(fs.readFileSync(path.join(dir, f.rel), 'utf8'), f.mark, f.edits, `uiohook-napi ${version} ${f.rel}`);
+  return out;
+}
+
 function patch() {
   const version = require(path.join(DIR, 'package.json')).version;
-  const out = patched(fs.readFileSync(FILE, 'utf8'), version);
-  if (out === null) { console.log('uiohook_worker.c: already patched'); return; }
-  fs.writeFileSync(FILE, out);
-  console.log(`uiohook_worker.c (uiohook-napi ${version}): patched, ${EDITS.length} edits`);
+  const out = patchedFiles(DIR);
+  for (const f of FILES) {
+    if (out[f.rel] === null) { console.log(`${f.rel}: already patched`); continue; }
+    fs.writeFileSync(path.join(DIR, f.rel), out[f.rel]);
+    console.log(`${f.rel} (uiohook-napi ${version}): patched, ${f.edits.length} edits`);
+  }
 }
 
 /** npm's own node-gyp, else a pinned one from the registry. */
@@ -168,7 +316,7 @@ function build(archs) {
   console.log('node-gyp-build loads it');
 }
 
-module.exports = { patched, MARK };   // for bench/hotkeys.js
+module.exports = { patched, patchedFiles, MARK, TAP_MARK, ADDON_MARK, FILES };   // for bench/hotkeys.js
 
 if (require.main === module) {
   if (process.platform !== 'darwin') {

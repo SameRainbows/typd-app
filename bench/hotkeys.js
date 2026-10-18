@@ -323,6 +323,30 @@ section('hotkeys.js: a key press can never take Typd down');
     check('the Mac start-handshake fix fits the installed uiohook-napi', ok, why);
   }
 
+  // 0.2.4: the event tap is switched back on whatever switched it off (user input too), a watchdog
+  // checks it every 2 s, tapHealth() reports it, and a JS throw in the callback is no longer fatal.
+  {
+    const { patchedFiles, TAP_MARK, ADDON_MARK } = require('../scripts/build-uiohook-mac.js');
+    const dir = path.join(__dirname, '..', 'node_modules', 'uiohook-napi');
+    let out = null, why = '';
+    try { out = patchedFiles(dir); } catch (err) { why = err.message; }
+    const tap = out && out['libuiohook/src/darwin/input_hook.c'];
+    const addon = out && out['src/lib/addon.c'];
+    check('the tap patches fit the installed uiohook-napi', Boolean(out), why);
+    check('a tap switched off for user input is switched back on, like a timeout',
+      Boolean(tap) && tap.includes(TAP_MARK) && /kCGEventTapDisabledByTimeout \|\| type == \(CGEventType\) kCGEventTapDisabledByUserInput\) \{[\s\S]{0,400}CGEventTapEnable\(hook->port, true\)/.test(tap));
+    check('the watchdog runs on the tap run loop and is removed before the tap is',
+      Boolean(tap) && /CFRunLoopAddTimer\(event_loop, typd_watchdog[\s\S]*CFRunLoopRun\(\);\s*if \(typd_watchdog != NULL\) \{\s*CFRunLoopTimerInvalidate/.test(tap) &&
+      tap.indexOf('CFRunLoopTimerInvalidate(typd_watchdog)') < tap.indexOf('destroy_event_runloop_info(&hook);\n        } else'));
+    check('a throw in the JS callback is cleared, not fatal',
+      Boolean(addon) && addon.includes(ADDON_MARK) && !/napi_call_function\(env, global, js_callback[^;]*;\s*NAPI_FATAL_IF_FAILED/.test(addon) &&
+      /napi_get_and_clear_last_exception/.test(addon));
+    check('tapHealth() is exported', Boolean(addon) && /napi_set_named_property\(env, exports, "tapHealth", export_fn\)/.test(addon));
+    let again = 'not run';
+    try { again = Object.values(require('../scripts/build-uiohook-mac.js').patchedFiles(dir)).every((v) => v !== null) ? 'patches again' : 'mixed'; } catch (err) { again = err.message; }
+    check('the patches apply to pristine sources only once (marks)', again === 'patches again', again);
+  }
+
   try {
     const { hk, hook } = load('win32');
     const keys = hk.registerHotkeys({ binding: 'RightAlt', onPress: () => {}, onRelease: () => {}, onCancel: () => {} });

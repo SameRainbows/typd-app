@@ -195,6 +195,10 @@
             <h2 id="recTitle">Keep recordings</h2>
             <p id="recInfo">Saved on this PC to make the model better at your voice.</p>
             <button class="text" type="button" id="openRec">Open folder</button>
+            <!-- Past dictations (backfill.js): the kept recordings never shared, sent once, slowly. Shown
+                 while sharing is on and there are recordings; the line says how far it got. -->
+            <button class="text" type="button" id="sendPast" hidden>Send my past dictations</button>
+            <p class="minor" id="pastLine" hidden></p>
             <!-- Tester builds only (sharing.js): the sharing line and its pause, inside this row. -->
             <p class="share" id="shareLine" hidden>
               <span id="shareText"></span>

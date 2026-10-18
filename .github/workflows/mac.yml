@@ -43,6 +43,10 @@ on:
         type: choice
         options: [both, arm64, x64]
         default: both
+      checks_only:
+        description: Only the menu-bar close checks on several macOS versions (no signed build, no release)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -57,7 +61,7 @@ env:
 
 jobs:
   build:
-    if: github.repository == 'SameRainbows/typd-app'
+    if: github.repository == 'SameRainbows/typd-app' && !inputs.checks_only
     runs-on: macos-14
     timeout-minutes: 120
     permissions:
@@ -162,6 +166,10 @@ jobs:
             spctl --assess --type execute -vv "$app" 2>&1 || true
             plutil -p "$app/Contents/Info.plist" | grep -E 'LSUIElement|NSMicrophoneUsageDescription|NSAppleEventsUsageDescription|LSMinimumSystemVersion|CFBundleIdentifier'
             test "$(plutil -extract LSUIElement raw -o - "$app/Contents/Info.plist")" = true
+            # A menu-bar app with no window open must never be ended or napped by macOS (docs/MAC.md).
+            test "$(plutil -extract NSSupportsAutomaticTermination raw -o - "$app/Contents/Info.plist")" = false
+            test "$(plutil -extract NSSupportsSuddenTermination raw -o - "$app/Contents/Info.plist")" = false
+            test "$(plutil -extract LSAppNapIsDisabled raw -o - "$app/Contents/Info.plist")" = true
             ls -la "$app/Contents/Resources/llama" "$app/Contents/Resources/models/typd-dictate"
             # Model-less: no model.json and no .gguf anywhere in the app.
             test ! -e "$app/Contents/Resources/models/typd-dictate/model.json"
@@ -309,6 +317,34 @@ jobs:
           scripts/mac-launch-loop.sh "$PWD/dist/mac-arm64/Typd.app" 8 || fail=1
           test $fail = 0
 
+      - name: Open from the menu bar, close with the red X, stay running (arm64)
+        if: contains(env.ARCHS, 'arm64')
+        env:
+          TYPD_MODEL_DIR: ${{ github.workspace }}/models/typd-dictate
+        # A tester's Mac: menu-bar icon > "Open Typd" > the red X, and Typd was gone, menu-bar icon and
+        # all. scripts/mac-tray-close-check.sh takes that path, started as Finder starts Typd: first
+        # through the menu's own "Open Typd" and win.close(), then with real clicks on the menu-bar
+        # icon, the menu and the red X. Each pass then watches Typd alone for 150 s (alive, its
+        # menu-bar icon, CPU, App Nap, its key). A gate.
+        run: |
+          swiftc -O scripts/mac-ui.swift -o "$RUNNER_TEMP/mac-ui"
+          chmod +x scripts/mac-tray-close-check.sh
+          fail=0
+          scripts/mac-tray-close-check.sh "$PWD/dist/mac-arm64/Typd.app" tray-menu tray || fail=1
+          scripts/mac-tray-close-check.sh "$PWD/dist/mac-arm64/Typd.app" gui-clicks gui || fail=1
+          test $fail = 0
+
+      - name: An update opens no window (arm64)
+        if: contains(env.ARCHS, 'arm64')
+        env:
+          TYPD_MODEL_DIR: ${{ github.workspace }}/models/typd-dictate
+        # The first-run walkthrough is for fresh installs only: Typd started on a user-data folder as
+        # 0.2.3 left it (the walkthrough never shown) must open no window; a fresh install must show
+        # it (the control). scripts/mac-first-launch-check.sh. A gate.
+        run: |
+          chmod +x scripts/mac-first-launch-check.sh
+          scripts/mac-first-launch-check.sh "$PWD/dist/mac-arm64/Typd.app"
+
       - name: First launch with no model (arm64, informational)
         # The public app as a new user starts it: no model anywhere. First with model updates off: it
         # must stay up and say it has no model (no crash, no dialog). Then as shipped: it downloads
@@ -398,3 +434,91 @@ jobs:
       - name: Remove the signing keychain
         if: always()
         run: bash scripts/mac-signing-import.sh --delete
+
+  menubar:
+    # The menu-bar close checks on several macOS versions, on an ad-hoc-signed arm64 build of this
+    # commit (no secrets in this job). macos-14 is the build job's runner; the tester's Mac runs
+    # macOS 27 (xcode-27 is that image, in preview).
+    if: github.repository == 'SameRainbows/typd-app'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15, macos-26, xcode-27]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 75
+    steps:
+      - name: Check out this commit (plain git, no token)
+        run: |
+          set -e
+          git init -q .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git fetch -q --depth 1 origin "$GITHUB_SHA"
+          git checkout -q --detach FETCH_HEAD
+          git log -1 --format='%H %s'
+          sw_vers; uname -r; csrutil status || true
+
+      - name: Node.js 24 (nodejs.org, sha256 pinned)
+        env:
+          NODE_VERSION: v24.22.0
+          NODE_SHA256: 6a9724d9b50a5f22b4816cded441b5a8d9ddae546191a5e5b7efa5a5e2ee26d5   # node-v24.22.0-darwin-arm64.tar.gz
+        run: |
+          set -e
+          test "$(uname -m)" = arm64
+          f="node-$NODE_VERSION-darwin-arm64.tar.gz"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$f" "https://nodejs.org/dist/$NODE_VERSION/$f"
+          echo "$NODE_SHA256  $RUNNER_TEMP/$f" | shasum -a 256 -c -
+          tar -xzf "$RUNNER_TEMP/$f" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/node-$NODE_VERSION-darwin-arm64/bin" >> "$GITHUB_PATH"
+
+      - name: No tester build, ever
+        run: |
+          set -e
+          test -z "${TYPD_TESTER_CONFIG:-}${TYPD_TESTER_DEV:-}${TYPD_TESTER_JSON:-}"
+          if find . -path ./node_modules -prune -o \( -name 'tester.json' -o -name 'tester.*.json' -o -name 'model-updates.json' \) -print | grep .; then exit 1; fi
+
+      - name: Install dependencies, the model, llama.cpp and the fixed uiohook (arm64)
+        run: |
+          set -e
+          npm ci
+          node scripts/fetch-model.js --accept-license | tail -3
+          node scripts/fetch-llama-mac.js arm64
+          node scripts/build-uiohook-mac.js arm64
+
+      - name: Package (arm64, signed ad hoc, no dmg)
+        run: |
+          set -e
+          unset TYPD_TESTER_CONFIG
+          TYPD_NO_BUNDLED_MODEL=1 npx electron-builder --mac dir --arm64 --publish never
+          app=dist/mac-arm64/Typd.app
+          codesign --verify --deep --strict "$app"
+          plutil -p "$app/Contents/Info.plist" | grep -E 'LSUIElement|Termination|AppNap|CFBundleShortVersionString'
+          swiftc -O scripts/mac-ui.swift -o "$RUNNER_TEMP/mac-ui"
+
+      - name: Let Typd through macOS privacy (runner only, best effort)
+        continue-on-error: true
+        run: |
+          now=$(date +%s)
+          grant() {
+            sudo sqlite3 "$1" "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version, flags, last_modified) VALUES ('$2', 'ai.typd.app', 0, 2, 4, 1, 0, $now);" && echo "granted $2" || echo "could not grant $2"
+          }
+          SYS="/Library/Application Support/com.apple.TCC/TCC.db"
+          USR="$HOME/Library/Application Support/com.apple.TCC/TCC.db"
+          for svc in kTCCServiceAccessibility kTCCServiceListenEvent kTCCServicePostEvent; do grant "$SYS" $svc; done
+          grant "$USR" kTCCServiceMicrophone
+
+      - name: Close checks, ${{ matrix.os }}
+        env:
+          TYPD_MODEL_DIR: ${{ github.workspace }}/models/typd-dictate
+        run: |
+          chmod +x scripts/mac-close-check.sh scripts/mac-tray-close-check.sh scripts/mac-first-launch-check.sh
+          APP="$PWD/dist/mac-arm64/Typd.app"
+          fail=0
+          # An update (an existing install) opens no window; a fresh install shows the walkthrough.
+          scripts/mac-first-launch-check.sh "$APP" || fail=1
+          # The old check (the window opened and closed from inside Typd), for comparison.
+          IDLE=0 scripts/mac-close-check.sh open "$APP" inside-${{ matrix.os }} || fail=1
+          # The tester's path: the menu's own item + win.close(), then real clicks.
+          scripts/mac-tray-close-check.sh "$APP" tray-${{ matrix.os }} tray || fail=1
+          scripts/mac-tray-close-check.sh "$APP" gui-${{ matrix.os }} gui || fail=1
+          pkill -f "$APP/Contents" || true
+          test $fail = 0

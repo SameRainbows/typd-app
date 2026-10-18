@@ -552,8 +552,36 @@
         ? 'Your voice is never sent anywhere while sharing is paused.'
         : 'While sharing is on, your recordings are also sent to ' + sh.with + '.';
     }
+    renderPast();
     renderBeta();
   }
+
+  // Past dictations (backfill.js): offered while sharing is on and recordings are kept.
+  function renderPast() {
+    var s = S.settings, sh = s.sharing, bf = sh && sh.backfill;
+    var on = Boolean(sh) && (sh.mode === 'tester' ? sh.state !== 'stopped' && !s.sharePaused : sh.state === 'on');
+    $('sendPast').hidden = !(on && s.recordings.count && bf && bf.state !== 'running' && bf.state !== 'never');
+    var line = '';
+    if (bf && bf.state === 'running') {
+      line = 'Sending your past dictations: ' + bf.sent.toLocaleString() + (bf.total ? ' of ' + bf.total.toLocaleString() : '') +
+        ' sent so far, about one every minute or two' + (on ? '.' : ' once sharing is on again.');
+    } else if (bf && bf.state === 'done') {
+      line = 'Your past dictations have been sent.';
+    }
+    $('pastLine').hidden = !line;
+    $('pastLine').textContent = line;
+  }
+
+  $('sendPast').addEventListener('click', function () {
+    $('sendPast').disabled = true;
+    api.sharing.backfill().then(function (r) {
+      $('sendPast').disabled = false;
+      if (!r) return;
+      if (r.settings) { S.settings = r.settings; renderRecordings(); }
+      if (r.ok) toast('Sending your past dictations over the next few hours');
+      else failSettings(r.state === 'never' ? 'This ' + S.platform.machine + ' deleted what it shared, so past dictations stay here.' : 'Turn sharing on first.');
+    });
+  });
 
   /* ------------------------------------------------------ sharing, public builds */
 

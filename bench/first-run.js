@@ -307,6 +307,41 @@ function profile(s, over = {}) {
     u.stop();
   }
 
+  // The user's rule (0.2.4): nothing of a first run after an update. An install updated to a
+  // model-less version keeps the model it had -- downloaded into <userData>/models (current.json),
+  // or bundled and carried over (carried.js gives its folder as the bundled one) -- so the first
+  // model's download, its tray line, Home's card and the walkthrough's strip never appear.
+  section('an update keeps its model: no first-model download, no screen for it');
+  {
+    s.requests = [];
+    const root = path.join(tmp, 'updated');
+    const modelsDir = path.join(root, 'userData', 'models');
+    const v = 'r24_1p7b_rev128', dir = path.join(modelsDir, v);
+    fs.mkdirSync(dir, { recursive: true });
+    const files = { 'm.gguf': Buffer.from('model bytes'), 'p.gguf': Buffer.from('proj bytes') };
+    for (const [n, b] of Object.entries(files)) fs.writeFileSync(path.join(dir, n), b);
+    fs.writeFileSync(path.join(dir, 'model.json'), JSON.stringify({ model: 'm.gguf', mmproj: 'p.gguf' }));
+    fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify({ version: v, files: Object.entries(files).map(([name, b]) => ({ name, size: b.length, sha256: sha(b) })), model_json: { model: 'm.gguf', mmproj: 'p.gguf' } }));
+    fs.writeFileSync(path.join(modelsDir, 'current.json'), JSON.stringify({ version: v, confirmed: true }));
+    const noBundle = path.join(root, 'resources', 'models', 'typd-dictate');
+    fs.mkdirSync(noBundle, { recursive: true });
+    fs.writeFileSync(path.join(noBundle, 'NO_MODEL.txt'), 'downloaded at first launch\n');
+    const u = createUpdater({ keys: KEYS, config: { endpoint: s.endpoint, key: null }, modelsDir, bundledDir: noBundle, appVersion: '0.2.5', switchModel: async () => {}, firstCheckMs: 60e3, firstNeedMs: 50 });
+    check('a downloaded model (current.json): haveModel() true, needed() null', u.haveModel() && u.needed() === null, u.needed());
+    u.start();
+    await sleep(400);
+    check('no hurried first-model check either', s.requests.length === 0, s.requests.length);
+    u.stop();
+    const carried = path.join(root, 'userData', 'carried', 'models', 'typd-dictate');
+    fs.mkdirSync(carried, { recursive: true });
+    for (const [n, b] of Object.entries(files)) fs.writeFileSync(path.join(carried, n), b);
+    fs.writeFileSync(path.join(carried, 'model.json'), JSON.stringify({ model: 'm.gguf', mmproj: 'p.gguf' }));
+    const c = createUpdater({ keys: KEYS, config: { endpoint: s.endpoint, key: null }, modelsDir: path.join(root, 'empty-models'), bundledDir: carried, appVersion: '0.2.5', switchModel: async () => {}, firstCheckMs: 60e3, firstNeedMs: 50 });
+    check('a model carried over from the version it replaced: haveModel() true, needed() null', c.haveModel() && c.needed() === null);
+    status.set({ model: 'ready', modelFetch: null });
+    check('with a model the status has no first-model line or card', !/speech model/i.test(status.describe().line) && !/speech model/i.test(String(status.describe().card || '')), status.describe());
+  }
+
   section('status.js: the line for each first-model state');
   {
     const cases = {

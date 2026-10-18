@@ -29,6 +29,11 @@
  * anywhere, and forgotten after an hour or at the next dictation.
  *
  * What one item carries, and never carries, is collect.js's business; so is the outbox.
+ *
+ * Past dictations (backfill.js): kept recordings never shared go out once, slowly -- from
+ * Settings > "Send my past dictations", or when the server asks for this key (GET /v1/me says
+ * {backfill: true}; typd-collect's allowlist). Never while sharing is off; never again after
+ * "Delete what I've shared".
  */
 
 const fs = require('fs');
@@ -43,6 +48,8 @@ const FRESH_KEY_MS = 10 * 60e3;   // a new key can take a minute to reach every 
 const LAST_KEEP_MS = 3600e3;      // the last dictation's audio is forgotten after an hour
 const ENROLL_TIMEOUT_MS = 20e3;
 const START_DELAY_MS = 20e3;      // a restart resumes the outbox once launch has settled
+const ASK_DELAY_MS = 40e3;        // then GET /v1/me: does the server ask for past dictations?
+const ASK_EVERY_MS = 6 * 3600e3;  // and again every 6 hours while Typd runs
 // Public builds only (testers keep collect.js's defaults): what one install may send a UTC day,
 // what may wait on disk, and how long to wait once the server's storage is full (507).
 const DAILY_ITEMS = 50;
@@ -85,7 +92,8 @@ async function writeKeyFile(file, rec) {
  */
 function createSharing({
   tester = null, endpoint = ENDPOINT, keyFile, dir, choice, paused = () => false,
-  about = {}, fetch = globalThis.fetch, log = () => {}, now = Date.now, cap, daily, fullHoldS, dayFile
+  about = {}, fetch = globalThis.fetch, log = () => {}, now = Date.now, cap, daily, fullHoldS, dayFile,
+  onOff = () => {}, onDeleted = () => {}
 }) {
   const mode = tester ? 'tester' : 'beta';
   let keyRec = mode === 'beta' ? readKeyFile(keyFile) : null;
@@ -147,6 +155,22 @@ function createSharing({
     await fsp.unlink(keyFile).catch(() => {});
   }
 
+  /** GET <endpoint><route> with this build's key: its JSON, or null (no key, offline, refused, an older server). */
+  async function askServer(route, { enroll = false } = {}) {
+    let cfg = mode === 'tester' ? tester : keyRec ? { endpoint: keyRec.endpoint, key: keyRec.key } : null;
+    if (!cfg && enroll && mode === 'beta') {
+      try { cfg = await ensureKey(); } catch { return null; }
+    }
+    if (!cfg) return null;
+    try {
+      const res = await fetch(cfg.endpoint + route, { headers: { Authorization: 'Bearer ' + cfg.key }, signal: AbortSignal.timeout(20e3) });
+      if (!res.ok) { await res.text().catch(() => ''); return null; }
+      return await res.json();
+    } catch {
+      return null;
+    }
+  }
+
   const lastLive = () => (last && now() - last.at < LAST_KEEP_MS ? last : null);
 
   return {
@@ -189,6 +213,7 @@ function createSharing({
       if (value === 'off') {
         choice.set('off');
         await collector.clear({ keepOneOff: true });
+        try { await onOff(); } catch { /* past dictations stop anyway: they need sharing on */ }
         return { ok: true };
       }
       if (collector.isRevoked()) { await forgetKey(); collector.reset(); }   // refused before: start afresh
@@ -250,6 +275,8 @@ function createSharing({
         await collector.clear();
         last = null;
         choice.set('off');
+        // Past dictations: never again on this install, whether or not the server delete goes through.
+        try { await onDeleted(); } catch { /* best effort */ }
         if (!keyRec) return { ok: true, deleted: 0 };
         let res;
         try {
@@ -274,7 +301,29 @@ function createSharing({
 
     start: () => collector.start(),
     wake: (ms) => collector.wake(ms),
-    pending: () => collector.pending()
+    pending: () => collector.pending(),
+
+    /** What the server asks of this key (GET /v1/me): {backfill}, or null. */
+    asks: () => askServer('/v1/me'),
+
+    /**
+     * What backfill.js needs: whether sharing is on, a way to queue one past dictation (consent
+     * 'all' in a public build, as a live one), the outbox, the day's limit, and the names of the
+     * items the server holds for this key (GET /v1/me/items; a public build enrolls first).
+     */
+    backfillPort() {
+      return {
+        on: () => sharingOn() && !collector.isRevoked(),
+        queue: (rec) => collector.queue(mode === 'beta' ? { ...rec, consent: 'all' } : rec),
+        pending: () => collector.pending(),
+        waiting: () => collector.waiting(),
+        dailyLeft: () => collector.dailyLeft(),
+        serverItems: async () => {
+          const b = await askServer('/v1/me/items', { enroll: true });
+          return b && Array.isArray(b.names) ? b.names.filter((n) => typeof n === 'string') : null;
+        }
+      };
+    }
   };
 }
 
@@ -315,6 +364,7 @@ function instance() {
 
   const settings = require('./settings');
   const userData = app.getPath('userData');
+  let backfill = null;
   main = createSharing({
     tester,
     endpoint,
@@ -324,11 +374,39 @@ function instance() {
     paused: () => settings.get('sharePaused'),
     log: debug,
     // A flag on an item already sent records the versions running when it was pressed (collect.js).
-    about: { appVersion: app.getVersion(), modelVersion: () => require('./pipeline/local').modelVersion() }
+    about: { appVersion: app.getVersion(), modelVersion: () => require('./pipeline/local').modelVersion() },
+    onOff: () => backfill && backfill.cancel(),
+    onDeleted: () => backfill && backfill.forbid()
   });
+  // Past dictations (backfill.js): resumed at launch, started by Settings or by the server's request.
+  backfill = require('./backfill').createBackfill({
+    dir: settings.recordingsDir(),
+    ledgerFile: path.join(userData, 'backfill.json'),
+    sharing: main.backfillPort(),
+    history: () => { try { return require('./store').store().list(); } catch { return []; } },
+    log: (...a) => { debug('backfill', ...a); if (a[0] === 'done' || a[0] === 'to send') require('./lifelog').log('backfill', a.join(' ')); }
+  });
+  main.backfill = backfill;
   app.whenReady().then(() => {
     const t = setTimeout(() => main.start(), START_DELAY_MS);
     if (t.unref) t.unref();
+    backfill.resume();
+    // Does the server ask this key for its past dictations? Once a while after launch, then every
+    // ASK_EVERY_MS; only while sharing is on, and only until a run has started (backfill.request).
+    const ask = () => {
+      if (!main.backfillPort().on() || backfill.status().state !== 'none') return;
+      main.asks().then((r) => {
+        if (r && r.backfill === true) {
+          require('./lifelog').log('backfill', 'the server asked for past dictations');
+          return backfill.request('server');
+        }
+        return null;
+      }).catch(() => {});
+    };
+    const t2 = setTimeout(ask, START_DELAY_MS + ASK_DELAY_MS);
+    if (t2.unref) t2.unref();
+    const t3 = setInterval(ask, ASK_EVERY_MS);
+    if (t3.unref) t3.unref();
     for (const ev of ['resume', 'unlock-screen']) powerMonitor.on(ev, () => main.wake());
     settings.onChange((key, value) => {
       if (key === 'sharePaused' && !value) main.wake(1000);
@@ -381,10 +459,11 @@ function get() {
   return instance() || null;
 }
 
-/** For Settings: null when sharing is not available here, else sharing's status(). */
+/** For Settings: null when sharing is not available here, else sharing's status() with the past dictations'. */
 function status() {
   const s = instance();
-  return s ? s.status() : null;
+  if (!s) return null;
+  return { ...s.status(), backfill: s.backfill ? s.backfill.status() : null };
 }
 
 module.exports = { add, get, status, createSharing, readKeyFile, ENDPOINT };

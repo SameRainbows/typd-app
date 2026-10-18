@@ -38,6 +38,7 @@ function preview40(text) {
  * @param {() => 'ready'|'none'|null} [deps.canFlag]           null: sharing is not in this build
  * @param {() => string|null} [deps.flagKey]                   its shortcut, shown beside it
  * @param {() => void} [deps.quit]                             quit, saying it was the tray (index.js)
+ * @param {() => void} [deps.diagnostics]                      "Copy diagnostics" (index.js, lifelog.js)
  */
 function createTray(deps) {
   let tray = null;
@@ -123,6 +124,8 @@ function createTray(deps) {
       { type: 'separator' },
       { label: "What's new", click: () => deps.open('news') },
       { label: 'Send feedback', click: feedback },
+      // What a tester sends when Typd misbehaves: the life log and a few lines of state, no dictation text.
+      ...(deps.diagnostics ? [{ label: 'Copy diagnostics', click: () => deps.diagnostics() }] : []),
       { type: 'separator' },
       { label: 'Quit Typd', click: () => (deps.quit ? deps.quit() : app.quit()) }
     ]);
