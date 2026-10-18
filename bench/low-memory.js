@@ -270,7 +270,13 @@ async function real() {
       const man = path.join(RESEARCH, 'data', 'revise', 'r27pack', 'manifest.jsonl');
       const rows = fs.readFileSync(man, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
       const byLen = (lo, hi) => rows.filter((x) => x.span.length >= lo && x.span.length < hi && !/translate/.test(x.id));
-      const pick = [...byLen(100, 400).slice(0, 2), ...byLen(700, 1300).slice(0, 2), ...byLen(2400, 5000).slice(0, 1)];
+      // Two real items, then long selections (the set's spans are <= 400 characters): several of its
+      // grammar spans joined, under a real "fix the grammar" instruction -- ~1,300 characters (fits the
+      // low-memory window) and ~2,600 (does not: refused with the limit in words; fits the full one).
+      const grammar = rows.filter((x) => x.cat === 'fix_grammar');
+      const joined = (n) => { let t = '', i = 0; while (t.length < n) t += (t ? '\n\n' : '') + grammar[i++ % grammar.length].span; return t; };
+      const longItem = (n) => ({ ...grammar[0], id: grammar[0].id + '+long' + n, span: joined(n), clean: joined(n) });
+      const pick = [...byLen(100, 400).slice(0, 2), longItem(1300), longItem(2600)];
       const pipeline = require('../src/main/pipeline/index');
       for (const it of pick) {
         const x = decode(path.join(path.dirname(man), it.audio));
