@@ -460,8 +460,25 @@ async function resetMic(why) {
   return { state, reset: r.ok };
 }
 
+/**
+ * The Mac's own security settings, for a refusal that comes without a prompt: AMFI (Apple Mobile File
+ * Integrity) switched off by a boot argument makes macOS flag every process as a platform binary, and
+ * tccd then refuses the prompt to any app Apple did not sign ("CS_PLATFORM_BINARY set but not
+ * AppleSigned; prompt policy is Deny" -- a reporter's macOS 27). Only the AMFI part of the boot
+ * arguments and SIP's status are read and kept: { amfiOff, amfi, sip }.
+ */
+function securitySettings() {
+  const cp = require('child_process');
+  const out = (f, a) => { try { return String(cp.execFileSync(f, a, { timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] })); } catch { return ''; } };
+  const amfi = (out('/usr/sbin/sysctl', ['-n', 'kern.bootargs']).match(/\S*amfi\S*/gi) || []).join(' ');
+  const sip = (/status: (enabled|disabled)/i.exec(out('/usr/bin/csrutil', ['status'])) || [])[1] || 'unknown';
+  return { amfiOff: /amfi_get_out_of_my_way=(0x)?[1-9]|amfi=0x80|amfi_allow_any_signature=(0x)?[1-9]/i.test(amfi), amfi, sip };
+}
+
 /** macOS refused the microphone without asking, even after a reset: say so plainly, once. */
 async function refusedAtOnce() {
+  const sec = securitySettings();
+  lifeLog('microphone', 'refused without a prompt; boot arguments for AMFI: ' + (sec.amfi || 'none') + '; SIP ' + sec.sip);
   dialogOpen = true;
   try {
     try { app.focus({ steal: true }); } catch { /* it still shows */ }
@@ -470,9 +487,13 @@ async function refusedAtOnce() {
       icon: icon(),
       title: 'Typd',
       message: 'macOS refuses the microphone to Typd without asking',
-      detail: 'This is a rule on this Mac, not an answer you gave: a management profile (a work or school Mac), ' +
-        'Screen Time, or a security setting. Typd cannot change that.\n\nTo look into it: Typd’s menu › Copy diagnostics, ' +
-        'and send it to the developer.',
+      detail: (sec.amfiOff
+        ? 'This Mac starts with AMFI switched off (boot argument “' + sec.amfi + '”). macOS then refuses the microphone, ' +
+          'without asking, to every app Apple did not make, Typd included. Remove that boot argument and restart ' +
+          '(or switch AMFI back on the way it was switched off), then open Typd again.'
+        : 'This is a rule on this Mac, not an answer you gave: a management profile (a work or school Mac), ' +
+          'Screen Time, or changed security settings. Typd cannot change that.') +
+        '\n\nTo look into it: Typd’s menu › Copy diagnostics, and send it to the developer.',
       buttons: ['OK'],
       noLink: true
     });
@@ -524,4 +545,4 @@ async function status() {
 // prompt is answered -- but a prompt nobody answers (or nobody can see) must not hold it back for long.
 function isAsking(limit = MIC_WAIT_MS) { return dialogOpen || Boolean(micAsking && Date.now() - micAsking.at < limit); }
 
-module.exports = { ensure, status, openPane, isAsking, request, requestMic, resetMic, micState, onMicChange, whenUnanswered };
+module.exports = { ensure, status, openPane, isAsking, request, requestMic, resetMic, micState, onMicChange, whenUnanswered, securitySettings };

@@ -474,6 +474,8 @@ function sourceSection() {
   check('main never holds a dictation back on the privacy status when a model is there (it asks, and records)', micBlock.length > 50 && returns === 1 && guarded && /requestMic\('the key'/.test(micBlock), { returns, guarded });
   const onMic = main.slice(main.indexOf("ipcMain.on('overlay:mic'"), main.indexOf("ipcMain.on('overlay:cancel'"));
   check('the pill\'s words come from the capture (kind) and, on a Mac, macOS\'s status says which', /kind === 'silent'/.test(onMic) && /Allow the microphone in macOS’s dialog/.test(onMic) && /requestMic\(/.test(onMic));
+  check('the key is bound again once Accessibility and Input Monitoring come on (as choosing it in Settings does)', /keySwitchesOff === true && !keyOff && rebindKey/.test(main) && /rebindKey = \(\) => \{[\s\S]*?applyHotkey\(/.test(main));
+  check("Copy diagnostics names SIP and AMFI's boot arguments (AMFI off: macOS refuses every non-Apple app's prompt)", /securitySettings\(\)/.test(main) && /amfi_get_out_of_my_way/.test(read('src/main/permissions-mac.js')));
   const page = code(read('src/renderer/overlay.js'));
   check('the page: the synthetic envelope only in preview builds', /synthetic = Boolean\(window\.__typdSynthetic\)/.test(page) && /if \(synthetic && window\.__typdSynthetic\)/.test(page));
 

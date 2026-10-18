@@ -623,7 +623,10 @@ function diagnosticsText() {
     'running ' + Math.round(process.uptime()) + ' s, pid ' + process.pid,
     'key: ' + (hotkeys ? hotkeys.state() : 'none') + (hotkeys && hotkeys.health ? ', tap ' + safe(() => JSON.stringify(hotkeys.health())) : ''),
     'status: ' + safe(() => status.describe().line) + '; model ' + s.model + (s.perms && s.perms.length ? '; switches off: ' + s.perms.join(', ') : ''),
-    ...(MAC ? ['accessibility trusted: ' + safe(() => sp.isTrustedAccessibilityClient(false)) + ', microphone: ' + safe(() => sp.getMediaAccessStatus('microphone')),
+    ...(MAC ? ['accessibility trusted: ' + safe(() => sp.isTrustedAccessibilityClient(false)) + ', microphone: ' + safe(() => sp.getMediaAccessStatus('microphone')) +
+      ' (' + safe(() => require('./permissions-mac').micState()) + ')',
+      'security: ' + safe(() => { const x = require('./permissions-mac').securitySettings(); return 'SIP ' + x.sip + ', AMFI boot arguments ' + (x.amfi || 'none') + (x.amfiOff ? ' (AMFI OFF: macOS refuses privacy prompts to non-Apple apps)' : ''); }),
+      'app: ' + safe(() => require('./mac/app-location').bundlePath().replace(require('os').homedir(), '~')),
       'Dock icon: ' + safe(() => (app.dock.isVisible() ? 'shown' : 'hidden')) + ' (Show Typd in the Dock ' + (settings.get('showInDock') ? 'on' : 'off') + ')'] : []),
     'menu-bar/tray icon: ' + (trayUi.tray && !trayUi.tray.isDestroyed() ? 'yes' : 'no') + ', windows: ' + BrowserWindow.getAllWindows().length +
       ', Typd window ' + (home.isOpen() ? 'open' : 'closed') + ', pill ' + (overlay && !overlay.isDestroyed() ? 'alive' : 'gone'),
@@ -978,6 +981,8 @@ function checkMic(openIfBlocked) {
 }
 
 /** macOS: which of the switches Typd needs are off, for the tray line and Home's card. */
+let keySwitchesOff = null;   // macOS: were Accessibility or Input Monitoring off at the last check?
+let rebindKey = null;        // set in whenReady: bind the current key again (what Settings' key picker does)
 function checkMacPermissions() {
   if (!MAC) return;
   const pm = require('./permissions-mac');
@@ -985,6 +990,15 @@ function checkMacPermissions() {
     const off = ['microphone', 'accessibility', 'input'].filter((k) => on && on[k] === false);
     const mic = pm.micState();
     status.set({ perms: off, micUnasked: mic === 'not-determined' || mic === 'asking' });
+    // Accessibility or Input Monitoring just came on: bind the key again, as choosing it in Settings
+    // does. A reporter's default Right Command stayed dead until he set it by hand; the event tap
+    // made before the switches were on is not trusted to hear other apps' keys.
+    const keyOff = off.includes('accessibility') || off.includes('input');
+    if (keySwitchesOff === true && !keyOff && rebindKey) {
+      life.log('key', 'Accessibility and Input Monitoring are on now: binding the key again');
+      try { rebindKey(); } catch (err) { life.log('key', 'binding again failed: ' + life.errorLine(err)); }
+    }
+    keySwitchesOff = keyOff;
   }).catch(() => {});
 }
 
@@ -1181,6 +1195,14 @@ app.whenReady().then(() => {
     bindFlag();
     refreshTray();
     return { ok: true };
+  };
+
+  // checkMacPermissions: the key bound again once Accessibility and Input Monitoring are on (not
+  // during a dictation: then at the next check).
+  rebindKey = () => {
+    if (session) { keySwitchesOff = true; return; }
+    const r = applyHotkey(hotkeys ? hotkeys.name : settings.get('hotkey'));
+    life.log('key', 'bound again: ' + (r && r.ok ? 'ok' : (r && r.reason) || 'failed') + '; ' + (hotkeys ? hotkeys.state() : 'none'));
   };
 
   home.register({
