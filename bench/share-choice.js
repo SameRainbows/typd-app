@@ -69,7 +69,7 @@ const beta = (choice) => ({ mode: 'beta', state: choice === 'on' ? 'on' : 'off',
   backfill: { state: 'none', total: 0, sent: 0, left: null, by: null, auto: null } });
 const SCENARIOS = {
   ask: homeState(beta('ask'), 'ask'),
-  tester: homeState({ mode: 'tester', state: 'on', with: 'Mehmet', tester: 'tester_a', backfill: null }, 'on')
+  tester: homeState({ mode: 'tester', state: 'on', with: 'the developer', tester: 'tester_a', backfill: null }, 'on')
 };
 
 /** preload/home.js's API, every call recorded; sharing:set answers as main does (the settings come back). */
