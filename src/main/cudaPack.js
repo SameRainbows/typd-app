@@ -251,15 +251,16 @@ function createCuda({ llamaDir, packsDir, log = () => {} }) {
   /**
    * Delete every other pack folder in packsDir (an earlier llama.cpp build's, its download included) and
    * any half-unpacked one. This build's pack and its download in progress (<version>.partial, where the
-   * version starts with the pack's id) stay.
+   * version starts with the pack's id) stay -- the download too, unless `partials` is false (a CUDA
+   * backend is here already: nothing more to fetch).
    */
-  async function tidy() {
+  async function tidy({ partials = true } = {}) {
     if (!packsDir) return;
     let names = [];
     try { names = await fsp.readdir(packsDir, { withFileTypes: true }); } catch { return; }
     for (const e of names) {
       if (!e.isDirectory()) continue;
-      if (desc && (e.name === desc.pack || (e.name.startsWith(desc.pack) && e.name.endsWith('.partial')))) continue;
+      if (desc && (e.name === desc.pack || (partials && e.name.startsWith(desc.pack) && e.name.endsWith('.partial')))) continue;
       await fsp.rm(path.join(packsDir, e.name), { recursive: true, force: true }).then(
         () => log('CUDA backend: deleted', e.name),
         (err) => log('CUDA backend: could not delete', e.name, err && err.message));
