@@ -32,7 +32,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15, xcode-27]
+        os: [xcode-27]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     env:
@@ -130,7 +130,7 @@ jobs:
           npm ci
           node scripts/fetch-model.js --accept-license | tail -3
 
-      - name: Round 2 -- the prompt itself (its text, a screenshot), the key during it, quit and relaunch, Allow, System Settings first
+      - name: Round 3 -- a stale prompt, a Terminal start, quarantine, translocation
         env:
           TYPD_MODEL_DIR: ${{ github.workspace }}/models/typd-dictate
         run: |
@@ -204,53 +204,55 @@ jobs:
             # shellcheck disable=SC2086
             open /Applications/Typd.app --env TYPD_DEBUG=1 --env TYPD_NO_MODEL_UPDATE=1 --env TYPD_NO_APP_UPDATE=1 --env TYPD_NO_SHARE=1 --env "TYPD_MODEL_DIR=$TYPD_MODEL_DIR" $extra --stdout "$1" --stderr "$1.err"
           }
-          rm -rf /Applications/Typd.app; ditto "$RUNNER_TEMP/shipped/Typd.app" /Applications/Typd.app
-          sudo log stream --level debug --style compact --predicate 'subsystem == "com.apple.TCC" OR process == "tccd"' > "$RUNNER_TEMP/tcc2.log" 2>&1 &
+          rows() {
+            sudo find /private/var/containers/Data/ProtectedSystem -name 'TCC.db' -path '*com.apple.TCC*' 2>/dev/null | while IFS= read -r db; do
+              r=$(sudo sqlite3 "$db" "SELECT service||' auth_value='||auth_value||' reason='||auth_reason FROM access WHERE client LIKE 'ai.typd%';" 2>&1 | tr '\n' ';')
+              echo "  user TCC.db <ProtectedSystem>/$(echo "$db" | sed 's#.*/ProtectedSystem/\(........\).*#\1#'): ${r:-no rows for ai.typd.app}"
+            done
+          }
+          unc() { "$RUNNER_TEMP/wins" | grep -E 'UserNotificationCenter|CoreServicesUIAgent|Typd' | head -5; echo "  UNC pid: $(pgrep -x UserNotificationCenter | tr '\n' ' ')"; "$RUNNER_TEMP/ax" UserNotificationCenter | grep -E 'AXStaticText' | head -2; "$RUNNER_TEMP/ax" CoreServicesUIAgent | grep -E 'AXStaticText|AXButton' | head -6; }
+          tcc() { echo "  -- tccd ($1)"; grep -aE 'kTCCServiceMicrophone' "$RUNNER_TEMP/tcc3.log" | grep -aE 'AUTHREQ_PROMPTING|AUTHREQ_RESULT|Handling access request|disallow|already|pending|coalesc' | sed -E 's/^([0-9-]+ [0-9:.]+).*(AUTHREQ_[A-Z]+|Handling access request|disallow[a-z ]*|already[a-z ]*|pending[a-z ]*)(.{0,170}).*/  \1 \2\3/' | cut -c1-260 | tail -n 8; : > "$RUNNER_TEMP/tcc3.log"; }
+          ditto "$RUNNER_TEMP/shipped/Typd.app" "$RUNNER_TEMP/clean/Typd.app"
+          install_clean() { pkill -f '/Typd.app/Contents/MacOS/Typd'; sleep 2; rm -rf /Applications/Typd.app; ditto "$RUNNER_TEMP/clean/Typd.app" /Applications/Typd.app; }
+          sudo log stream --level debug --style compact --predicate 'subsystem == "com.apple.TCC" OR process == "tccd"' > "$RUNNER_TEMP/tcc3.log" 2>&1 &
           lp=$!
-          echo "=================== A. a fresh install's first launch, walkthrough ON (as a user starts it)"
-          fresh
-          # Accessibility, Input Monitoring and posting keys on (as after Typd's own dialog), the microphone untouched
-          now=$(date +%s)
-          for svc in kTCCServiceAccessibility kTCCServiceListenEvent kTCCServicePostEvent; do
-            sudo sqlite3 "/Library/Application Support/com.apple.TCC/TCC.db" "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version, flags, last_modified) VALUES ('$svc', 'ai.typd.app', 0, 2, 4, 1, 0, $now);" && echo "  granted $svc (system TCC.db)"
-          done
-          rows; sleep 2
-          launch "$RUNNER_TEMP/a.out" walk
-          sleep 9; look "9 s after launch"
-          shot a-first-launch
-          mics "first launch"
-          echo "  -- Typd's own lines"; grep -hE '^\[typd:(permissions|life|home)\]' "$RUNNER_TEMP/a.out" | head -15
-          echo "=================== A2. the key (Right Command, twice) while macOS's prompt is unanswered"
-          "$RUNNER_TEMP/mac-ui" keys 54; sleep 3; "$RUNNER_TEMP/mac-ui" keys 54; sleep 4
-          grep -hE '^\[typd:(life|session|permissions)\]|No microphone|No audio|Mic ' "$RUNNER_TEMP/a.out" "$RUNNER_TEMP/a.out.err" | tail -8
-          tail -5 "$HOME/Library/Application Support/typd/logs/life.log" 2>/dev/null
-          echo "=================== B. quit Typd with the prompt unanswered: is anything recorded? does the prompt go away?"
-          pkill -f /Applications/Typd.app/Contents/MacOS/Typd; sleep 4
-          look "4 s after quitting"; rows
-          echo "=================== C. relaunch (no reset): does 0.2.6 ask again?"
-          : > "$RUNNER_TEMP/tcc2.log"
-          launch "$RUNNER_TEMP/c.out"
-          sleep 9; look "9 s after the relaunch"
-          mics "relaunch"
-          echo "=================== D. press Allow in macOS's prompt: Typd in the list?"
-          "$RUNNER_TEMP/ax" UserNotificationCenter press Allow | grep -E 'pressed|trusted|no process'
-          sleep 4; rows; look "after Allow"
-          echo "  -- Typd's own lines after Allow"; grep -hE '^\[typd:permissions\]' "$RUNNER_TEMP/c.out" | head -5
-          echo "=================== E. System Settings' Microphone list open first (a user looking for Typd there), then the first launch"
-          fresh
-          open "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"; sleep 6
-          : > "$RUNNER_TEMP/tcc2.log"
-          launch "$RUNNER_TEMP/e.out" walk
-          sleep 9; look "9 s after launch, System Settings open"
-          shot e-settings-first
-          mics "settings first"
-          echo "=================== F. Don't Allow: Typd in the list, switched off?"
-          "$RUNNER_TEMP/ax" UserNotificationCenter press "Don't Allow" | grep -E 'pressed|no process'
-          sleep 4; rows
-          echo "  -- Typd's own lines after Don't Allow"; grep -hE '^\[typd:permissions\]' "$RUNNER_TEMP/e.out" | head -5
-          pkill -f /Applications/Typd.app/Contents/MacOS/Typd
-          sudo kill $lp
-          killall "System Settings" 2>/dev/null; true
+          echo "spctl: $(spctl --status 2>&1)"
+          echo "=================== R1. prompt left unanswered, quit, tccutil reset, relaunch: a new prompt?"
+          install_clean; fresh; sleep 2
+          launch "$RUNNER_TEMP/r1a.out"; sleep 8; unc; tcc "first launch"
+          pkill -f /Applications/Typd.app/Contents/MacOS/Typd; sleep 3
+          tccutil reset Microphone ai.typd.app; sleep 1
+          launch "$RUNNER_TEMP/r1b.out"; sleep 8; unc; tcc "after quit + reset + relaunch"
+          echo "=================== R2. the same, but UserNotificationCenter restarted before the relaunch (an old prompt gone)"
+          pkill -f /Applications/Typd.app/Contents/MacOS/Typd; sleep 2
+          killall UserNotificationCenter; sleep 2; tccutil reset Microphone ai.typd.app
+          launch "$RUNNER_TEMP/r2.out"; sleep 8; unc; tcc "after killall UserNotificationCenter + relaunch"
+          echo "=================== R3. started from a shell, as from Terminal (the binary itself, not open)"
+          pkill -f /Applications/Typd.app/Contents/MacOS/Typd; sleep 2; killall UserNotificationCenter; sleep 1; tccutil reset Microphone ai.typd.app
+          TYPD_DEBUG=1 TYPD_NO_MODEL_UPDATE=1 TYPD_NO_APP_UPDATE=1 TYPD_NO_SHARE=1 TYPD_NO_WALKTHROUGH=1 /Applications/Typd.app/Contents/MacOS/Typd > "$RUNNER_TEMP/r3.out" 2>&1 &
+          sleep 8; unc; tcc "started from a shell"
+          grep -aE 'Microphone.*(Resp|responsible)' "$RUNNER_TEMP/tcc3.log" | head -2 | cut -c1-400
+          echo "=================== R4. quarantined as a browser download (Gatekeeper's first-open path), installed with ditto, opened"
+          pkill -f /Applications/Typd.app/Contents/MacOS/Typd; sleep 2; killall UserNotificationCenter; sleep 1; tccutil reset Microphone ai.typd.app
+          q="0083;$(printf %x "$(date +%s)");Safari;$(uuidgen)"
+          rm -rf /Applications/Typd.app; ditto "$RUNNER_TEMP/clean/Typd.app" /Applications/Typd.app
+          xattr -w -r com.apple.quarantine "$q" /Applications/Typd.app 2>/dev/null || find /Applications/Typd.app -exec xattr -w com.apple.quarantine "$q" {} \; 2>/dev/null
+          xattr -p com.apple.quarantine /Applications/Typd.app
+          rm -rf "$HOME/Library/Application Support/typd"
+          launch "$RUNNER_TEMP/r4.out"; sleep 10; unc; tcc "quarantined"
+          pgrep -fl 'Typd.app/Contents/MacOS/Typd' | head -2
+          grep -hE '^\[typd:life\] launch' "$RUNNER_TEMP/r4.out" | head -1
+          echo "=================== R5. run from the mounted, quarantined dmg (App Translocation)"
+          pkill -f '/Typd.app/Contents/MacOS/Typd'; sleep 2; killall UserNotificationCenter; sleep 1; tccutil reset Microphone ai.typd.app; rm -rf /Applications/Typd.app
+          cp "$RUNNER_TEMP/Typd.dmg" "$RUNNER_TEMP/Typd-q.dmg"; xattr -w com.apple.quarantine "$q" "$RUNNER_TEMP/Typd-q.dmg"
+          mkdir -p "$RUNNER_TEMP/qmnt"; hdiutil attach "$RUNNER_TEMP/Typd-q.dmg" -nobrowse -readonly -mountpoint "$RUNNER_TEMP/qmnt" >/dev/null
+          rm -rf "$HOME/Library/Application Support/typd"
+          open "$RUNNER_TEMP/qmnt/Typd.app" --env TYPD_DEBUG=1 --env TYPD_NO_MODEL_UPDATE=1 --env TYPD_NO_APP_UPDATE=1 --env TYPD_NO_SHARE=1 --env TYPD_NO_WALKTHROUGH=1 --stdout "$RUNNER_TEMP/r5.out" --stderr "$RUNNER_TEMP/r5.out.err"
+          sleep 10; unc; tcc "translocated"
+          pgrep -fl 'Typd.app/Contents/MacOS/Typd' | head -2
+          pkill -f '/Typd.app/Contents/MacOS/Typd'; sleep 2; hdiutil detach "$RUNNER_TEMP/qmnt" >/dev/null 2>&1
+          rows
+          sudo kill $lp; true
 
       - name: Remove the signing keychain
         if: always()
