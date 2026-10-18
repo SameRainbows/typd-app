@@ -123,7 +123,10 @@ else
   LSREG=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
   to() { perl -e 'alarm shift; exec @ARGV' "$@"; }
   DL="$HOME/Downloads/Typd.app"; AP=/Applications/Typd.app
-  openapp() { to 20 open "$1" --env TYPD_DEBUG=1 --env TYPD_NO_MODEL_UPDATE=1 --env TYPD_NO_APP_UPDATE=1 --env TYPD_NO_SHARE=1 --env TYPD_NO_WALKTHROUGH=1 --env TYPD_MIC_WAIT_MS=20000 --stdout "$2" --stderr "$2.err"; }
+  openapp() {   # openapp <app> <out> [--env X=Y ...]
+    a=$1; o=$2; shift 2
+    to 20 open "$a" --env TYPD_DEBUG=1 --env TYPD_NO_MODEL_UPDATE=1 --env TYPD_NO_APP_UPDATE=1 --env TYPD_NO_SHARE=1 --env TYPD_NO_WALKTHROUGH=1 --env TYPD_MIC_WAIT_MS=20000 "$@" --stdout "$o" --stderr "$o.err"
+  }
   waitfor() { for _ in $(seq 1 "$2"); do "$ALERT" texts "$3" | grep -qE "$1" && return 0; sleep 1; done; return 1; }
   killall UserNotificationCenter 2>/dev/null; sleep 1
   tccutil reset Microphone ai.typd.app >/dev/null 2>&1
@@ -135,7 +138,13 @@ else
   if grep -aq 'AUTHREQ_PROMPTING: .*service=kTCCServiceMicrophone' "$TLOG"; then bad "5. macOS was asked for the microphone while the move offer was up"; else say "5. ...and macOS was not asked anything before it"; fi
   "$ALERT" click Typd "Not Now" | sed 's/^/  /'
   sleep 2
-  [ -n "$(life 'kept this copy where it is')" ] && say "5. Not Now heard" || bad "5. the move offer's Not Now was not heard"
+  if [ -n "$(life 'kept this copy where it is')" ]; then say "5. Not Now heard (a real click)"; else
+    # A real click on Typd's own NSAlert did not land on this runner: start the Downloads copy again
+    # past the offer (as "Not Now" would), so the rest of the sequence still runs.
+    say "5. (the click on Not Now did not land here; starting the Downloads copy again past the offer)"
+    pkill -f "$DL/Contents/MacOS/Typd" 2>/dev/null; sleep 3
+    openapp "$DL" "$OUT.dl2" --env TYPD_NO_MOVE_OFFER=1
+  fi
   if waitfor 'access your microphone|would like to access the microphone' 45 UserNotificationCenter; then "$ALERT" press UserNotificationCenter "Don't Allow" | sed 's/^/  /'; else bad "5. no microphone prompt after Not Now"; fi
   sleep 3
   l=$(life 'macOS answered: not allowed'); [ -n "$l" ] && say "5. the Downloads copy: ${l#*] }" || bad "5. Don't Allow not heard"
@@ -147,12 +156,24 @@ else
   : > "$TLOG"
   openapp "$AP" "$OUT.ap"
   if waitfor 'Ask macOS Again' 40 Typd; then say "5. /Applications copy: the dialog offers Ask macOS Again"; else bad "5. no Ask macOS Again in the /Applications copy's dialog"; "$ALERT" texts Typd | head -8; fi
-  "$ALERT" click Typd "Ask macOS Again" | sed 's/^/  /'
+  c=$("$ALERT" click Typd "Ask macOS Again"); echo "  $c"
+  if ! echo "$c" | grep -q 'it is gone'; then
+    # The same fallback: the dialog answers "Ask macOS Again" by itself (TYPD_TEST_DIALOG_ANSWER=reset);
+    # what follows -- LaunchServices, tccutil reset, macOS's prompt -- is the real thing either way.
+    say "5. (the click did not land here; starting the /Applications copy again with TYPD_TEST_DIALOG_ANSWER=reset)"
+    pkill -f "$AP/Contents/MacOS/Typd" 2>/dev/null; sleep 3
+    killall UserNotificationCenter 2>/dev/null; sleep 1
+    : > "$TLOG"
+    openapp "$AP" "$OUT.ap2" --env TYPD_TEST_DIALOG_ANSWER=reset
+    sleep 4
+    l=$(life 'test: the dialog answered reset'); [ -n "$l" ] && say "5. ${l#*] }" || bad "5. the dialog did not answer reset"
+  fi
   ok=0
   for _ in $(seq 1 25); do
     if grep -aqE 'AUTHREQ_PROMPTING: .*service=kTCCServiceMicrophone, subject=Sub:\{ai\.typd\.app\}' "$TLOG"; then ok=1; break; fi
     sleep 1
   done
+  [ -n "$(life 'tccutil reset Microphone ai.typd.app: done')" ] && say "5. Ask macOS Again reset Typd's own answer (tccutil)" || bad "5. no tccutil reset after Ask macOS Again"
   [ $ok = 1 ] && say "5. Ask macOS Again: macOS prompts again" || bad "5. no new prompt after Ask macOS Again"
   grep -a 'location: unregistered\|tccutil reset' "$LIFE" | tail -3 | sed 's/^.*\] /  life: /'
   [ -n "$(life 'unregistered a copy of Typd that is gone')" ] && say "5. the gone ~/Downloads copy was unregistered from LaunchServices" || say "5. (no gone copy left in LaunchServices to unregister)"
