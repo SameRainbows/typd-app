@@ -525,6 +525,7 @@ const trayUi = createTray({
   statusAction,
   forget: (term) => forget(term),
   modelLine: () => modelUpdate.line(),
+  packLine: () => modelUpdate.packLine(),
   modelPrompt: () => modelUpdate.pending(),
   modelNow: () => { modelUpdate.approve().catch(() => {}); },
   modelLater: () => { modelUpdate.later().catch(() => {}); },
@@ -665,6 +666,22 @@ function switchModel() {
   });
 }
 
+/**
+ * The CUDA pack has just been installed (or set aside): restart the model server so it runs on what is
+ * there now (modelUpdate.js calls this only with no session open). The same few seconds of "Getting
+ * ready…" as a model switch; no app restart. A failure is the updater's to handle: it sets the pack
+ * aside and calls this once more, on the processor.
+ */
+function switchBackend() {
+  status.set({ model: 'loading', modelWhy: '' });
+  return Promise.resolve(pipeline.switchModel()).then(() => {
+    status.set({ model: 'ready' });
+  }, (err) => {
+    status.set({ model: 'failed', modelWhy: String((err && err.message) || '') });
+    throw err;
+  });
+}
+
 /* ------------------------------------------------------------ walkthrough */
 
 /**
@@ -722,7 +739,7 @@ function modelChanged() {
   home.changed('model');
   const p = modelUpdate.pending();
   const asking = p && !p.later ? p.version : null;
-  if (asking && asking !== notedAsk) note((p.first ? 'Speech model needed (' : 'New model (') + p.size + '): see the menu', 8000);
+  if (asking && asking !== notedAsk) note((p.kind === 'pack' ? 'GPU acceleration (' : p.first ? 'Speech model needed (' : 'New model (') + p.size + '): see the menu', 8000);
   notedAsk = asking;
 }
 
@@ -748,7 +765,7 @@ function modelMissing() {
 async function modelInfo() {
   let d = null;
   try { d = await choice.describe(); } catch { d = null; }
-  return { following: modelUpdate.following(), ...(d || {}), chosen: modelUpdate.chosen(), pending: modelUpdate.pending(), line: modelUpdate.line(), needed: modelUpdate.needed() };
+  return { following: modelUpdate.following(), ...(d || {}), chosen: modelUpdate.chosen(), pending: modelUpdate.pending(), line: modelUpdate.line(), needed: modelUpdate.needed(), pack: modelUpdate.packInfo() };
 }
 
 /* -------------------------------------------------------------- app updates */
@@ -934,7 +951,12 @@ app.whenReady().then(() => {
       // on a metered connection, every download with "Ask before downloading new models".
       variant: () => choice.variant(),
       askFirst: () => settings.get('askBeforeModelDownload'),
-      networkCost: () => netcost.probe()
+      networkCost: () => netcost.probe(),
+      // Windows public installs (0.2.5+): llama.cpp's CUDA backend, fetched after the model when the
+      // hardware takes the GPU path; until then, and on any other PC, llama.cpp runs on the processor.
+      cuda: local.cuda,
+      cudaWanted: () => choice.cuda(),
+      switchBackend
     });
   }
   warmModel();

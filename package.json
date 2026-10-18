@@ -1,6 +1,6 @@
 {
   "name": "typd",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "private": true,
   "description": "Voice dictation you can talk back to.",
   "license": "GPL-3.0-only",
@@ -9,7 +9,7 @@
     "start": "electron .",
     "dev": "electron . --dev",
     "stub": "electron . --stub",
-    "bench": "node bench/wiring.js && node bench/hotkeys.js && node bench/home.js && node bench/revise.js && node bench/formatting.js && node bench/revise-guards.js && node bench/long.js && node bench/vocab.js && node bench/learn.js && node bench/updates.js && node bench/model-choice.js && node bench/first-launch.js && node bench/lifelog.js && node bench/lora.js --no-model && node bench/sharing.js && node bench/backfill.js && node bench/first-run.js && node bench/versions.js && node bench/app-update.js && node bench/public-build.js",
+    "bench": "node bench/wiring.js && node bench/hotkeys.js && node bench/home.js && node bench/revise.js && node bench/formatting.js && node bench/revise-guards.js && node bench/long.js && node bench/vocab.js && node bench/learn.js && node bench/updates.js && node bench/model-choice.js && node bench/first-launch.js && node bench/lifelog.js && node bench/lora.js --no-model && node bench/sharing.js && node bench/backfill.js && node bench/first-run.js && node bench/cuda-pack.js && node bench/versions.js && node bench/app-update.js && node bench/public-build.js",
     "bench:revise": "node bench/revise.js",
     "bench:guards": "node bench/revise-guards.js",
     "bench:long": "node bench/long.js",
@@ -27,6 +27,8 @@
     "bench:lora": "node bench/lora.js",
     "bench:sharing": "node bench/sharing.js",
     "bench:first-run": "node bench/first-run.js",
+    "bench:cuda-pack": "node bench/cuda-pack.js",
+    "cuda-pack": "node scripts/cuda-pack.js",
     "bench:versions": "node bench/versions.js",
     "bench:public": "node bench/public-build.js",
     "fetch:llama-mac": "node scripts/fetch-llama-mac.js",
@@ -63,7 +65,9 @@
     "extraResources: MODEL_LICENSE.txt, the model's licence, at <resources>/MODEL_LICENSE.txt; Settings",
     "opens it (home-window.js app:license), and app-update packages carry it like the rest of the app.",
     "The model is staged by scripts/before-pack.js from model.json, so only the model in",
-    "use ships. win: the CUDA build in vendor/llama minus the other tools' *-impl.dll.",
+    "use ships. win: llama.cpp is staged the same way, into dist/.stage/llama (vendor/llama, the CUDA",
+    "release, minus the other tools' *-impl.dll, plus cuda.json); TYPD_NO_BUNDLED_CUDA=1 (public installers)",
+    "leaves the CUDA backend out: the app fetches it as the CUDA pack (src/main/cudaPack.js, scripts/cuda-pack.js).",
     "mac: vendor/llama-mac/<arch>, fetched by scripts/fetch-llama-mac.js (b11351).",
     "npmRebuild false: the only native module, uiohook-napi, ships N-API prebuilds for every",
     "platform, which Electron loads as-is; a rebuild would need a compiler for nothing.",
@@ -121,14 +125,8 @@
       "icon": "assets/typd.ico",
       "extraResources": [
         {
-          "from": "vendor/llama",
-          "to": "llama",
-          "filter": [
-            "llama-server.exe",
-            "*.dll",
-            "!llama-*-impl.dll",
-            "llama-server-impl.dll"
-          ]
+          "from": "dist/.stage/llama",
+          "to": "llama"
         }
       ]
     },

@@ -5,12 +5,14 @@
  * updater follows the published manifest's variant of that name (modelUpdate.js); Settings can pin
  * either one instead of Automatic (settings.modelVariant).
  *
- *   full    an NVIDIA GPU with at least FULL_VRAM_MIB of memory in all (Windows and Linux, where
- *           Typd's llama.cpp is the CUDA build), or Apple Silicon with at least 16 GB of memory
- *           (the arm64 build, where llama.cpp runs on Metal and shares that memory)
- *   light   anything else: no NVIDIA GPU (an AMD or Intel GPU means the CPU, since the Windows
- *           build is CUDA only), a smaller NVIDIA card, an Intel Mac or the x64 build under
- *           Rosetta (llama.cpp on the CPU there), an 8 GB Mac
+ *   full    an NVIDIA GPU with at least FULL_VRAM_MIB of memory in all (Windows, where llama.cpp runs
+ *           on CUDA -- since 0.2.5 through the CUDA pack, downloaded after the model: cuda() below), or
+ *           Apple Silicon with at least 16 GB of memory (the arm64 build, where llama.cpp runs on Metal
+ *           and shares that memory)
+ *   light   anything else: no NVIDIA GPU (an AMD or Intel GPU means the CPU, since Typd's Windows
+ *           llama.cpp is the CPU build plus, on the GPU path, CUDA), a smaller NVIDIA card, an Intel Mac
+ *           or the x64 build under Rosetta (llama.cpp on the CPU there), an 8 GB Mac. The full model on
+ *           the processor alone is too slow to dictate with, so Automatic never picks it there.
  *
  * Total VRAM, not free. The 1.7B model with its mmproj and the revise adapter holds ~1.8 GB on the
  * GPU. Free memory is a snapshot that moves with whatever else runs, and it already excludes the
@@ -149,4 +151,20 @@ function pick(hw) {
   return { variant: 'light', why: 'No NVIDIA GPU (the model runs on the processor)' };
 }
 
-module.exports = { detect, pick, parseNvidiaSmi, probeNvidia, probeMacMemory, vendorsOf, nvidiaSmiPaths, runFile, FULL_VRAM_MIB, FULL_MAC_BYTES };
+/**
+ * The GPU path on Windows: {cuda: boolean, why}. True for an NVIDIA GPU nvidia-smi reports with at
+ * least FULL_VRAM_MIB of memory in all -- the bar the full model has, so a PC that gets Full gets
+ * llama.cpp's CUDA backend with it, and one that gets Light runs on the processor (where the light
+ * model is quick enough, and a 2-3 GB card has little room left beside the desktop). Since 0.2.5 the
+ * public installer has no CUDA in it: a PC on the GPU path downloads the CUDA pack after its model
+ * (cudaPack.js, modelUpdate.js). macOS never: Metal is in the app on Apple silicon.
+ */
+function cuda(hw) {
+  if (!hw || hw.platform !== 'win32') return { cuda: false, why: hw && hw.platform === 'darwin' ? 'macOS (no CUDA)' : 'Not Windows' };
+  const g = hw.nvidia;
+  if (!g) return { cuda: false, why: (hw.vendors || []).includes('nvidia') ? 'An NVIDIA GPU without its driver tools' : 'No NVIDIA GPU' };
+  if (g.totalMiB < FULL_VRAM_MIB) return { cuda: false, why: `${g.name} has less than 4 GB of memory` };
+  return { cuda: true, why: g.name };
+}
+
+module.exports = { detect, pick, cuda, parseNvidiaSmi, probeNvidia, probeMacMemory, vendorsOf, nvidiaSmiPaths, runFile, FULL_VRAM_MIB, FULL_MAC_BYTES };

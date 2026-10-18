@@ -501,12 +501,15 @@
     var c = M.chosen;
     if (c && c.want && c.got && c.want !== c.got) help += ' ' + variantName(c.want) + ' is not published yet, so Typd uses ' + variantName(c.got) + '.';
     $('modelHelp').textContent = help + ' Full is the most accurate; Light is smaller and faster without a strong GPU.';
-    $('modelNowLine').textContent = M.line || '';
+    // The CUDA pack (Windows on the GPU path): its line under the model's while it downloads or waits.
+    var pk = M.pack && M.pack.line ? M.pack.line : '';
+    $('modelNowLine').textContent = (M.line || '') + (pk ? ' · ' + pk : '');
     $('askBeforeModelDownload').checked = Boolean(S.settings.askBeforeModelDownload);
     var p = M.pending;
     $('modelAsk').hidden = !p;
     if (p) {
-      $('modelAskText').textContent = 'New model available (' + p.size + ')' + (p.why === 'metered' ? ' — this connection is metered.' : p.why === 'unknown' ? ' — this connection may be metered.' : '.');
+      $('modelAskText').textContent = (p.kind === 'pack' ? 'GPU acceleration for your NVIDIA GPU (' + p.size + ')' : 'New model available (' + p.size + ')') +
+        (p.why === 'metered' ? ' — this connection is metered.' : p.why === 'unknown' ? ' — this connection may be metered.' : '.');
       $('modelLater').hidden = Boolean(p.later);
     }
   }
@@ -528,7 +531,8 @@
     });
   });
   $('modelUpdateNow').addEventListener('click', function () {
-    api.model.now().then(function () { toast('Downloading the new model'); setTimeout(loadModel, 400); });
+    var pack = M && M.pending && M.pending.kind === 'pack';
+    api.model.now().then(function () { toast(pack ? 'Downloading GPU acceleration' : 'Downloading the new model'); setTimeout(loadModel, 400); });
   });
   $('modelLater').addEventListener('click', function () {
     api.model.later().then(function () { toast('Typd asks again tomorrow'); setTimeout(loadModel, 400); });

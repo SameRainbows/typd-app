@@ -483,12 +483,23 @@ function asarWith(pkg) {
 
 function link(from, to) { fs.mkdirSync(path.dirname(to), { recursive: true }); try { fs.linkSync(from, to); } catch { fs.copyFileSync(from, to); } }
 
-/** A stand-in packaged Typd for Windows: node.exe as Typd.exe (and as llama-server.exe). */
-function fakeWinApp(dir, version, { model = true, tester = false, uninstaller = false } = {}) {
+// The CUDA backend as Windows installs up to 0.2.4 have it in resources/llama (four stand-in "DLLs"), and
+// the cuda.json a 0.2.5 build names it with (src/main/cudaPack.js).
+const CUDA = { 'ggml-cuda.dll': crypto.randomBytes(30000), 'cublas64_12.dll': crypto.randomBytes(20000), 'cublasLt64_12.dll': crypto.randomBytes(25000), 'cudart64_12.dll': crypto.randomBytes(5000) };
+const CUDA_JSON = { schema: 'typd-cuda/1', pack: 'cuda-b1-cu12.4', llama: { build: 1, commit: 'abc' }, cuda: '12.4', files: Object.entries(CUDA).map(([name, b]) => ({ name, size: b.length, sha256: sha(b) })) };
+
+/**
+ * A stand-in packaged Typd for Windows: node.exe as Typd.exe (and as llama-server.exe). `cuda`: the CUDA
+ * backend beside llama-server (every Windows build up to 0.2.4; tester builds); `cudaJson`: a 0.2.5 build's
+ * cuda.json (public 0.2.5 builds have it and not the backend).
+ */
+function fakeWinApp(dir, version, { model = true, tester = false, uninstaller = false, cuda = false, cudaJson = false } = {}) {
   fs.rmSync(dir, { recursive: true, force: true });
   link(process.execPath, path.join(dir, 'Typd.exe'));
   link(process.execPath, path.join(dir, 'resources', 'llama', 'llama-server.exe'));
   fs.writeFileSync(path.join(dir, 'resources', 'llama', 'ggml.dll'), 'the same llama.cpp in every version');
+  if (cuda) for (const [name, b] of Object.entries(CUDA)) fs.writeFileSync(path.join(dir, 'resources', 'llama', name), b);
+  if (cudaJson) fs.writeFileSync(path.join(dir, 'resources', 'llama', 'cuda.json'), JSON.stringify(CUDA_JSON, null, 1));
   fs.writeFileSync(path.join(dir, 'resources', 'app.asar'), asarWith({ name: 'typd', version }));
   fs.writeFileSync(path.join(dir, 'resources', 'fake.json'), JSON.stringify({ version }));
   if (model) {
@@ -556,10 +567,10 @@ async function installTests() {
   const s = await fakeServer();
   const pkgScript = path.join(__dirname, '..', 'scripts', 'app-update-package.js');
 
-  /** Build `version` as a packaged app and make its update package, as a release would. */
+  /** Build `version` as a packaged app and make its update package, as a release would (Windows: a 0.2.5 public build, no CUDA, cuda.json). */
   function build(version) {
     const dir = mac ? path.join(builds, version, 'Typd.app') : path.join(builds, version, 'win-unpacked');
-    if (mac) fakeMacApp(dir, version, launcher); else fakeWinApp(dir, version);
+    if (mac) fakeMacApp(dir, version, launcher); else fakeWinApp(dir, version, { cudaJson: true });
     const a = ['win', '--app', dir, '--out', out, '--version', version];
     if (mac) a.splice(0, 1, 'mac'), a.push('--arch', process.arch);
     const r = spawnSync(process.execPath, [pkgScript, ...a], { encoding: 'utf8', windowsHide: true });
@@ -617,20 +628,47 @@ async function installTests() {
     ? { model: exists(kept('models/typd-dictate/m.gguf')), tester: exists(kept('tester.json')),
       bundleUntouched: !exists(path.join(installed, 'Contents/Resources/models')) && !exists(path.join(installed, 'Contents/Resources/tester.json')) }
     : { model: exists(path.join(installed, 'resources/models/typd-dictate/m.gguf')), tester: exists(path.join(installed, 'resources/tester.json')),
-      llama: exists(path.join(installed, 'resources/llama/llama-server.exe')), uninstaller: exists(path.join(installed, 'Uninstall Typd.exe')) };
+      llama: exists(path.join(installed, 'resources/llama/llama-server.exe')), uninstaller: exists(path.join(installed, 'Uninstall Typd.exe')),
+      cuda: Object.entries(CUDA).every(([name, b]) => { try { return fs.readFileSync(path.join(installed, 'resources', 'llama', name)).equals(b); } catch { return false; } }) };
   const installedVersion = () => (readJson(path.join(installed, mac ? 'Contents/Resources/fake.json' : 'resources/fake.json')) || {}).version;
   const leftovers = () => fs.readdirSync(path.dirname(installed)).filter((n) => n !== path.basename(installed));
   const helperLog = () => { try { return fs.readFileSync(path.join(userData, 'app-update', 'helper.log'), 'utf8'); } catch { return ''; } };
   const designated = (app) => { const r = spawnSync('codesign', ['-d', '-r-', app], { encoding: 'utf8' }); const m = /designated => (.+)/.exec((r.stdout || '') + (r.stderr || '')); return m ? m[1].trim() : null; };
 
+  /**
+   * The new version's first look after the update from 0.2.4 (real cudaPack.js and modelUpdate.js on the
+   * installed folder): the model it carried is the manifest's, the CUDA backend it carried is its build's,
+   * so nothing at all is downloaded.
+   */
+  async function noDownloads() {
+    const { createCuda } = require('../src/main/cudaPack');
+    const { createUpdater } = require('../src/main/modelUpdate');
+    const { fakeModelServer } = require('./fake-model-server');
+    const ms = await fakeModelServer();
+    try {
+      const md = path.join(installed, 'resources', 'models', 'typd-dictate');
+      const files = { 'm.gguf': fs.readFileSync(path.join(md, 'm.gguf')), 'p.gguf': fs.readFileSync(path.join(md, 'p.gguf')) };
+      ms.publish({ full: { version: 'full_x', files, model_json: { model: 'm.gguf', mmproj: 'p.gguf' } }, packs: { [CUDA_JSON.pack]: { version: CUDA_JSON.pack, files: { 'cuda-pack-b1-cu12.4.zip': crypto.randomBytes(1000) } } } });
+      const cuda = createCuda({ llamaDir: path.join(installed, 'resources', 'llama'), packsDir: path.join(userData, 'cuda') });
+      const switches = [];
+      const u = createUpdater({ keys: ms.keys, config: { endpoint: ms.endpoint, key: null }, modelsDir: path.join(userData, 'models'), bundledDir: md, appVersion: '2.0.0',
+        switchModel: async () => { switches.push('model'); }, switchBackend: async () => { switches.push('backend'); }, cuda, cudaWanted: () => true, variant: () => 'full', idleMs: 0 });
+      const r = await u.check();
+      check("B's first check after the update from 0.2.4 (an NVIDIA PC): no download at all -- the carried model is the manifest's, the carried CUDA backend is B's build's",
+        r.state === 'current' && ms.fileRequests().length === 0 && cuda.state() === 'bundled' && u.packState === 'current' && !switches.length, { r, reqs: ms.fileRequests(), cs: cuda.state(), ps: u.packState, switches });
+    } finally {
+      ms.server.close();
+    }
+  }
+
   try {
-    // A is installed (a tester build, with an uninstaller on Windows), B is published.
-    if (mac) fakeMacApp(installed, '1.0.0', launcher, { tester: true }); else fakeWinApp(installed, '1.0.0', { tester: true, uninstaller: true });
+    // A is installed (a tester build, with an uninstaller on Windows -- and, as every Windows build up to
+    // 0.2.4 has it, llama.cpp's CUDA backend beside llama-server), B is published (a 0.2.5 public build).
+    if (mac) fakeMacApp(installed, '1.0.0', launcher, { tester: true }); else fakeWinApp(installed, '1.0.0', { tester: true, uninstaller: true, cuda: true });
     const bundledModel = fs.readFileSync(path.join(installed, mac ? 'Contents/Resources/models/typd-dictate/m.gguf' : 'resources/models/typd-dictate/m.gguf'), 'utf8');
     const B = build('2.0.0');
-    check('the package leaves out the model and tester.json' + (win ? ' and llama.cpp, naming the llama.cpp tree it needs' : ''),
-      B && B.left_out.some((p) => /models/.test(p)) && (mac || (B.requires && /^[0-9a-f]{64}$/.test(B.requires['resources/llama']))), B);
-    if (win) check('...and that tree hash is the one the app computes', B.requires['resources/llama'] === await au.treeHash(path.join(installed, 'resources', 'llama')));
+    check('the package leaves out the model and tester.json' + (win ? '; it holds llama.cpp without the CUDA backend, carries those four files over, needs no llama.cpp tree' : ''),
+      B && B.left_out.some((p) => /models/.test(p)) && (mac || (!B.requires && Object.keys(CUDA).every((n) => B.carry.includes('resources/llama/' + n)) && B.carry.length <= 16)), B);
     publish(B);
     const t0 = Date.now();
     launch();
@@ -640,7 +678,8 @@ async function installTests() {
     check('the installed app is now B', installedVersion() === '2.0.0');
     const c = carried();
     check(mac ? "A's model and tester.json were kept for B in userData/carried/, and nothing was put into B's bundle"
-      : 'the model, tester.json, llama.cpp and the uninstaller were carried over', Object.values(c).every(Boolean), c);
+      : 'the model, tester.json, the uninstaller and the CUDA backend were carried over; llama.cpp is B\'s own', Object.values(c).every(Boolean) && (mac || exists(path.join(installed, 'resources/llama/cuda.json'))), c);
+    if (win) await noDownloads();
     check('the model is the one A was installed with (an app update never changes it)',
       fs.readFileSync(mac ? kept('models/typd-dictate/m.gguf') : path.join(installed, 'resources/models/typd-dictate/m.gguf'), 'utf8') === bundledModel);
     check('no backup or staging folder left next to the app', leftovers().length === 0, leftovers());

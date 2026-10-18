@@ -73,6 +73,20 @@
  * file, resuming with Range, the disk-space check and asking first on a metered connection are
  * exactly as above. needed() tells the app how far it is (for the tray, Home and the walkthrough);
  * before any manifest was read, the size is an estimate per variant (EXPECTED_BYTES).
+ *
+ * The CUDA pack (Windows, since 0.2.5; cudaPack.js). The public installer has llama.cpp's CPU build and
+ * no CUDA; `packs` in the same signed manifest names the CUDA backend for each llama.cpp build, e.g.
+ *   packs: {"cuda-b11351-cu12.4": {version, files: [{name: "cuda-pack-b11351-cu12.4.zip", size, sha256}], min_app, notes}}
+ * A machine whose hardware takes the GPU path (`cudaWanted`: hardware.js cuda()) and has no CUDA backend
+ * yet fetches the entry its build names (cuda.json's "pack"), AFTER its model: only once there is a
+ * model to dictate with, so dictation never waits for it. The same path as a model: the manifest's
+ * signature, the zip's size and sha256, Range resume, retries, the disk-space check, asking first on a
+ * metered connection (state.json "packApproved" / "packLater", apart from the model's), progress
+ * (packInfo(), packLine()). Unthrottled, like the first model: until it arrives the model runs on the
+ * processor. Then cudaPack.install() unpacks it and checks every file against the app's own list, and
+ * once nothing is being dictated `switchBackend` restarts llama-server on it (no app restart). A pack
+ * llama-server does not start with is set aside (cudaPack markBad) and not fetched again until the
+ * manifest changes; Typd stays on the processor. Typd before 0.2.5 ignores the field.
  */
 
 const fs = require('fs');
@@ -202,6 +216,27 @@ function selectVariant(m, want) {
   return { entry: m, variant: 'full' };
 }
 
+const PACK_ID_RE = /^[a-z][a-z0-9._-]{0,63}$/;
+
+/**
+ * The manifest's entry for the CUDA pack `id` (cuda.json's "pack"): {version, files: [the one .zip],
+ * min_app, notes}, or null when the manifest has none or it is not one this app can follow.
+ */
+function selectPack(m, id) {
+  const ps = m && m.packs;
+  if (!id || !PACK_ID_RE.test(id) || !ps || typeof ps !== 'object' || Array.isArray(ps) || !Object.prototype.hasOwnProperty.call(ps, id)) return null;
+  const p = ps[id];
+  if (!p || typeof p !== 'object' || Array.isArray(p)) return null;
+  if (typeof p.version !== 'string' || !VERSION_RE.test(p.version)) return null;
+  if (!Array.isArray(p.files) || p.files.length !== 1) return null;
+  const f = p.files[0];
+  if (!f || typeof f.name !== 'string' || !FILE_RE.test(f.name) || !/\.zip$/i.test(f.name)) return null;
+  if (!Number.isSafeInteger(f.size) || f.size < 1 || typeof f.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(f.sha256)) return null;
+  const minApp = p.min_app !== undefined ? p.min_app : m.min_app;
+  if (minApp !== undefined && (typeof minApp !== 'string' || !/^\d+\.\d+\.\d+$/.test(minApp))) return null;
+  return { version: p.version, files: [{ name: f.name, size: f.size, sha256: f.sha256 }], min_app: minApp, notes: typeof p.notes === 'string' ? p.notes : '' };
+}
+
 /** 1,107,404,576 -> '1.1 GB'; 611,093,000 -> '611 MB'. */
 function fmtSize(bytes) {
   const n = Number(bytes) || 0;
@@ -315,6 +350,10 @@ class Retry extends Error {
  *   networkCost   () => Promise<'metered'|'unmetered'|'unknown'> (netcost.js), asked only for a
  *                 download over askAboveBytes
  *   now           () => ms: the clock for "Later" (tests move it)
+ *   cuda          the CUDA pack (cudaPack.createCuda()), or null: none of the pack logic runs
+ *   cudaWanted    () => boolean (or a Promise of it): this machine takes the GPU path (modelChoice.cuda)
+ *   switchBackend () => Promise: restart llama-server on the backend now there (the pack just installed,
+ *                 or none after it was set aside); rejects if it does not come up
  */
 function createUpdater({
   config, modelsDir, bundledDir, appVersion = '0.0.0', fetch = globalThis.fetch, busy = () => false,
@@ -324,7 +363,8 @@ function createUpdater({
   variant = () => 'full', askFirst = () => false, networkCost = async () => 'unknown',
   askAboveBytes = ASK_ABOVE_BYTES, laterMs = LATER_MS, now = () => Date.now(),
   firstNeedMs = FIRST_NEED_MS, needBackoffMinMs = NEED_BACKOFF_MIN_MS, needBackoffMaxMs = NEED_BACKOFF_MAX_MS,
-  needEveryMs = NEED_EVERY_MS, offlinePollMs = OFFLINE_POLL_MS, expectedBytes = EXPECTED_BYTES
+  needEveryMs = NEED_EVERY_MS, offlinePollMs = OFFLINE_POLL_MS, expectedBytes = EXPECTED_BYTES,
+  cuda = null, cudaWanted = () => false, switchBackend = async () => {}
 }) {
   const stateFile = path.join(modelsDir, 'state.json');
   const dirOf = (v) => path.join(modelsDir, v);
@@ -342,15 +382,28 @@ function createUpdater({
   let notBefore = 0;              // a 429's Retry-After: no request before this
   const listeners = [];
   let lastLine = null;
+  // The CUDA pack: its own state, progress and question, beside the model's.
+  let packState = 'idle';         // idle, off, current, unwanted, none, app, downloading, retrying, installing, ready, failed, space, ask, later, offline
+  let packAsking = null;          // {version, bytes, why, kind: 'pack'}: the pack waiting for "Update now"
+  let packProgress = { done: 0, total: 0 };
+  let packTarget = null;          // the pack version being fetched or switched to
+  let packHurry = false;          // wanted and not here: retried and polled like the first model
 
   const readState = () => readJson(stateFile) || {};
   const writeState = (s) => writeAtomic(stateFile, JSON.stringify(s, null, 1));
 
   function changed() {
     const l = line();
-    if (l === lastLine) return;
-    lastLine = l;
+    const both = l + '\n' + packLine();
+    if (both === lastLine) return;
+    lastLine = both;
     for (const fn of listeners) { try { fn(l); } catch { /* a listener's problem */ } }
+  }
+  function setPack(st) {
+    packState = st;
+    if (st !== 'ask' && st !== 'later') packAsking = null;
+    changed();
+    return { pack: st };
   }
   function set(s, extra = {}) {
     state = s;
@@ -360,8 +413,8 @@ function createUpdater({
   }
   // Bytes arrive in small chunks; the tray line only changes with the whole percent.
   let lastPct = -1;
-  function progressed() {
-    const pct = progress.total ? Math.floor((100 * progress.done) / progress.total) : 0;
+  function progressed(p = progress) {
+    const pct = p.total ? Math.floor((100 * p.done) / p.total) : 0;
     if (pct !== lastPct) { lastPct = pct; changed(); }
   }
 
@@ -454,8 +507,8 @@ function createUpdater({
   }
 
   let windowAt = 0, windowBytes = 0;
-  async function throttle(n) {
-    if (!rate || !haveModel()) return;   // the first model: Typd cannot dictate until it is here
+  async function throttle(n, hurry = false) {
+    if (!rate || hurry || !haveModel()) return;   // the first model (Typd cannot dictate until it is here), the CUDA pack
     const now = Date.now();
     if (now - windowAt > 10e3) { windowAt = now; windowBytes = 0; }
     windowBytes += n;
@@ -463,8 +516,8 @@ function createUpdater({
     if (ahead > 5) await new Promise((r) => setTimeout(r, ahead));
   }
 
-  /** One file into `file`, resuming from what is already there. */
-  async function download(version, f, file) {
+  /** One file into `file`, resuming from what is already there. `prog` is the progress it adds to; `hurry`: never throttled. */
+  async function download(version, f, file, prog = progress, hurry = false) {
     let have = 0;
     try { have = (await fsp.stat(file)).size; } catch { /* not started */ }
     if (have > f.size) { await fsp.rm(file, { force: true }); have = 0; }
@@ -491,7 +544,7 @@ function createUpdater({
       } else if (have) {
         have = 0;   // the server sent the whole file; write it from the start
       }
-      progress.done -= (await fsp.stat(file).then((s) => s.size, () => 0)) - have;
+      prog.done -= (await fsp.stat(file).then((s) => s.size, () => 0)) - have;
       const out = fs.createWriteStream(file, { flags: have ? 'a' : 'w' });
       const closed = once(out, 'close').catch(() => {});
       try {
@@ -500,9 +553,9 @@ function createUpdater({
           have += chunk.length;
           if (have > f.size) throw new Error(f.name + ': more bytes than the manifest says');
           if (!out.write(chunk)) await once(out, 'drain');
-          progress.done += chunk.length;
-          progressed();
-          await throttle(chunk.length);
+          prog.done += chunk.length;
+          progressed(prog);
+          await throttle(chunk.length, hurry);
         }
       } finally {
         out.end();
@@ -547,10 +600,11 @@ function createUpdater({
    * Before a download of `need` bytes of `m` (the `got` variant): null to go ahead, or the result of
    * stopping at 'ask' (or 'later', inside a "Later" day). Approved versions go ahead (state.json).
    */
-  async function askBefore(m, got, need) {
+  async function askBefore(m, got, need, kind = 'model') {
     if (need <= 0) return null;
     const s = readState();
-    if (s.approved && s.approved.version === m.version) return null;
+    const A = kind === 'pack' ? 'packApproved' : 'approved', L = kind === 'pack' ? 'packLater' : 'later';
+    if (s[A] && s[A].version === m.version) return null;
     let always = false;
     try { always = Boolean(askFirst()); } catch { always = false; }
     let why = 'setting';
@@ -559,10 +613,15 @@ function createUpdater({
       try { why = await networkCost(); } catch { why = 'unknown'; }
       if (why === 'unmetered') return null;
     }
-    const until = s.later && s.later.version === m.version ? Number(s.later.until) || 0 : 0;
+    const until = s[L] && s[L].version === m.version ? Number(s[L].until) || 0 : 0;
     const left = until - now();
     log(m.version, 'needs', fmtSize(need), '-', always ? 'asking first (the setting is on)' : 'the connection is ' + why + '; asking first', left > 0 ? '(asked to wait until ' + new Date(until).toISOString() + ')' : '');
-    asking = { version: m.version, variant: got, bytes: need, why };
+    if (kind === 'pack') {
+      packAsking = { version: m.version, variant: 'pack', bytes: need, why, kind };
+      if (left > 0) return { ...setPack('later'), next: Math.min(everyMs, left + 1000) };
+      return setPack('ask');
+    }
+    asking = { version: m.version, variant: got, bytes: need, why, kind };
     if (left > 0) return { ...set('later'), next: Math.min(everyMs, left + 1000) };
     return set('ask');
   }
@@ -693,6 +752,14 @@ function createUpdater({
 
   /* ------------------------------------------------------------------ check */
 
+  /** Is the CUDA pack this build names wanted here and not here yet? (Not before a model exists to dictate with.) */
+  async function packMissing() {
+    if (!cuda || !cuda.id || !cuda.packsDir) return false;
+    await cuda.prepare();
+    if (cuda.have()) return false;
+    try { return Boolean(await cudaWanted()); } catch { return false; }
+  }
+
   async function run() {
     if (!config) return { state: 'off' };
     if (revoked) return set('stopped');
@@ -702,9 +769,12 @@ function createUpdater({
     let want = 'full';
     try { want = String((await variant()) || 'full'); } catch { want = 'full'; }
     if (chosen.want !== want) { chosen = { want, got: chosen.got }; changed(); }
+    packHurry = await packMissing();
+    const soon = needed || packHurry;
     if (!online()) {
       if (needed) set('offline');
-      throw new Retry('offline', needed ? offlinePollMs : undefined);
+      if (packHurry && !needed) setPack('offline');
+      throw new Retry('offline', soon ? offlinePollMs : undefined);
     }
     let res;
     try {
@@ -713,7 +783,8 @@ function createUpdater({
       res = await fetch(routes() + '/manifest', { headers: { ...extra, ...auth() }, signal: AbortSignal.timeout(30e3) });
     } catch (err) {
       if (needed) set('offline');   // the server cannot be reached: to the person waiting, the same as offline
-      throw new Retry('manifest: ' + ((err && err.message) || err), needed ? offlinePollMs : undefined);
+      if (packHurry && !needed) setPack('offline');
+      throw new Retry('manifest: ' + ((err && err.message) || err), soon ? offlinePollMs : undefined);
     }
     if (res.status === 404) { await res.body?.cancel().catch(() => {}); return set('none'); }
     if (!res.ok) await refused(res, 'manifest');
@@ -731,6 +802,14 @@ function createUpdater({
       log('manifest refused: seq', m.seq, 'is older than', s.seq, 'already seen');
       return set('refused', { why: 'an older manifest than one already seen' });
     }
+    const r = await followModel(m, tag, s, want);
+    // Then the CUDA pack, once there is a model to dictate with (the first model always comes first).
+    const p = haveModel() ? await followPack(m, tag) : null;
+    return p && p.next ? { ...r, next: Math.min(p.next, r.next || Infinity) } : r;
+  }
+
+  /** The model entry this machine follows, from the checked manifest `m` (its sha256 `tag`): fetched and switched to if needed. */
+  async function followModel(m, tag, s, want) {
     const { entry: e, variant: got } = selectVariant(m, want);
     if (chosen.got !== got) { chosen = { want, got }; log('variant', want, want === got ? '' : '(not published: following ' + got + ')'); }
 
@@ -768,6 +847,104 @@ function createUpdater({
     return activate(e.version, tag);
   }
 
+  /* -------------------------------------------------------------- the CUDA pack */
+
+  const packTotal = () => packProgress.total || (packAsking && packAsking.bytes) || 0;
+
+  /**
+   * The CUDA pack, after the model: nothing to do when this build names none, a CUDA backend is already
+   * here, or the hardware does not take the GPU path. Else the manifest's entry for this build's pack is
+   * downloaded (asking first on a metered connection), checked, installed and switched to. Resolves
+   * {pack: state, next?}; throws Retry like a model download.
+   */
+  async function followPack(m, tag) {
+    if (!cuda || !cuda.id || !cuda.packsDir) { if (packState !== 'off') setPack('off'); return null; }
+    await cuda.prepare();
+    if (cuda.have()) { packTarget = null; packHurry = false; await cuda.tidy(); return setPack('current'); }
+    let wanted = false;
+    try { wanted = Boolean(await cudaWanted()); } catch { wanted = false; }
+    if (!wanted) { packTarget = null; packHurry = false; return setPack('unwanted'); }
+    const e = selectPack(m, cuda.id);
+    if (!e) { log('the manifest has no CUDA pack for', cuda.id, '- llama.cpp stays on the processor'); packHurry = false; return setPack('none'); }
+    if (older(appVersion, e.min_app)) { log(e.version, 'needs Typd', e.min_app); packHurry = false; return setPack('app'); }
+    const bad = cuda.badTag();
+    if (bad !== null && bad === tag) { packHurry = false; return setPack('failed'); }   // set aside under this very manifest
+    packTarget = e.version;
+    const f = e.files[0];
+    const zipFile = path.join(cuda.packsDir, e.version + '.partial', f.name);
+    const have = await fsp.stat(zipFile).then((st) => Math.min(st.size, f.size), () => 0);
+    const waiting = await askBefore(e, 'pack', f.size - have, 'pack');
+    if (waiting) { packHurry = false; return waiting; }
+    await fetchPack(e, tag, zipFile);
+    return activatePack(e, tag);
+  }
+
+  /** The zip into <packsDir>/<version>.partial/, checked against the manifest, then installed (cudaPack.install). */
+  async function fetchPack(e, tag, zipFile) {
+    const f = e.files[0];
+    await fsp.mkdir(path.dirname(zipFile), { recursive: true });
+    const have = await fsp.stat(zipFile).then((st) => Math.min(st.size, f.size), () => 0);
+    const left = f.size - have;
+    let free = Infinity;
+    try { const st = await statfs(cuda.packsDir); free = Number(st.bavail) * Number(st.bsize); } catch { /* unknown: try */ }
+    const room = (left + cuda.total()) * SPACE_FACTOR;   // the rest of the zip, then what it unpacks to
+    if (free < room) {
+      log('not enough disk space for the CUDA pack', e.version, '- need', Math.round(room / 1e6), 'MB, have', Math.round(free / 1e6));
+      throw Object.assign(new Retry('no space for the CUDA pack', everyMs), { space: true, pack: true });
+    }
+    packProgress = { done: have, total: f.size };
+    setPack('downloading');
+    log('downloading the CUDA pack', f.name, have ? `from byte ${have}` : '');
+    try {
+      await download(e.version, f, zipFile, packProgress, true);
+    } catch (err) {
+      throw Object.assign(err, { pack: true });
+    }
+    const size = (await fsp.stat(zipFile)).size;
+    const sha = size === f.size ? await sha256File(zipFile) : null;
+    if (sha !== f.sha256) {
+      await fsp.rm(zipFile, { force: true });
+      throw Object.assign(new Retry(`${f.name} failed verification (${size} bytes, sha256 ${sha && sha.slice(0, 12)}); downloading it again`), { pack: true });
+    }
+    log('verified', f.name, '- it matches the manifest; unpacking');
+    setPack('installing');
+    try {
+      await cuda.install(zipFile, e.version);
+    } catch (err) {
+      if (err && typeof err.code === 'string') throw Object.assign(new Retry('unpacking the CUDA pack: ' + err.message), { pack: true });   // the disk, not the pack
+      // The zip is the one the manifest signed, yet its files are not this build's: a bad pack.
+      await fsp.rm(path.dirname(zipFile), { recursive: true, force: true }).catch(() => {});
+      await cuda.markBad('its files are not this build\'s: ' + ((err && err.message) || err), tag);
+      throw Object.assign(new Error('the CUDA pack does not match this build'), { badPack: true });
+    }
+    await fsp.rm(path.dirname(zipFile), { recursive: true, force: true }).catch(() => {});
+  }
+
+  /** Restart llama-server on the pack once nothing is being dictated; set it aside if the server does not come up. */
+  async function activatePack(e, tag) {
+    setPack('ready');
+    await waitIdle();
+    switching = true;   // this start judges the backend, not a model (warmed() stays out of it)
+    try {
+      log('switching llama.cpp to the CUDA backend', e.version);
+      try {
+        await switchBackend();
+      } catch (err) {
+        await cuda.markBad('llama-server did not start with it: ' + ((err && err.message) || err), tag);
+        try { await switchBackend(); } catch (e2) { log('llama-server did not start on the processor either:', e2 && e2.message); }
+        packTarget = null;
+        packHurry = false;
+        return setPack('failed');
+      }
+      log('now running with the CUDA backend', e.version);
+      packTarget = null;
+      packHurry = false;
+      return setPack('current');
+    } finally {
+      switching = false;
+    }
+  }
+
   /** One check, never two at once. Resolves {state, next}: when the next check is due. */
   function check() {
     if (running) return running;
@@ -779,15 +956,22 @@ function createUpdater({
         return { next: haveModel() ? everyMs : needEveryMs, ...r };
       } catch (err) {
         if (revoked) { log('the server refused the key; updates stopped until restart'); return { ...set('stopped'), next: null }; }
+        if (err && err.badPack) { log((err && err.message) || err); failures = 0; return { ...setPack('failed'), state, next: everyMs }; }
         if (!(err instanceof Retry)) log('update error:', (err && err.stack) || err);
         failures++;
-        const hurry = !haveModel();
+        // No model yet, or the CUDA pack wanted and not here: retried in seconds, not minutes.
+        const hurry = !haveModel() || packHurry;
         let next = err.after || Math.min(hurry ? needBackoffMaxMs : BACKOFF_MAX_MS, (hurry ? needBackoffMinMs : BACKOFF_MIN_MS) * 2 ** (failures - 1));
         if (!err.after) next = next / 2 + Math.random() * (next / 2);
         next = Math.min(Math.max(next, 1000), err.after ? 86400e3 : everyMs);
         if (/429/.test(err.message)) notBefore = Date.now() + next;
         log((err && err.message) || err, '- next try in', Math.round(next / 1000), 's');
+        if (err.space && err.pack) return { ...setPack('space'), state, next };
         if (err.space) return { ...set('space'), next };
+        if (err.pack) {
+          if (['downloading', 'installing', 'ready'].includes(packState)) setPack('retrying');
+          return { state: 'retry', pack: packState, next, why: err.message };
+        }
         if (state === 'downloading' || state === 'ready') set('retrying');
         return { state: 'retry', next, why: err.message };
       }
@@ -834,26 +1018,69 @@ function createUpdater({
     }
   }
 
-  /** "Update now": this version may download, now and whenever its download resumes. */
+  /**
+   * The CUDA pack's line for the tray and Settings, or null when there is nothing to say (no pack for
+   * this build, the GPU path not taken, CUDA already here, the manifest naming none).
+   */
+  function packLine() {
+    if (!config || !cuda || !cuda.id) return null;
+    const total = packTotal();
+    const pct = packProgress.total ? Math.floor((100 * packProgress.done) / packProgress.total) : 0;
+    switch (packState) {
+      case 'downloading': return `GPU acceleration · downloading ${pct} % of ${fmtSize(total)}`;
+      case 'retrying': return `GPU acceleration · downloading ${pct} % of ${fmtSize(total)} (paused)`;
+      case 'installing': return 'GPU acceleration · unpacking';
+      case 'ready': return 'GPU acceleration · switching on when idle';
+      case 'ask': return `GPU acceleration available (${fmtSize(total)})`;
+      case 'later': return `GPU acceleration waiting (${fmtSize(total)})`;
+      case 'offline': return 'GPU acceleration · waiting for the internet';
+      case 'space': return 'GPU acceleration · needs more disk space';
+      case 'failed': return 'GPU acceleration did not start · using the processor';
+      default: return null;
+    }
+  }
+
+  /**
+   * The CUDA pack, for Settings: {state, pct, bytes, size, version, why}, or null when this build has
+   * no pack. state 'current' means a CUDA backend is here (bundled or installed).
+   */
+  function packInfo() {
+    if (!cuda || !cuda.id) return null;
+    const total = packTotal();
+    return {
+      state: packState, pct: packProgress.total ? Math.floor((100 * packProgress.done) / packProgress.total) : 0,
+      bytes: total, size: total ? fmtSize(total) : null, version: packTarget || (packAsking && packAsking.version) || null,
+      why: packAsking ? packAsking.why : null, cuda: cuda.state(), line: packLine()
+    };
+  }
+
+  /** The question on screen: the model's first (it always comes first), else the CUDA pack's. */
+  const askingNow = () => (asking && (state === 'ask' || state === 'later') ? asking
+    : packAsking && (packState === 'ask' || packState === 'later') ? packAsking : null);
+
+  /** "Update now": this version (the model's, or the pack's) may download, now and whenever its download resumes. */
   async function approve() {
-    if (!asking) return false;
+    const a = askingNow();
+    if (!a) return false;
     const s = readState();
-    s.approved = { version: asking.version, at: new Date(now()).toISOString() };
-    delete s.later;
+    if (a.kind === 'pack') { s.packApproved = { version: a.version, at: new Date(now()).toISOString() }; delete s.packLater; }
+    else { s.approved = { version: a.version, at: new Date(now()).toISOString() }; delete s.later; }
     await writeState(s);
-    log('approved:', asking.version, fmtSize(asking.bytes));
+    log('approved:', a.version, fmtSize(a.bytes));
     if (started) schedule(0); else changed();
     return true;
   }
 
   /** "Later": ask again after laterMs (the scheduled checks keep running; none asks before then). */
   async function later() {
-    if (!asking) return false;
+    const a = askingNow();
+    if (!a) return false;
     const s = readState();
-    s.later = { version: asking.version, until: now() + laterMs };
+    const key = a.kind === 'pack' ? 'packLater' : 'later';
+    s[key] = { version: a.version, until: now() + laterMs };
     await writeState(s);
-    log('later:', asking.version, 'asked again after', new Date(s.later.until).toISOString());
-    set('later');
+    log('later:', a.version, 'asked again after', new Date(s[key].until).toISOString());
+    if (a.kind === 'pack') setPack('later'); else set('later');
     if (started && !running) schedule(Math.min(everyMs, laterMs + 1000));
     return true;
   }
@@ -879,27 +1106,44 @@ function createUpdater({
     check,
     warmed,
     line,
+    packLine,
+    packInfo,
     needed,
     haveModel,
     approve,
     later,
     onChange: (fn) => listeners.push(fn),
-    /** Launch: first check after FIRST_CHECK_MS (FIRST_NEED_MS with no model at all), then every 6 hours. */
+    /**
+     * Launch: first check after FIRST_CHECK_MS (FIRST_NEED_MS with no model at all, or with the CUDA pack
+     * wanted and not here yet: a download a quit cut short), then every 6 hours.
+     */
     start() {
       if (!config) return;
       started = true;
       if (!haveModel()) {
         // Which variant, before the first check: so needed() names the right size at once.
         Promise.resolve().then(() => variant()).then((w) => { if (w && !chosen.got) { chosen = { ...chosen, want: String(w) }; changed(); } }, () => {});
+        schedule(firstNeedMs);
+        return;
       }
-      schedule(haveModel() ? firstCheckMs : firstNeedMs);
+      if (!cuda || !cuda.id) { schedule(firstCheckMs); return; }
+      packMissing().then((h) => { if (!running) schedule(h ? firstNeedMs : firstCheckMs); }, () => schedule(firstCheckMs));
     },
     /** Back from sleep or offline, or the model choice changed: check soon (never before a 429's Retry-After). */
     wake(ms = firstCheckMs) { if (config && !running) schedule(ms); },
     stop() { clearTimeout(timer); timer = null; },
     get state() { return state; },
-    /** A download waiting for "Update now": {version, variant, bytes, size, why, later, first}, else null. first: there is no model yet. */
-    get pending() { return asking && (state === 'ask' || state === 'later') ? { ...asking, size: fmtSize(asking.bytes), later: state === 'later', first: !haveModel() } : null; },
+    get packState() { return packState; },
+    /**
+     * A download waiting for "Update now": {version, variant, bytes, size, why, later, first, kind}, else
+     * null. first: there is no model yet. kind: 'model', or 'pack' (the CUDA pack, asked after the model).
+     */
+    get pending() {
+      const a = askingNow();
+      if (!a) return null;
+      const isLater = a.kind === 'pack' ? packState === 'later' : state === 'later';
+      return { ...a, kind: a.kind || 'model', size: fmtSize(a.bytes), later: isLater, first: a.kind !== 'pack' && !haveModel() };
+    },
     /** The variant the last check wanted, and the one the manifest gave ({want, got}). */
     get chosen() { return { ...chosen }; }
   };
@@ -945,8 +1189,11 @@ function findConfig({ userData, packaged, resourcesPath, repoDir = path.join(__d
  *   variant       () => Promise<'full'|'light'>: which entry to follow (modelChoice.js)
  *   askFirst      () => boolean: Settings' "Ask before downloading new models"
  *   networkCost   () => Promise<'metered'|'unmetered'|'unknown'> (netcost.js)
+ *   cuda          local.cuda: the CUDA pack for this build (cudaPack.js), or null
+ *   cudaWanted    () => Promise<boolean>: the hardware takes the GPU path (modelChoice.cuda)
+ *   switchBackend () => Promise: restart the model server on the backend now there
  */
-function start({ bundledDir, busy, switchModel, onWarm, changed, variant, askFirst, networkCost }) {
+function start({ bundledDir, busy, switchModel, onWarm, changed, variant, askFirst, networkCost, cuda, cudaWanted, switchBackend }) {
   if (main || !electron || process.env.TYPD_MODEL_DIR) return main;
   if (process.env.TYPD_NO_MODEL_UPDATE === '1') { debug('model updates off: TYPD_NO_MODEL_UPDATE=1'); return main; }
   const { app, powerMonitor, net } = electron;
@@ -965,7 +1212,8 @@ function start({ bundledDir, busy, switchModel, onWarm, changed, variant, askFir
     stats: () => require('./versionStats').statsHeaders(),
     ...(variant ? { variant } : {}),
     ...(askFirst ? { askFirst } : {}),
-    ...(networkCost ? { networkCost } : {})
+    ...(networkCost ? { networkCost } : {}),
+    ...(cuda && cuda.id ? { cuda, ...(cudaWanted ? { cudaWanted } : {}), ...(switchBackend ? { switchBackend } : {}) } : {})
   });
   if (onWarm) onWarm((r) => main.warmed(r));
   if (changed) main.onChange(changed);
@@ -996,9 +1244,13 @@ const later = () => (main ? main.later() : Promise.resolve(false));
 const recheck = (ms = 1500) => { if (main) main.wake(ms); };
 /** {want, got} from the last check. */
 const chosen = () => (main ? main.chosen : null);
+/** The CUDA pack's tray line, or null (see createUpdater's packLine()). */
+const packLine = () => (main ? main.packLine() : null);
+/** The CUDA pack, for Settings, or null (see createUpdater's packInfo()). */
+const packInfo = () => (main ? main.packInfo() : null);
 
 module.exports = {
-  start, line, needed, following, pending, approve, later, recheck, chosen,
-  createUpdater, activeModel, activeVersion, versionOf, readCurrent, isComplete, checkManifest, checkSignature, selectVariant, fmtSize, labelOf, older, sha256File, readConfig, findConfig,
+  start, line, needed, following, pending, approve, later, recheck, chosen, packLine, packInfo,
+  createUpdater, activeModel, activeVersion, versionOf, readCurrent, isComplete, checkManifest, checkSignature, selectVariant, selectPack, fmtSize, labelOf, older, sha256File, readConfig, findConfig,
   ENDPOINT, SIG_PREFIX, ASK_ABOVE_BYTES, LATER_MS, EXPECTED_BYTES
 };

@@ -45,7 +45,8 @@ function root() {
  *   <resources>/models/typd-dictate/   model.json + the GGUF files it names (two, or three with a revise adapter)
  *   <resources>/llama/                 llama-server(.exe) and its libraries
  * macOS has one llama.cpp build per architecture (scripts/fetch-llama-mac.js): Metal on
- * Apple Silicon, CPU only on Intel.
+ * Apple Silicon, CPU only on Intel. Windows, since 0.2.5: the CPU build, plus the CUDA backend
+ * from the CUDA pack in <userData>/cuda/<pack>/ once it is there (cudaPack.js; see launch()).
  */
 function packagedResources() {
   try {
@@ -85,6 +86,14 @@ function userData() {
 }
 const USER_DATA = userData();
 const USER_MODELS = USER_DATA ? path.join(USER_DATA, 'models') : null;
+
+// The CUDA backend (Windows): bundled beside llama-server, or the CUDA pack installed in
+// <userData>/cuda; nothing at all without <llama>/cuda.json (macOS, a source run). cudaPack.js.
+const cuda = require('../cudaPack').createCuda({
+  llamaDir: path.dirname(SERVER),
+  packsDir: USER_DATA ? path.join(USER_DATA, 'cuda') : null,
+  log: (...a) => { if (process.env.TYPD_DEBUG) console.log('[typd:cuda]', ...a); }
+});
 
 /**
  * Which model folder to load: TYPD_MODEL_DIR first (development and the eval tools, which
@@ -322,7 +331,24 @@ const modelId = () => VERSION || path.basename(MODEL);
  */
 const CONTEXT = 4096;
 
+/**
+ * Where llama-server runs, and with which PATH. With the CUDA pack installed (cuda.dir()), in its
+ * folder: ggml looks for backends beside the exe and then in the current directory, and Windows
+ * resolves ggml-cuda.dll's own libraries (cuBLAS, the CUDA runtime) from there too -- the folder is
+ * first on PATH as well. Otherwise in llama-server's own folder, so nothing in whatever directory
+ * Typd was started from is ever picked up.
+ */
+function spawnOptions(dir = cuda.dir(), base = process.env, serverDir = path.dirname(SERVER)) {
+  if (!dir) return { cwd: serverDir, env: base };
+  const env = { ...base };
+  const key = Object.keys(env).find((k) => k.toUpperCase() === 'PATH') || 'PATH';
+  env[key] = dir + path.delimiter + (env[key] || '');
+  return { cwd: dir, env };
+}
+
 function launch(layers) {
+  const run = spawnOptions();
+  if (run.cwd !== path.dirname(SERVER)) debug('starting llama-server with the CUDA pack in', run.cwd);
   const child = spawn(SERVER, [
     '-m', MODEL, '--mmproj', MMPROJ,
     '--host', '127.0.0.1', '--port', String(PORT),
@@ -336,7 +362,7 @@ function launch(layers) {
     '--no-warmup',
     '--no-webui',
     ...(adapter ? ['--lora', adapter.file, '--lora-init-without-apply'] : [])
-  ], { windowsHide: true, stdio: ['ignore', 'ignore', process.env.TYPD_DEBUG ? 'inherit' : 'ignore'] });
+  ], { windowsHide: true, cwd: run.cwd, env: run.env, stdio: ['ignore', 'ignore', process.env.TYPD_DEBUG ? 'inherit' : 'ignore'] });
   child.on('exit', (code) => {
     debug('server exited', code);
     if (proc === child) proc = null;
@@ -425,6 +451,8 @@ function warm() {
     startError = null;
     adapter = null;
     if (stopping) await stopping;
+    // Once, before llama-server first starts: CUDA files beside it that are not this build's go.
+    await cuda.prepare();
     for (const [what, file] of [['model', MODEL], ['audio projector', MMPROJ], ['llama-server', SERVER]]) {
       if (!fs.existsSync(file)) throw new Error(`Dictation ${what} missing at ${file}`);
     }
@@ -475,6 +503,8 @@ function warm() {
  * by stopping the server, waiting for it to exit, and warming it on the new files (self-test
  * included). Resolves when it is ready; rejects if it does not start or fails the self-test.
  * The caller waits until no dictation is in progress; one that begins meanwhile waits in warm().
+ * The same restart puts llama-server on the CUDA pack once it is installed (or back on the
+ * processor after it was set aside): launch() reads cuda.dir() each time.
  */
 async function switchModel() {
   if (starting) await starting.catch(() => {});
@@ -1225,7 +1255,9 @@ module.exports = {
   canRevise: () => Boolean(SPEC.revise),
   usesContext: () => Boolean(SPEC.context),
   streams: () => Boolean(SPEC.stream),
-  switchModel, onWarm, resolveModel, selfTestPasses, bringUp, reviseLora,
+  switchModel, onWarm, resolveModel, selfTestPasses, bringUp, reviseLora, spawnOptions,
+  /** The CUDA backend for this build (cudaPack.js): state(), dir(), prepare(), install(), ... */
+  cuda,
   /**
    * Are the files of the model in use there? False in a public install before its first model has
    * downloaded (public installers ship without one, modelUpdate.js fetches it): Typd cannot dictate yet.
