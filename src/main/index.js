@@ -466,6 +466,9 @@ async function endSession() {
 
         if (!result.ok) {
           keepHistory(current, event.text, 'copied');
+          // The life log: a paste that fell back to the clipboard (never the text). Sharing follows a
+          // pasted dictation only, so a PC whose every paste fails shares nothing -- this says why.
+          life.log('dictation', 'not pasted, ' + (result.copied ? 'copied instead' : 'not copied') + ': ' + result.reason);
           send('session:error', {
             message: result.copied
               ? 'Copied — press ' + (MAC ? '⌘V' : 'Ctrl+V') + ' to paste'
@@ -505,6 +508,7 @@ async function endSession() {
     }
   } catch (err) {
     if (err && err.message === 'aborted') return;
+    life.log('dictation failed', life.errorLine(err));   // nothing was pasted, so nothing is shared
     send('session:error', { message: String(err && err.message ? err.message : err) });
   }
 
@@ -603,6 +607,7 @@ function diagnosticsText() {
     'menu-bar/tray icon: ' + (trayUi.tray && !trayUi.tray.isDestroyed() ? 'yes' : 'no') + ', windows: ' + BrowserWindow.getAllWindows().length +
       ', Typd window ' + (home.isOpen() ? 'open' : 'closed') + ', pill ' + (overlay && !overlay.isDestroyed() ? 'alive' : 'gone'),
     'model file: ' + safe(() => require('path').basename(require('./pipeline/local').MODEL)),
+    'sharing: ' + safe(() => sharing.diagnostics()),
     'minidumps: ' + (dumps.length ? dumps.length + ', newest ' + dumps.slice(0, 3).map((d) => d.name + ' ' + d.at).join('; ') : 'none'),
     '--- life log, last 200 lines',
     ...life.tail(200)
