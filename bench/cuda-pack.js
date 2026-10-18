@@ -66,7 +66,7 @@ const DLLS = {
   'cublasLt64_12.dll': blob(400000, 'cublasLt'), 'cudart64_12.dll': blob(20000, 'cudart')
 };
 const DESC = {
-  schema: 'typd-cuda/1', pack: PACK, llama: { build: 99999, commit: 'abcdef123' }, cuda: '12.4',
+  schema: 'typd-cuda/1', pack: PACK, llama: { build: 99999, commit: 'fakecommit' }, cuda: '12.4',
   files: Object.entries(DLLS).map(([name, b]) => ({ name, size: b.length, sha256: sha(b) }))
 };
 const UNPACKED = DESC.files.reduce((s, f) => s + f.size, 0);
@@ -414,7 +414,7 @@ const modelReqs = (s) => s.fileRequests().filter((q) => !q.url.includes('/' + PA
     fs.mkdirSync(vendor, { recursive: true });
     for (const n of ['llama-server.exe', 'ggml-base.dll', 'ggml-cpu-haswell.dll', 'llama-server-impl.dll', 'llama-cli-impl.dll', 'llama-bench.exe']) fs.writeFileSync(path.join(vendor, n), n);
     for (const [name, b] of Object.entries(DLLS)) fs.writeFileSync(path.join(vendor, name), b);
-    const env = { TYPD_LLAMA_BUILD: '99999:abcdef123', TYPD_CUDA_VERSION: '12.4', TYPD_NO_BUNDLED_MODEL: '1' };
+    const env = { TYPD_LLAMA_BUILD: '99999:fakecommit', TYPD_CUDA_VERSION: '12.4', TYPD_NO_BUNDLED_MODEL: '1' };
     const stage = (extra) => spawnSync(process.execPath, ['-e', `require(${JSON.stringify(path.join(__dirname, '..', 'scripts', 'before-pack.js'))})({ packager: { projectDir: ${JSON.stringify(proj)} }, electronPlatformName: 'win32' }).then(() => {}, (e) => { console.error(e); process.exit(1); })`],
       { env: { ...process.env, ...env, ...extra }, encoding: 'utf8', windowsHide: true });
     let r = stage({ TYPD_NO_BUNDLED_CUDA: '1' });
