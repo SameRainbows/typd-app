@@ -104,7 +104,10 @@ body {
   background: var(--pill-bg);
   border: var(--hair) solid var(--pill-line);
   box-shadow: var(--pill-shadow);
-  backdrop-filter: blur(12px);
+  /* No backdrop-filter. The window is transparent and Chromium cannot see the desktop through
+     it, so the only backdrop a blur here ever had was the page's own transparent body: it
+     changed no pixel, and cost a blur pass on every frame the meter drew (design/pill-lab.html
+     has a painted desktop behind the pill, which is where it showed). */
   /* Clips the fill to the end caps, so progress runs into the curve rather
      than stopping at a rectangle inside it. */
   overflow: hidden;

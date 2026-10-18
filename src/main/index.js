@@ -5,7 +5,7 @@ const {
   session: electronSession
 } = require('electron');
 
-const { createOverlayWindow, positionOverlay, showOverlay } = require('./overlay-window');
+const { createOverlayWindow, positionOverlay, showOverlay, releaseClicks } = require('./overlay-window');
 const { registerHotkeys, registerFlagHotkey, stopHook } = require('./hotkeys');
 const hotkeyLogic = require('./hotkey-logic');
 const settings = require('./settings');
@@ -83,7 +83,7 @@ function keepRecording(current, text) {
       mode: current.mode,
       output: text,
       seconds: Math.round((pcm.length / audio.sampleRate) * 100) / 100,
-      ms: current.endedAt ? Date.now() - current.endedAt : null,   // stop -> text ready
+      ms: current.endedAt ? (current.textAt || Date.now()) - current.endedAt : null,   // stop -> text ready
       model: path.basename(require('./pipeline/local').MODEL),
       app: current.target ? current.target.process : null,
       context: current.contextBlock || null,
@@ -94,6 +94,37 @@ function keepRecording(current, text) {
     fs.writeFileSync(path.join(dir, stamp + '.json'), JSON.stringify(meta, null, 1));
   } catch (err) {
     if (process.env.TYPD_DEBUG) console.log('[typd:keep]', err);
+  }
+}
+
+/**
+ * One line per dictation in the life log (lifelog.dictationLine): how long the key's release took
+ * to become text and the text to become a paste, on which model and which device. Counts only:
+ * never the text, the app or the context.
+ */
+function logDictation(current, chars, result, pastedAt) {
+  try {
+    const local = stub ? null : require('./pipeline/local');
+    let model = 'stub';
+    if (local) { try { model = local.modelVersion(); } catch { model = 'unknown'; } }
+    let device = null, lowMemory = null;
+    // local.device ('GPU' | 'CPU' | null) and local.lowMemory ({on}) arrive with 0.2.6's local.js;
+    // read so that a local.js without them logs "device unknown".
+    if (local) { try { device = local.device || null; lowMemory = local.lowMemory || null; } catch { /* older local.js */ } }
+    const audio = current.audio;
+    life.log('dictation', life.dictationLine({
+      mode: current.mode,
+      audioSeconds: audio && audio.samples ? audio.samples.length / (audio.sampleRate || 16000) : null,
+      chars,
+      releaseToTextMs: current.endedAt && current.textAt ? current.textAt - current.endedAt : null,
+      textToPasteMs: current.textAt ? pastedAt - current.textAt : null,
+      outcome: result && result.ok ? 'pasted' : 'copied',
+      model,
+      device,
+      lowMemory: lowMemory ? Boolean(lowMemory.on) : null
+    }));
+  } catch (err) {
+    if (process.env.TYPD_DEBUG) console.log('[typd:life]', err);
   }
 }
 
@@ -231,11 +262,13 @@ function ensureOverlay() {
   return overlay;
 }
 
-/** Restore full click-through. Anything else leaves a dead rectangle on screen. */
+/**
+ * Restore full click-through. Anything else leaves a dead rectangle on screen. Through the click
+ * gate (overlay-window.js), and never with `forward`: that installs a global mouse hook on this
+ * thread, the 0.2.5 dead-buttons bug.
+ */
 function passThrough() {
-  if (overlay && !overlay.isDestroyed()) {
-    overlay.setIgnoreMouseEvents(true, { forward: true });
-  }
+  releaseClicks(overlay);
 }
 
 /* ------------------------------------------------------------------ session */
@@ -396,6 +429,7 @@ async function endSession() {
       if (event.type === 'done') {
         // Whether the revise adapter ran on this request (pipeline/index.js): a shared item records it.
         current.reviseAdapter = event.reviseAdapter || false;
+        current.textAt = Date.now();   // the text is ready (logDictation: release-to-text, text-to-paste)
         // A revision replaces the selection by pasting over it, which only
         // works while the selection is still there. Clicking away during the
         // several seconds this takes turns the replacement into an insertion
@@ -421,9 +455,13 @@ async function endSession() {
           }
         }
 
-        keepRecording(current, event.text);
-        remember(event.text);
+        // The paste first: the WAV encode and write (Keep recordings is on by default) and the
+        // tray menu rebuild used to run between the text being ready and Ctrl+V. The files wait a
+        // tick more, so the pill's "done" does not wait on them either.
         const result = await inject.paste(event.text);
+        const pastedAt = Date.now(), text = event.text;
+        remember(text);
+        setImmediate(() => { keepRecording(current, text); logDictation(current, text.length, result, pastedAt); });
         if (session !== current) return;
 
         if (!result.ok) {
@@ -1241,14 +1279,8 @@ app.whenReady().then(() => {
     }
   }
 
-  // The overlay is click-through by default and opts back in only while the
-  // cursor is over one of its two controls, so the rest of the pill never
-  // swallows a click meant for the window underneath.
-  ipcMain.on('overlay:interactive', (_e, on) => {
-    if (overlay && !overlay.isDestroyed()) {
-      overlay.setIgnoreMouseEvents(!on, { forward: true });
-    }
-  });
+  // The overlay is click-through by default and takes clicks only while the cursor is over one
+  // of its two live controls: overlay-window.js's click gate, fed by the page (overlay:hit).
 
   // The input devices, from the overlay (it already holds microphone permission), for the
   // tray's Microphone menu. Sent at load and whenever a device comes or goes.
