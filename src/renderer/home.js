@@ -1172,8 +1172,8 @@
       renderMic();
       api.mic.reset().then(function (r) {
         $('walkMicReset').disabled = false;
+        if (r && r.state === 'restarting') { micNote = 'Typd is starting again so that macOS asks afresh…'; S.mic = 'denied'; renderMic(); return; }
         S.mic = (r && r.state) || S.mic;
-        if (r && r.refusedAtOnce) micNote = 'macOS refuses the microphone to Typd without asking: a rule on this Mac (a management profile, Screen Time), not your answer. Typd’s menu › Copy diagnostics, and send it to the developer.';
         renderMic(); refreshPerms();
       });
     });

@@ -1,5 +1,6 @@
 'use strict';
 
+const fs = require('fs');
 const path = require('path');
 const { app, dialog, shell, systemPreferences, nativeImage, ipcMain } = require('electron');
 
@@ -390,6 +391,18 @@ function showable() {
 }
 
 async function check(reason) {
+  // The first check after "Ask macOS Again" (resetMic restarted Typd): macOS still saying no at once,
+  // with Typd's answer just cleared, is a rule on this Mac (AMFI off, a management profile).
+  const afterReset = reason === 'startup' ? takeResetMarker() : null;
+  if (afterReset) {
+    const st = micStatus();
+    if (st === 'denied' || st === 'restricted') {
+      lifeLog('microphone', 'macOS still says ' + st + ' at the start right after the reset, without asking: a rule on this Mac, not an answer');
+      await refusedAtOnce();
+      return false;
+    }
+    lifeLog('microphone', 'started again after the reset: macOS says ' + st);
+  }
   // The microphone first, through macOS's own prompt: the first time, that is all it takes. Its
   // answer is waited for, but not forever (requestMic). Still unanswered after that, Typd puts no
   // dialog of its own over macOS's prompt -- a modal dialog would also hold Typd itself up until it
@@ -422,9 +435,7 @@ async function check(reason) {
     request(off[0]);
     watch(off);
   } else if (answer === 'reset') {
-    const r = await resetMic('the dialog');
-    if (r.refusedAtOnce) await refusedAtOnce();
-    else watch(off);
+    await resetMic('the dialog');   // Typd starts again, and asks at that start
   }
   return false;
 }
@@ -448,20 +459,67 @@ async function resetMic(why) {
     require('child_process').execFile('/usr/bin/tccutil', ['reset', 'Microphone', BUNDLE_ID], { timeout: 10000 }, (err, out, errOut) =>
       resolve({ ok: !err, said: String(out || errOut || (err && err.message) || '').trim().split('\n')[0].slice(0, 160) }));
   });
-  lifeLog('microphone', 'tccutil reset Microphone ' + BUNDLE_ID + ': ' + (r.ok ? 'done' : 'failed') + ' (' + why + '; status was ' + before + ', now ' + micStatus() + ')');
+  lifeLog('microphone', 'tccutil reset Microphone ' + BUNDLE_ID + ': ' + (r.ok ? 'done' : 'failed') + ' (' + why + '; status was ' + before + ')');
   log('tccutil reset Microphone ' + BUNDLE_ID + ': ' + (r.ok ? 'done' : 'failed: ' + r.said));
-  const at = Date.now();
-  const state = await requestMic('after a reset (' + why + ')', { again: true });
-  if (state === 'denied' || state === 'restricted') {
-    const atOnce = Date.now() - at < 2000;
-    lifeLog('microphone', atOnce ? 'macOS refused at once after the reset, without its dialog (' + state + '): a rule on this Mac, not an answer' : 'still ' + state + ' after the reset');
-    return { state, reset: r.ok, refusedAtOnce: atOnce };
-  }
-  return { state, reset: r.ok };
+  // A running app keeps the answer macOS gave it (CI: "status was denied, now denied" after the
+  // reset, and asking again was refused at once without reaching tccd). So Typd starts again, through
+  // LaunchServices as Finder starts it, and the new Typd asks at its start; a marker tells that start
+  // that a reset came first (a refusal then is a rule on this Mac, not an old answer).
+  try { fs.writeFileSync(resetMarker(), JSON.stringify({ at: Date.now(), why })); } catch { /* the next start just asks */ }
+  lifeLog('microphone', 'starting Typd again so that macOS asks afresh');
+  restartThroughLaunchServices();
+  return { state: 'restarting', reset: r.ok };
+}
+
+/** Where resetMic leaves its note for the next start. */
+function resetMarker() { return path.join(app.getPath('userData'), 'mic-reset.json'); }
+
+/** The note resetMic left, if it is recent (and only once). */
+function takeResetMarker() {
+  try {
+    const m = JSON.parse(fs.readFileSync(resetMarker(), 'utf8'));
+    fs.rmSync(resetMarker(), { force: true });
+    return m && Date.now() - m.at < 5 * 60 * 1000 ? m : null;
+  } catch { return null; }
+}
+
+/**
+ * Quit, and open Typd again once this copy is gone (one Typd at a time): `open`, as Finder starts it,
+ * so the new Typd is its own app to macOS. The TYPD_ settings this one ran with go along (the Mac CI's),
+ * except a test answer that would repeat itself.
+ */
+function restartThroughLaunchServices() {
+  const bundle = path.resolve(process.execPath, '..', '..', '..');
+  const envs = Object.keys(process.env).filter((k) => /^TYPD_/.test(k) && k !== 'TYPD_TEST_DIALOG_ANSWER')
+    .map((k) => '--env ' + JSON.stringify(k + '=' + process.env[k])).join(' ');
+  try {
+    require('child_process').spawn('/bin/sh', ['-c', 'sleep 1.5; /usr/bin/open "$0" ' + envs, bundle], { detached: true, stdio: 'ignore' }).unref();
+  } catch (err) { lifeLog('microphone', 'could not start Typd again: ' + ((err && err.message) || err)); return; }
+  setTimeout(() => { if (quitFor) quitFor('Ask macOS Again (Typd starts again for a fresh microphone question)'); }, 200);
+}
+
+let quitFor = null;   // index.js's quit(by): the one place Typd quits from
+function quitWith(fn) { quitFor = fn; }
+
+/**
+ * The Mac's own security settings, for a refusal that comes without a prompt: AMFI (Apple Mobile File
+ * Integrity) switched off by a boot argument makes macOS flag every process as a platform binary, and
+ * tccd then refuses the prompt to any app Apple did not sign ("CS_PLATFORM_BINARY set but not
+ * AppleSigned; prompt policy is Deny" -- a reporter's macOS 27). Only the AMFI part of the boot
+ * arguments and SIP's status are read and kept: { amfiOff, amfi, sip }.
+ */
+function securitySettings() {
+  const cp = require('child_process');
+  const out = (f, a) => { try { return String(cp.execFileSync(f, a, { timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] })); } catch { return ''; } };
+  const amfi = (out('/usr/sbin/sysctl', ['-n', 'kern.bootargs']).match(/\S*amfi\S*/gi) || []).join(' ');
+  const sip = (/status: (enabled|disabled)/i.exec(out('/usr/bin/csrutil', ['status'])) || [])[1] || 'unknown';
+  return { amfiOff: /amfi_get_out_of_my_way=(0x)?[1-9]|amfi=0x80|amfi_allow_any_signature=(0x)?[1-9]/i.test(amfi), amfi, sip };
 }
 
 /** macOS refused the microphone without asking, even after a reset: say so plainly, once. */
 async function refusedAtOnce() {
+  const sec = securitySettings();
+  lifeLog('microphone', 'refused without a prompt; boot arguments for AMFI: ' + (sec.amfi || 'none') + '; SIP ' + sec.sip);
   dialogOpen = true;
   try {
     try { app.focus({ steal: true }); } catch { /* it still shows */ }
@@ -470,9 +528,13 @@ async function refusedAtOnce() {
       icon: icon(),
       title: 'Typd',
       message: 'macOS refuses the microphone to Typd without asking',
-      detail: 'This is a rule on this Mac, not an answer you gave: a management profile (a work or school Mac), ' +
-        'Screen Time, or a security setting. Typd cannot change that.\n\nTo look into it: Typd’s menu › Copy diagnostics, ' +
-        'and send it to the developer.',
+      detail: (sec.amfiOff
+        ? 'This Mac starts with AMFI switched off (boot argument “' + sec.amfi + '”). macOS then refuses the microphone, ' +
+          'without asking, to every app Apple did not make, Typd included. Remove that boot argument and restart ' +
+          '(or switch AMFI back on the way it was switched off), then open Typd again.'
+        : 'This is a rule on this Mac, not an answer you gave: a management profile (a work or school Mac), ' +
+          'Screen Time, or changed security settings. Typd cannot change that.') +
+        '\n\nTo look into it: Typd’s menu › Copy diagnostics, and send it to the developer.',
       buttons: ['OK'],
       noLink: true
     });
@@ -524,4 +586,4 @@ async function status() {
 // prompt is answered -- but a prompt nobody answers (or nobody can see) must not hold it back for long.
 function isAsking(limit = MIC_WAIT_MS) { return dialogOpen || Boolean(micAsking && Date.now() - micAsking.at < limit); }
 
-module.exports = { ensure, status, openPane, isAsking, request, requestMic, resetMic, micState, onMicChange, whenUnanswered };
+module.exports = { ensure, status, openPane, isAsking, request, requestMic, resetMic, micState, onMicChange, whenUnanswered, securitySettings, quitWith };
