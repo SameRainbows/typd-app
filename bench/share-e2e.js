@@ -135,7 +135,7 @@ function stopWorker() {
   else worker.kill('SIGTERM');
   worker = null;
 }
-process.on('exit', stopWorker);
+process.on('exit', () => { stopWorker(); try { fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 3 }); } catch { /* the OS cleans its temp folder */ } });
 process.on('SIGINT', () => { stopWorker(); process.exit(130); });
 
 function freePort() {
