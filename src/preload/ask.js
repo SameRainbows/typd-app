@@ -11,6 +11,7 @@ const EVENTS = ['ask:refresh'];
 contextBridge.exposeInMainWorld('typdAsk', {
   state: call('ask:state'),
   flag: call('ask:flag'),
+  share: call('ask:share'),
   close: call('ask:close'),
 
   on(event, handler) {

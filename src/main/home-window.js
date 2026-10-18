@@ -319,8 +319,9 @@ function register(d) {
   handle('walkthrough:practice', (on) => { practicing = on === true; return true; });
   handle('walkthrough:done', () => settings.set('walkthrough', 'done'));
 
-  // Sharing (public builds; on by default). The switch takes effect at once, either way: off
-  // deletes what still waits in the outbox. Deleting empties the outbox and deletes what the
+  // Sharing (public builds; asked since 0.2.7): Settings' switch and the walkthrough's first screen.
+  // Either way at once (sharing.answer, via index.js chooseSharing): off deletes what still waits in
+  // the outbox. Deleting empties the outbox and deletes what the
   // server holds for this install.
   handle('sharing:set', async (on) => {
     if (typeof on !== 'boolean' || !sharing.get()) return null;

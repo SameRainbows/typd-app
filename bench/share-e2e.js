@@ -5,27 +5,33 @@
  * local `wrangler dev --local` (throwaway KV and R2, a test admin key: nothing here reaches the real
  * server, bucket or keys).
  *
- * The app side is this checkout's src/main/sharing.js loaded exactly as the packaged app loads it:
- * electron says isPackaged, the resources folder has no tester.json (what scripts/public-build.js
- * verifies), the profile is fresh, and no TYPD_* sharing variable is set -- so the build shares by
- * default with its built-in endpoint. Only fetch is pointed elsewhere: requests for
- * https://typd-collect.mehmetdedeler.com go to the local Worker instead. One synthetic dictation goes
- * through sharing.add(session, text), the call index.js makes after a paste, and then:
+ * The app side is this checkout's src/main/sharing.js (and settings.js, backfill.js, collect.js)
+ * loaded exactly as the packaged app loads them: electron says isPackaged, the resources folder has
+ * no tester.json (what scripts/public-build.js verifies), and no TYPD_* variable is set -- so the
+ * build shares with its built-in endpoint once sharing is on. Only fetch is pointed elsewhere:
+ * requests for https://typd-collect.mehmetdedeler.com go to the local Worker instead. Dictations go
+ * through sharing.add(session, text[, {pasted: false}]), the calls index.js makes once the text
+ * landed; answers through sharing.answer, as index.js chooseSharing does. Since 0.2.7 sharing is asked:
  *
- *   - the install enrolls (POST /v1/enroll 201) and the item uploads (POST /v1/upload 201); the
- *     outbox empties; share.json names the production endpoint and an i- id
- *   - the Worker lists the install (GET /v1/admin/installs) with this app version, and the item under
- *     it (GET /v1/list): a dictation, consent 'all', the text, this OS, no screen context
- *   - dictation-research/scripts/pull_testers.py --list-installs shows it: enrolled, 1 on the server
- *   - the life log has said so: at launch, queued, enrolled, sent; and diagnostics() agrees
- *   - with sharing turned off ('off' in settings.json), not one request is made, and the life log
- *     says why ("not queued: sharing is off")
+ *   - a fresh install, not answered: not one request, nothing waits; the life log says why
+ *   - it answers Share: enrolled (POST /v1/enroll 201), the dictation uploads (POST /v1/upload 201);
+ *     the Worker lists the install and the item (consent 'all', the text, pasted, no screen context);
+ *     dictation-research/scripts/pull_testers.py --list-installs shows it; the life log and
+ *     diagnostics() agree; Don't share: not one request
+ *   - an update from 0.2.6 first started before the cutoff (recordings kept on 17 Oct): on, no new
+ *     screen; the one automatic backfill sends its 3 kept recordings to the Worker (which will not
+ *     list a key's items unless asked: the run goes on without), and a dictation whose paste fell back
+ *     to the clipboard is shared, pasted: false; the next launch sends nothing again
+ *   - 'off': off, not one request, no automatic backfill
+ *   - first started after the cutoff, shared under 0.2.6's default: asked ('ask', the small screen
+ *     due), nothing queued until answered; Don't share calls DELETE /v1/me and the Worker holds
+ *     nothing for it; one that never shared: Don't share makes no request
  *
  * Skips (exit 0, with the reason) when the Worker's source or wrangler is not on this machine (CI);
  * the pull_testers.py step skips by itself without Python or dictation-research.
  *
  *   node bench/share-e2e.js
- *   TYPD_COLLECT_DIR=..\typd-collect WRANGLER_JS=...\wrangler.js TYPD_RESEARCH_DIR=..\dictation-research node bench/share-e2e.js
+ *   TYPD_COLLECT_DIR=..	ypd-collect WRANGLER_JS=...\wrangler.js TYPD_RESEARCH_DIR=..\dictation-research node bench/share-e2e.js
  */
 
 const fs = require('fs');
@@ -38,6 +44,7 @@ const { spawn, spawnSync } = require('child_process');
 const ROOT = path.join(__dirname, '..');
 const PROD = 'https://typd-collect.mehmetdedeler.com';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const { encodeWav } = require(path.join(ROOT, 'src', 'main', 'collect.js'));
 
 /* ------------------------------------------------------------------ the app (a child process) */
 
@@ -70,33 +77,49 @@ if (process.argv[2] === '--app') {
   };
 
   const sharing = require(path.join(ROOT, 'src', 'main', 'sharing.js'));
+  const settings = require(path.join(ROOT, 'src', 'main', 'settings.js'));
   const life = require(path.join(ROOT, 'src', 'main', 'lifelog.js'));
   life.init(c.userData, { info: 'share-e2e' });
   for (const fn of ready) fn();
   const s = sharing.get();
-  const out = { mode: s ? s.mode : null, status: sharing.status(), requests };
+  const out = { mode: s ? s.mode : null, share: settings.get('share'), shareAsk: settings.get('shareAsk'), requests };
 
-  // One dictation, as index.js hands it over once the paste landed: 2 s of a synthetic tone.
+  // A dictation, as index.js hands it over once its text landed: 2 s of a synthetic tone.
   const samples = new Float32Array(16000 * 2);
   for (let i = 0; i < samples.length; i++) samples[i] = 0.25 * Math.sin(i / 7) * Math.sin(i / 3000);
-  const session = { audio: { samples, sampleRate: 16000 }, mode: 'dictate', target: { process: 'notepad' }, endedAt: Date.now() - 400 };
-  sharing.add(session, c.text);
+  const session = () => ({ audio: { samples, sampleRate: 16000 }, mode: 'dictate', target: { process: 'notepad' }, endedAt: Date.now() - 400 });
 
   (async () => {
+    await sleep(500);   // the automatic backfill's decision, at launch
+    out.status = sharing.status();
+    out.answers = [];
+    for (const a of c.actions || []) {
+      if (a === 'dictate') sharing.add(session(), c.text);
+      if (a === 'copied') sharing.add(session(), c.text + ' (copied)', { pasted: false });   // the paste fell back to the clipboard
+      // index.js chooseSharing: the walkthrough's first screen, the share screen, Settings' switch.
+      if (a === 'share' || a === 'dontshare') out.answers.push(await s.answer(a === 'share' ? 'on' : 'off'));
+      await sleep(200);
+    }
     const outbox = path.join(c.userData, 'outbox');
     const keyFile = path.join(c.userData, 'share.json');
     const waiting = () => { try { return fs.readdirSync(outbox).filter((n) => n.endsWith('.json')).length; } catch { return 0; } };
-    const end = Date.now() + (c.expectSend ? 30e3 : 6e3);
+    const uploads = () => requests.filter((r) => r.path === '/v1/upload' && r.status === 201).length;
+    const end = Date.now() + (c.uploads ? 60e3 : 6e3);
     while (Date.now() < end) {
-      if (c.expectSend && fs.existsSync(keyFile) && waiting() === 0 && requests.some((r) => r.path === '/v1/upload')) break;
-      await sleep(100);
+      // The past dictations' run, driven step by step (it would take ~90 s an item by itself).
+      if (c.uploads && s && s.backfill && s.backfill.status().state === 'running') await s.backfill.step();
+      if (c.uploads && fs.existsSync(keyFile) && waiting() === 0 && uploads() >= c.uploads &&
+        (!s || !s.backfill || s.backfill.status().state !== 'running')) break;
+      await sleep(250);
     }
     let key = null;
     try { const k = JSON.parse(fs.readFileSync(keyFile, 'utf8')); key = { endpoint: k.endpoint, id: k.id, hasKey: typeof k.key === 'string' }; } catch { /* none */ }
     out.key = key;
     out.waiting = waiting();
+    out.after = sharing.status();
+    out.shareAfter = settings.get('share');
     out.diagnostics = typeof sharing.diagnostics === 'function' ? sharing.diagnostics() : '(no diagnostics() in this version)';
-    out.life = life.tail(50).filter((l) => / sharing: /.test(l)).map((l) => l.replace(/^\S+ \[\d+\] /, ''));
+    out.life = life.tail(80).filter((l) => / (sharing|backfill): /.test(l)).map((l) => l.replace(/^\S+ \[\d+\] /, ''));
     process.stdout.write('\n@@RESULT@@' + JSON.stringify(out) + '\n');
     process.exit(0);
   })();
@@ -162,9 +185,8 @@ async function startWorker() {
   }
   throw new Error('wrangler dev did not start:\n' + log.slice(-2000));
 }
-
-/** A fresh profile and a public build's resources folder (no tester.json), then the app child. */
-function runApp(base, name, { settings = null, expectSend = true, text } = {}) {
+/** A profile (fresh, or as an earlier Typd left it) and a public build's resources folder (no tester.json), then the app child. */
+function runApp(base, name, { settings = null, actions = [], uploads = 0, text = 'x', recordings = [] } = {}) {
   const appData = path.join(tmp, name, 'Roaming');
   const userData = path.join(appData, 'Typd');
   const resources = path.join(tmp, name, 'resources');
@@ -174,13 +196,20 @@ function runApp(base, name, { settings = null, expectSend = true, text } = {}) {
     fs.mkdirSync(path.join(appData, 'typd'), { recursive: true });
     fs.writeFileSync(path.join(appData, 'typd', 'settings.json'), JSON.stringify(settings));
   }
+  for (const r of recordings) {
+    const dir = path.join(appData, 'Typd', 'recordings');
+    fs.mkdirSync(dir, { recursive: true });
+    const tone = new Float32Array(16000).map((_, i) => 0.2 * Math.sin(i / 9));
+    fs.writeFileSync(path.join(dir, r.name + '.wav'), encodeWav(tone));
+    fs.writeFileSync(path.join(dir, r.name + '.json'), JSON.stringify({ mode: 'dictate', output: r.text, seconds: 1, ms: 380, model: 'r24_1p7b-q4_k_m.gguf', app: 'notepad', context: 'NEVER-SENT-CONTEXT' }));
+  }
   const env = { ...process.env };
   for (const k of Object.keys(env)) if (/^TYPD_/.test(k)) delete env[k];   // a user's PC sets none of them
-  const cfg = { appData, userData, resources, base, version: VERSION, expectSend, text };
-  const r = spawnSync(process.execPath, [__filename, '--app', JSON.stringify(cfg)], { env, encoding: 'utf8', timeout: 60e3, windowsHide: true });
+  const cfg = { appData, userData, resources, base, version: VERSION, actions, uploads, text };
+  const r = spawnSync(process.execPath, [__filename, '--app', JSON.stringify(cfg)], { env, encoding: 'utf8', timeout: 120e3, windowsHide: true });
   const m = /@@RESULT@@(.*)/.exec(r.stdout || '');
   if (!m) throw new Error('the app run gave no result:\n' + (r.stdout || '').slice(-1500) + '\n' + (r.stderr || '').slice(-1500));
-  return { ...JSON.parse(m[1]), resources };
+  return { ...JSON.parse(m[1]), resources, appData, userData };
 }
 
 async function admin(base, p) {
@@ -188,6 +217,15 @@ async function admin(base, p) {
   let body = null;
   try { body = await res.json(); } catch { /* not JSON */ }
   return { status: res.status, body };
+}
+async function itemsOf(base, id) {
+  const list = await admin(base, '/v1/list?prefix=' + encodeURIComponent(id || 'i-'));
+  const out = [];
+  for (const it of (list.body && list.body.items) || []) {
+    const one = await admin(base, '/v1/item/' + it.key.split('/').map(encodeURIComponent).join('/'));
+    out.push({ key: it.key, mode: it.mode, meta: (one.body && one.body.meta) || {} });
+  }
+  return out;
 }
 
 function python() {
@@ -198,8 +236,14 @@ function python() {
   return null;
 }
 
+// settings.json as 0.2.6 wrote it: share 'on' was its default, never an answer.
+const S026 = { hotkey: 'RightAlt', sounds: true, mic: '', micLabel: '', keepRecordings: true, startAtLogin: true, showInDock: false, sharePaused: false,
+  share: 'on', flagHotkey: '', modelVariant: 'auto', askBeforeModelDownload: false, lowMemory: 'auto', walkthrough: 'done' };
+// Recordings 0.2.5-0.2.6 kept a day before the cutoff (2026-10-18 15:00 UTC): this install was first started before it.
+const PAST = [0, 1, 2].map((i) => ({ name: '2026-10-17T1' + i + '-04-05-120Z', text: 'past dictation ' + i + ' from 0.2.6' }));
+
 (async () => {
-  console.log('Sharing end to end: a public packaged build, a fresh profile, one dictation, the real Worker (wrangler dev --local)');
+  console.log('Sharing end to end: a public packaged build, its profiles, the real Worker (wrangler dev --local)');
   let base;
   try {
     base = await startWorker();
@@ -209,14 +253,23 @@ function python() {
   }
   console.log('  Worker: ' + base);
 
-  section('a public build, sharing on by default');
+  section('a fresh install, not answered yet: nothing is shared');
+  const f = runApp(base, 'fresh', { actions: ['dictate'], text: 'never to be shared' });
+  check('no tester.json in the resources folder (as public-build.js verifies)', !fs.existsSync(path.join(f.resources, 'tester.json')));
+  check('public mode; not answered ("ask"): off, the walkthrough asks (no small screen)', f.mode === 'beta' && f.share === 'ask' && f.shareAsk === 'done' &&
+    f.status && f.status.state === 'off' && f.status.choice === 'ask', f);
+  check('not one request, not even enrollment; nothing waits, no key', f.requests.length === 0 && f.waiting === 0 && !f.key, { requests: f.requests, waiting: f.waiting, key: f.key });
+  check('the life log says why: not chosen yet', f.life.some((l) => /sharing: at launch: public build, not chosen yet \(off\); not enrolled yet/.test(l)) &&
+    f.life.some((l) => /sharing: not queued: sharing not chosen yet/.test(l)), f.life);
+  check('the automatic backfill: not for a fresh install, and remembered', f.life.some((l) => /backfill: past dictations: not sent by itself: a fresh install/.test(l)), f.life);
+
+  section('a fresh install answers Share: enrolled, the dictation uploads');
   const text = 'Typd share e2e synthetic dictation ' + crypto.randomBytes(3).toString('hex');
-  const a = runApp(base, 'on', { text });
-  check('no tester.json in the resources folder (as public-build.js verifies)', !fs.existsSync(path.join(a.resources, 'tester.json')));
-  check('the packaged build is in public mode, sharing on', a.mode === 'beta' && a.status && a.status.state === 'on', a.status);
+  const a = runApp(base, 'share', { actions: ['share', 'dictate'], uploads: 1, text });
+  check('Share: on', a.answers[0] && a.answers[0].ok && a.answers[0].enrolled === true && a.shareAfter === 'on' && a.after.state === 'on', a.answers);
   const enroll = a.requests.filter((r) => r.path === '/v1/enroll');
   const upload = a.requests.filter((r) => r.path === '/v1/upload');
-  check('the first dictation enrolls this install: POST /v1/enroll 201, once', enroll.length === 1 && enroll[0].status === 201, a.requests);
+  check('enrolls at the answer: POST /v1/enroll 201, once', enroll.length === 1 && enroll[0].status === 201, a.requests);
   check('the dictation uploads: POST /v1/upload 201', upload.length === 1 && upload[0].status === 201, a.requests);
   check('every request went to the built-in endpoint (typd-collect.mehmetdedeler.com)', a.requests.every((r) => r.host === new URL(PROD).host), a.requests);
   check('share.json: the production endpoint, an i- id and a key', a.key && a.key.endpoint === PROD && /^i-[0-9a-f]{20}$/.test(a.key.id) && a.key.hasKey, a.key);
@@ -227,13 +280,12 @@ function python() {
   const installs = await admin(base, '/v1/admin/installs');
   const inst = installs.body && (installs.body.installs || []).find((i) => i.id === id);
   check('GET /v1/admin/installs lists it, with this app version', Boolean(inst) && inst.appVersion === VERSION, installs);
-  const list = await admin(base, '/v1/list?prefix=' + encodeURIComponent(id || 'i-'));
-  const items = (list.body && list.body.items) || [];
-  check('GET /v1/list: one item under it, a dictation', items.length === 1 && items[0].mode === 'dictate', list);
+  const items = await itemsOf(base, id);
+  check('GET /v1/list: one item under it, a dictation', items.length === 1 && items[0].mode === 'dictate', items);
   if (items[0]) {
-    const it = await admin(base, '/v1/item/' + items[0].key.split('/').map(encodeURIComponent).join('/'));
-    const meta = (it.body && it.body.meta) || {};
-    check("the item: consent 'all', the text, this app version and OS", meta.consent === 'all' && meta.output === text && meta.appVersion === VERSION && meta.os && meta.os.platform === process.platform, meta);
+    const meta = items[0].meta;
+    check("the item: consent 'all', the text, this app version and OS, pasted", meta.consent === 'all' && meta.output === text && meta.appVersion === VERSION &&
+      meta.os && meta.os.platform === process.platform && meta.pasted === true, meta);
     check('the item carries no screen context, span or title', !['context', 'contextBlock', 'span', 'selection', 'title', 'screen'].some((k) => k in meta), Object.keys(meta));
     check('the item: 2 s of audio', Math.abs((meta.audioSeconds || 0) - 2) < 0.05, meta.audioSeconds);
   }
@@ -253,19 +305,72 @@ function python() {
 
   section('what the PC itself says (life log, "Copy diagnostics")');
   const said = a.life.join(' | ');
-  check('the life log: at launch, queued, enrolled, sent', /sharing: at launch: public build, on; not enrolled yet/.test(said) && /sharing: queued/.test(said) &&
-    said.includes('sharing: enrolled: ' + id) && /sharing: sent: 1 this run/.test(said), a.life);
+  check('the life log: at launch (not chosen yet), answered share, enrolled, queued, sent', /sharing: at launch: public build, not chosen yet \(off\); not enrolled yet/.test(said) &&
+    /sharing: answered: share/.test(said) && said.includes('sharing: enrolled: ' + id) && /sharing: queued/.test(said) && /sharing: sent: 1 this run/.test(said), a.life);
   check('diagnostics(): enrolled, nothing waiting, 1 queued and 1 sent', a.diagnostics.includes('enrolled ' + id) && /0 waiting/.test(a.diagnostics) && /1 queued, 1 sent/.test(a.diagnostics), a.diagnostics);
   check('no key in the life log or diagnostics', !/ik_[A-Za-z0-9_-]{20,}/.test(said + a.diagnostics));
 
-  section('sharing turned off');
-  const b = runApp(base, 'off', { settings: { share: 'off' }, expectSend: false, text: 'not to be shared' });
-  check('state off', b.status && b.status.state === 'off', b.status);
-  check('not one request, not even enrollment', b.requests.length === 0, b.requests);
-  check('nothing waits, no key', b.waiting === 0 && !b.key, { waiting: b.waiting, key: b.key });
-  check('the life log says why', b.life.some((l) => /sharing: not queued: sharing is off/.test(l)), b.life);
+  section("a fresh install answers Don't share");
+  const n = runApp(base, 'dont', { actions: ['dontshare', 'dictate'], text: 'not to be shared' });
+  check("off, not one request (nothing to delete), nothing waits, no key", n.shareAfter === 'off' && n.after.state === 'off' && n.requests.length === 0 && n.waiting === 0 && !n.key, n);
+
+  section('an update from 0.2.6, first started before the cutoff: on, no new screen, its past dictations sent once');
+  const u = runApp(base, 'before', { settings: S026, recordings: PAST, actions: ['copied'], uploads: 4, text: 'copied, not pasted ' + crypto.randomBytes(3).toString('hex') });
+  check("'on' kept, no small screen (shareAsk done)", u.share === 'on' && u.shareAsk === 'done' && u.status.state === 'on', { share: u.share, shareAsk: u.shareAsk, status: u.status });
+  const uid = u.key && u.key.id;
+  const uItems = await itemsOf(base, uid);
+  const past = uItems.filter((x) => x.meta.backfill === true);
+  check('the automatic backfill ran once by itself: the 3 recordings kept under 0.2.6 reached the Worker', past.length === 3 &&
+    PAST.every((p) => past.some((x) => x.meta.output === p.text && x.meta.consent === 'all' && x.meta.keptAt)), uItems.map((x) => x.meta.output));
+  check('the past dictations carry no screen context (their .json has one)', !uItems.some((x) => JSON.stringify(x.meta).includes('NEVER-SENT-CONTEXT')));
+  const copied = uItems.find((x) => x.meta.pasted === false);
+  check('a dictation whose paste fell back to the clipboard is shared: pasted false, copiedAt, no pastedAt', copied && copied.meta.copiedAt && copied.meta.pastedAt === null &&
+    /^copied, not pasted /.test(copied.meta.output), copied && copied.meta);
+  check('the life log says so: sending them once, by itself', u.life.some((l) => /backfill: past dictations: sending them once, by itself \(3 kept recordings; this install never shared\)/.test(l)), u.life);
+  check('... and done', u.after.backfill && u.after.backfill.state === 'done' && u.after.backfill.by === 'auto' && u.after.backfill.sent === 3, u.after.backfill);
+  const u2 = runApp(base, 'before', {});   // its next launch
+  check('the next launch: not again (decided once), not one request', u2.share === 'on' && u2.requests.length === 0 && u2.status.backfill.state === 'done' &&
+    u2.life.filter((l) => /past dictations: sending them once/.test(l)).length === 1, { requests: u2.requests, bf: u2.status.backfill });
+  for (const [label, s] of [['no share key', (() => { const x = { ...S026 }; delete x.share; return x; })()], ["share ''", { ...S026, share: '' }]]) {
+    const v = runApp(base, 'before-' + label.replace(/\W+/g, '-'), { settings: s, recordings: PAST.slice(0, 1) });
+    check('before the cutoff, ' + label + ': on, no new screen', v.share === 'on' && v.shareAsk === 'done' && v.status.state === 'on', { share: v.share, shareAsk: v.shareAsk });
+  }
+
+  section("sharing turned off ('off'): off, whatever else");
+  const b = runApp(base, 'off', { settings: { ...S026, share: 'off' }, recordings: PAST, actions: ['dictate', 'copied'], text: 'not to be shared' });
+  check('state off, no screen', b.share === 'off' && b.shareAsk === 'done' && b.status && b.status.state === 'off', b.status);
+  check('not one request, not even enrollment; nothing waits, no key', b.requests.length === 0 && b.waiting === 0 && !b.key, { requests: b.requests, waiting: b.waiting, key: b.key });
+  check('the life log says why, and no automatic backfill', b.life.some((l) => /sharing: not queued: sharing is off/.test(l)) &&
+    b.life.some((l) => /backfill: past dictations: not sent by itself: sharing is off/.test(l)), b.life);
+
+  section('first started after the cutoff, shared under 0.2.6 by default: asked; Don\'t share deletes it');
+  // 0.2.6's run: on by default, one dictation shared (simulated by a settings file already decided 'on').
+  const p1 = runApp(base, 'after', { settings: { ...S026, shareAsk: 'done' }, actions: ['dictate'], uploads: 1, text: 'shared under 0.2.6 by default' });
+  const pid = p1.key && p1.key.id;
+  check('under 0.2.6: enrolled, one item on the Worker', Boolean(pid) && (await itemsOf(base, pid)).length === 1);
+  // The update to 0.2.7: settings.json as 0.2.6 wrote it again (no shareAsk), nothing older than the
+  // cutoff, and no ledger of the automatic backfill (0.2.6 had none).
+  fs.writeFileSync(path.join(p1.appData, 'typd', 'settings.json'), JSON.stringify(S026));
+  fs.rmSync(path.join(p1.userData, 'backfill.json'), { force: true });
+  const p2 = runApp(base, 'after', { actions: ['dictate'], text: 'after the update, not answered' });
+  check("the first 0.2.7 launch: not answered ('ask'), the small screen due, off", p2.share === 'ask' && p2.shareAsk === 'due' && p2.status.state === 'off' && p2.status.shared === true, { share: p2.share, shareAsk: p2.shareAsk, status: p2.status });
+  check('not answered: nothing queued, not one request', p2.requests.length === 0 && p2.waiting === 0, p2.requests);
+  check('no automatic backfill before an answer (it waits: nothing decided)', p2.status.backfill && p2.status.backfill.state === 'none' && !p2.status.backfill.auto, p2.status.backfill);
+  const p3 = runApp(base, 'after', { actions: ['dontshare', 'dictate'], text: 'after Don\'t share' });
+  const del = p3.requests.filter((r) => r.path === '/v1/me' && r.method === 'DELETE');
+  check("Don't share: DELETE /v1/me, 200", del.length === 1 && del[0].status === 200, p3.requests);
+  check('the Worker holds nothing for it now', (await itemsOf(base, pid)).length === 0);
+  check('off, the key forgotten, the outbox empty, nothing else sent', p3.shareAfter === 'off' && !p3.key && p3.waiting === 0 &&
+    p3.requests.every((r) => r.path === '/v1/me'), { share: p3.shareAfter, key: p3.key, requests: p3.requests });
+  check("the answer says it deleted what was shared", p3.answers[0] && p3.answers[0].ok && p3.answers[0].deletedShared === true && p3.answers[0].deleted === 1, p3.answers);
+
+  section('first started after the cutoff, nothing ever shared: asked; Don\'t share sends nothing');
+  const q = runApp(base, 'after-none', { settings: S026, actions: ['dontshare'] });
+  check("asked ('ask', due); Don't share: off, not one request", q.share === 'ask' && q.shareAsk === 'due' && q.shareAfter === 'off' && q.requests.length === 0, { share: q.share, shareAsk: q.shareAsk, after: q.shareAfter, requests: q.requests });
+
   const after = await admin(base, '/v1/admin/installs');
-  check('the server still has the one install', after.body && after.body.installs && after.body.installs.length === 1, after.body);
+  const ids = ((after.body && after.body.installs) || []).map((i) => i.id);
+  check('the server: the two installs that share (and not the deleted one)', ids.includes(id) && ids.includes(uid) && !ids.includes(pid) && ids.length === 2, ids);
 
   stopWorker();
   console.log('\n' + (failures ? failures + ' FAILED' : 'all share-e2e checks passed'));

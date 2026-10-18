@@ -208,9 +208,9 @@
           <label class="switch"><input type="checkbox" id="keepRecordings" aria-labelledby="recTitle" /><span></span></label>
         </div>
 
-        <!-- Public builds (sharing.js): on by default since 0.2.4 -- the walkthrough's first screen says
-             so and points here. The switch takes effect at once, either way; off also deletes what
-             still waits to be sent. "What's shared" opens the full list in place. -->
+        <!-- Public builds (sharing.js): asked since 0.2.7 (the walkthrough's first screen, or one small
+             screen); not answered reads as off here. The switch takes effect at once, either way; off
+             also deletes what still waits to be sent. "What's shared" opens the full list in place. -->
         <div class="row" id="betaRow" hidden>
           <div class="label">
             <h2 id="betaTitle">Share dictations</h2>
@@ -355,8 +355,15 @@
       </div>
       <h1 id="walkTitle"></h1>
       <p class="walk-body" id="walkBody"></p>
-      <!-- Step 1 only, in a public build with sharing on (home.js): the one line about sharing. -->
-      <p class="walk-note" id="walkNote" hidden></p>
+      <!-- Step 1 only, in a public build (home.js): sharing, asked -- the same words and two buttons as
+           the small screen (share.html). Nothing preselected; Next appears once it is answered. -->
+      <div class="walk-share" id="walkShare" role="group" aria-labelledby="walkShareQ" hidden>
+        <p class="walk-share-q"><strong id="walkShareQ">Help make Typd better?</strong> Share your dictations (audio and text) to train the model. Never sold or published. You can change this anytime in Settings.</p>
+        <div class="walk-share-buttons">
+          <button class="btn ghost" type="button" id="walkShareYes" aria-pressed="false">Share</button>
+          <button class="btn ghost" type="button" id="walkShareNo" aria-pressed="false">Don’t share</button>
+        </div>
+      </div>
       <!-- No speech model yet (a model-less public install's first launch): its download, on every step. -->
       <div class="walk-model" id="walkModel" role="status" aria-live="polite" hidden>
         <p class="walk-model-text" id="walkModelText"></p>

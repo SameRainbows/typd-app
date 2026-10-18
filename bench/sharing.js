@@ -4,9 +4,14 @@
  * Sharing, without Electron, a window or the network: sharing.js and collect.js against a local
  * fake of typd-collect.
  *
- *   - public builds share by default (0.2.4): a choice never made ('' from a consent screen of
- *     0.2.0-0.2.3 never answered) or 'on' queues every dictation, and the first send enrolls; an
- *     explicit 'off' stays off: nothing queued, not one request, not even enrollment
+ *   - public builds ask (0.2.7): not answered ('ask') queues nothing and sends nothing, not even an
+ *     enrollment; Share (answer 'on') enrolls and every dictation goes; 'on' (an install from before
+ *     the cutoff) shares; an explicit 'off' stays off: nothing queued, not one request
+ *   - Don't share: nothing shared yet -> off, not one request; after 0.2.6's default shared some ->
+ *     DELETE /v1/me, the outbox emptied, the key forgotten; a delete that fails is retried at the
+ *     next launch (deleteWanted in share.json) until it goes, unless the person turns sharing on
+ *   - the automatic backfill's verdict (autoBackfillWhy): waits while not answered, never for a tester,
+ *     a fresh install, 'off', or an install that had a key when the run began
  *   - turning it on in Settings: one enrollment, the key kept in share.json (never logged), every
  *     dictation uploaded with it, and never the screen context, the span or a window title
  *   - public builds' limits, all silent: at most so many dictations and bytes a UTC day (kept
@@ -143,7 +148,7 @@ function dictation(text = 'Thanks, I will send the draft tonight.', extra = {}) 
 let n = 0;
 const logs = [];
 function make(server, opts = {}) {
-  const home = path.join(tmp, 'home' + (++n));
+  const home = opts.home || path.join(tmp, 'home' + (++n));
   fs.mkdirSync(home, { recursive: true });
   let choice = opts.choice === undefined ? '' : opts.choice;
   const s = createSharing({
@@ -167,18 +172,23 @@ const outboxFiles = (dir, ext) => { try { return fs.readdirSync(dir).filter((f) 
 
   /* ------------------------------------------------------------- consent */
 
-  section('public builds: sharing is on by default; an explicit "off" stays off');
+  section('public builds: sharing is asked; not answered shares nothing; Share shares; "off" stays off');
   {
     server.reset();
-    const t = make(server, { choice: '' });   // a consent screen of 0.2.0-0.2.3, never answered
-    check('never answered: on, nothing shared yet', t.s.status().state === 'on' && t.s.status().shared === false, t.s.status());
+    const t = make(server, { choice: 'ask' });   // a fresh 0.2.7 install, or one from after the cutoff, not answered yet
+    check('not answered: off, choice "ask", nothing shared', t.s.status().state === 'off' && t.s.status().choice === 'ask' && t.s.status().shared === false, t.s.status());
     check('no consent step left in the API', !('needsConsent' in t.s));
     await t.s.start();
     t.s.wake(0);
-    await sleep(300);
-    check('nothing to send: not one request, not even enrollment', server.requests.length === 0, server.requests);
+    check('not answered: a dictation is not queued', t.s.add(dictation('not yet', { context: 'SCREEN' })) === false);
+    await sleep(400);
+    check('not answered: not one request, not even enrollment', server.requests.length === 0, server.requests);
+    check('not answered: no outbox, no key file', outboxFiles(t.outbox).length === 0 && !fs.existsSync(t.keyFile));
+    check('diagnostics: not chosen yet, and why nothing was queued', /public build, not chosen yet \(off\)/.test(t.s.diagnostics()) && /not queued: sharing not chosen yet x1/.test(t.s.diagnostics()), t.s.diagnostics());
+    const yes = await t.s.answer('on');
+    check('Share: on, enrolled at once', yes.ok && yes.enrolled === true && t.choice() === 'on' && t.s.status().choice === 'on' && server.count('/v1/enroll') === 1, yes);
     check('a dictation is queued', t.s.add(dictation('first words', { context: 'SCREEN', span: 'SPAN', title: 'TITLE' })) === true);
-    check('the first send enrolls, then uploads it', await until(() => server.items.size === 1) && server.count('/v1/enroll') === 1);
+    check('and uploaded with that key', await until(() => server.items.size === 1) && server.count('/v1/enroll') === 1);
     const it = [...server.items.values()][0] || { meta: {} };
     check('consent "all", never the screen context, the span or a title', it.meta.consent === 'all' &&
       !('context' in it.meta) && !('span' in it.meta) && !('title' in it.meta) && !JSON.stringify(it.meta).includes('SCREEN'), it.meta);
@@ -186,9 +196,11 @@ const outboxFiles = (dir, ext) => { try { return fs.readdirSync(dir).filter((f) 
     const info = t.s.lastInfo();
     check('the last dictation is held for a flag, already shared', info && info.text === 'first words' && info.needsConsent === false, info);
 
-    const on = make(server, { choice: 'on' });   // a fresh 0.2.4 install: settings' default
-    check('the default ("on"): on', on.s.status().state === 'on' && on.s.add(dictation('a new install')) === true);
-    check('and sent', await until(() => server.items.size === 2));
+    const on = make(server, { choice: 'on' });   // an install from before the cutoff (settings.js shareRule)
+    check('"on": on', on.s.status().state === 'on' && on.s.add(dictation('a tester from before')) === true);
+    check('and sent: the first send enrolls', await until(() => server.items.size === 2) && server.count('/v1/enroll') === 2);
+    check('only "on" is on: "" and anything else is off here (settings.js turns an old "" into on or ask)',
+      make(server, { choice: '' }).s.status().state === 'off' && make(server, { choice: 'yes' }).s.status().state === 'off');
 
     server.reset();
     const off = make(server, { choice: 'off' });   // chosen on the old consent screen, or in Settings
@@ -203,6 +215,88 @@ const outboxFiles = (dir, ext) => { try { return fs.readdirSync(dir).filter((f) 
     await sleep(200);
     check('"off": a flag asks first, and sends nothing', r.state === 'ask' && server.requests.length === 0, r);
     check('"off" is never turned back on by anything but choose("on")', off.choice() === 'off' && off.s.status().state === 'off');
+  }
+
+  section("Don't share: nothing shared yet -> off; shared under 0.2.6's default -> deleted");
+  {
+    server.reset();
+    const n0 = make(server, { choice: 'ask' });
+    const r0 = await n0.s.answer('off');
+    check("Don't share with nothing shared: off, not one request (no delete)", r0.ok && n0.choice() === 'off' && server.requests.length === 0 && !r0.deletedShared, r0);
+
+    // An install from after the cutoff that 0.2.6 shared from by default: a key, two items on the
+    // server, one still waiting in the outbox when 0.2.7 starts.
+    server.reset();
+    const old = make(server, { choice: 'on' });
+    old.s.add(dictation('shared by 0.2.6 one'));
+    old.s.add(dictation('shared by 0.2.6 two'));
+    await until(() => server.items.size === 2);
+    server.uploadStatus = 503;
+    old.s.add(dictation('waiting when 0.2.7 starts'));
+    await until(() => outboxFiles(old.outbox, '.json').length === 1);
+    const k = readKeyFile(old.keyFile);
+    server.uploadStatus = null;
+    const now7 = make(server, { choice: 'ask', home: old.home });   // the 0.2.7 launch: asked, not answered yet
+    const before = server.requests.length;
+    await now7.s.start();
+    now7.s.wake(0);
+    await sleep(500);
+    check('0.2.7, not answered: the waiting item does not go', server.requests.length === before && outboxFiles(old.outbox, '.json').length === 1);
+    check('status: off, not answered, but something was shared', now7.s.status().state === 'off' && now7.s.status().choice === 'ask' && now7.s.status().shared === true);
+    const r1 = await now7.s.answer('off');
+    check("Don't share: DELETE /v1/me with this install's key", server.count('/v1/me', 'DELETE') === 1 &&
+      server.requests.find((q) => q.path === '/v1/me' && q.method === 'DELETE').auth === 'Bearer ' + k.key, server.requests);
+    check('the server holds nothing for it now', r1.ok && r1.deleted === 2 && r1.deletedShared === true && server.itemsOf(k.id).length === 0, r1);
+    check('the outbox is empty, the key forgotten, sharing off', outboxFiles(old.outbox, '.json').length === 0 && !fs.existsSync(old.keyFile) &&
+      now7.choice() === 'off' && now7.s.status().shared === false);
+    now7.s.add(dictation('after'));
+    now7.s.wake(0);
+    await sleep(300);
+    check('and nothing goes afterwards', server.count('/v1/upload') === 2);
+
+    // The delete cannot go now (a server error, or offline): retried at the next launch.
+    server.reset();
+    const o2 = make(server, { choice: 'on' });
+    o2.s.add(dictation('shared by 0.2.6'));
+    await until(() => server.items.size === 1);
+    server.deleteStatus = 500;
+    const asked = make(server, { choice: 'ask', home: o2.home });
+    const r2 = await asked.s.answer('off');
+    check("Don't share, the delete refused: off, the key kept and marked to delete", !r2.ok && r2.deletedShared && asked.choice() === 'off' &&
+      readKeyFile(o2.keyFile) && readKeyFile(o2.keyFile).deleteWanted === true, { r2, key: readKeyFile(o2.keyFile) });
+    server.deleteStatus = null;
+    const next = make(server, { choice: 'off', home: o2.home });   // the next launch
+    const r3 = await next.s.retryDelete();
+    check('the next launch deletes it: DELETE /v1/me, the key forgotten', r3 && r3.ok && server.items.size === 0 && !fs.existsSync(o2.keyFile) && server.count('/v1/me', 'DELETE') === 2, r3);
+    check('a launch with nothing owed does nothing', (await make(server, { choice: 'off', home: o2.home }).s.retryDelete()) === null);
+    // ... unless the person turned sharing on meanwhile: then the old request is dropped.
+    server.reset();
+    const o3 = make(server, { choice: 'on' });
+    o3.s.add(dictation('shared by 0.2.6'));
+    await until(() => server.items.size === 1);
+    server.deleteStatus = 500;
+    const a3 = make(server, { choice: 'ask', home: o3.home });
+    await a3.s.answer('off');
+    server.deleteStatus = null;
+    await a3.s.choose('on');
+    check('Share later drops the delete still owed', readKeyFile(o3.keyFile) && !readKeyFile(o3.keyFile).deleteWanted &&
+      (await make(server, { choice: 'on', home: o3.home }).s.retryDelete()) === null && server.items.size === 1);
+  }
+
+  section('the automatic backfill: who it is for (autoBackfillWhy)');
+  {
+    server.reset();
+    check('not answered yet: it waits', make(server, { choice: 'ask' }).s.autoBackfillWhy() === 'wait');
+    check('a fresh install: never', make(server, { choice: 'on' }).s.autoBackfillWhy({ fresh: true }) === 'a fresh install');
+    check('"off": never', make(server, { choice: 'off' }).s.autoBackfillWhy() === 'sharing is off');
+    check('on, never shared (no key): yes', make(server, { choice: 'on' }).s.autoBackfillWhy() === null);
+    const had = make(server, { choice: 'on' });
+    await had.s.choose('on');
+    check('on, with a key when this run began: never', make(server, { choice: 'on', home: had.home }).s.autoBackfillWhy() === 'this install has shared before');
+    const fresh = make(server, { choice: 'ask' });
+    await fresh.s.answer('on');   // enrolls now: the key is from this run, so it still counts as never shared before
+    check('answered Share this run (enrolled just now): yes', fresh.s.autoBackfillWhy() === null);
+    check('a tester build: never', make(server, { tester: { tester: 't', endpoint: server.endpoint, key: 'tk_x', with: 'M' } }).s.autoBackfillWhy() === 'a tester build');
   }
 
   section('"Share this one dictation so it can be fixed?" -- yes, for that one only');
