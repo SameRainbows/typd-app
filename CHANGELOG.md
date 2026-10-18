@@ -1,5 +1,13 @@
 # What's new
 
+## 0.2.7 · October 2026
+
+- **Macs: Typd asks for the microphone so you can always say yes.** On some Macs Typd never got the microphone and was missing from System Settings › Privacy & Security › Microphone, so there was no switch to turn on. Typd now asks macOS when you first open it, again from the walkthrough's **Allow microphone** button, and whenever you press the Typd key before you have answered, also while the speech model is still downloading. It no longer waits forever on a macOS question nobody saw: it says what is missing and offers to ask again.
+- **"Microphone is off" with no Typd in the list?** Typd's message now has **Ask macOS Again**: it clears Typd's own microphone answer in macOS and asks once more. If macOS still refuses without asking, Typd says it is a rule on this Mac (a work Mac's profile, Screen Time), not your answer.
+- **Opened from Downloads or the disk image?** Typd offers to move itself to your Applications folder before macOS asks for anything, so a copy you delete later can't keep your permissions tied to it.
+- **The pill no longer pretends to hear you.** When the microphone could not be opened, the pill's level meter used to move anyway. It now stays flat and says what to do.
+- **The Typd icon looks right in Finder's list view.** Every icon size is now made by Apple's own tool, each at its proper size.
+
 ## 0.2.6 · October 2026
 
 - **The ✕ and ✓ on the recording pill work again.** On some Windows PCs a click went straight through the pill. The buttons now take every click, on Windows and on a Mac, and the pill still never takes the focus from the app you are typing in. Typd also no longer watches every mouse move on the computer while the pill is up, so the pointer stays smooth while Typd is busy.
