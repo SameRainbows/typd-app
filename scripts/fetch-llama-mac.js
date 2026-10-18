@@ -37,6 +37,14 @@
  *  - Signatures: upstream binaries are ad-hoc signed (arm64 code must be). The bytes are
  *    copied untouched, and after-pack.js re-signs them ad hoc together with the app.
  *
+ * Typd's llama.cpp patch (0.2.7): libmtmd -- the audio encoder -- is then rebuilt from the same commit
+ * with patches/llama.cpp/ applied (scripts/build-mtmd.js; on a Mac only, with cmake and the Xcode
+ * tools, which the CI runner has), and put in place of the official one. Every other file stays the
+ * official release. BUILD.json records it ("patched"); a fetch that finds the folder complete and the
+ * patch recorded does nothing. TYPD_LLAMA_STOCK=1 keeps the official libmtmd. Not on a Mac: the
+ * folder is left unpatched, with a warning (the app then runs the stock encoder graph, which works,
+ * with a bigger encoder buffer).
+ *
  * Node standard library only: https, zlib, crypto, and a small tar and Mach-O reader.
  */
 
@@ -400,6 +408,29 @@ function verify(p) {
   }
 }
 
+/** libmtmd with Typd's patches (scripts/build-mtmd.js), unless it is already there or TYPD_LLAMA_STOCK=1. */
+function patchArch(arch) {
+  if (process.env.TYPD_LLAMA_STOCK === '1') { log(`${arch}: TYPD_LLAMA_STOCK=1: the official libmtmd is kept`); return; }
+  const dir = path.join(OUT, arch);
+  const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'BUILD.json'), 'utf8'));
+  const patchesDir = path.join(ROOT, 'patches', 'llama.cpp');
+  const want = fs.readdirSync(patchesDir).filter((n) => n.endsWith('.patch')).sort()
+    .map((n) => ({ name: n, sha256: sha256(fs.readFileSync(path.join(patchesDir, n))) }));
+  const rec = manifest.patched && manifest.patched.mtmd;
+  const lib = path.join(dir, 'libmtmd.0.dylib');
+  if (rec && JSON.stringify(rec.patches) === JSON.stringify(want) && fs.existsSync(lib) && sha256(fs.readFileSync(lib)) === rec.sha256) {
+    log(`${arch}: libmtmd already patched (${want.map((p) => p.name).join(', ')})`);
+    return;
+  }
+  if (process.platform !== 'darwin') {
+    log(`${arch}: WARNING libmtmd is the official one: the patched build is made on a Mac (node scripts/build-mtmd.js mac ${arch})`);
+    return;
+  }
+  const r = require('child_process').spawnSync(process.execPath, [path.join(__dirname, 'build-mtmd.js'), 'mac', arch], { stdio: 'inherit' });
+  if (r.status !== 0) fail(`${arch}: building the patched libmtmd failed`);
+  verify({ arch });
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const force = args.includes('--force');
@@ -408,7 +439,10 @@ async function main() {
   if (unknown.length) fail('unknown argument(s): ' + unknown.join(' ') + '\nusage: node scripts/fetch-llama-mac.js [arm64] [x64] [--force]');
   const build = process.env.TYPD_LLAMA_BUILD || PINNED_BUILD;
   if (build !== PINNED_BUILD) log(`TYPD_LLAMA_BUILD=${build}: not the pinned ${PINNED_BUILD}; Windows still runs ${PINNED_BUILD}`);
-  for (const arch of archs.length ? archs : ['arm64', 'x64']) await fetchArch(build, arch, force);
+  for (const arch of archs.length ? archs : ['arm64', 'x64']) {
+    await fetchArch(build, arch, force);
+    if (build === PINNED_BUILD) patchArch(arch);
+  }
 }
 
 main().catch((e) => fail(e && e.stack || String(e)));

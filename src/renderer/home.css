@@ -391,10 +391,14 @@ select option { background: var(--card); color: var(--text); }
 .walk h1 { margin: 4px 0 8px; text-align: center; }
 .walk-body { color: var(--dim); text-align: center; line-height: 26px; }
 .walk-body .keys { margin: 0 2px; vertical-align: baseline; }
-.walk-note {
-  margin-top: 12px; padding: 9px 12px; border-radius: 9px; background: var(--chip);
+.walk-share {
+  margin-top: 12px; padding: 10px 12px; border-radius: 9px; background: var(--chip);
   color: var(--text); font-size: 12.5px; line-height: 1.5; text-align: center;
 }
+.walk-share-q { margin: 0; }
+.walk-share-buttons { display: flex; gap: 8px; justify-content: center; margin-top: 10px; }
+.walk-share-buttons .btn { height: 30px; padding: 0 16px; }
+.walk-share-buttons .btn[aria-pressed="true"] { background: var(--ink); color: var(--ink-on); border-color: var(--ink); }
 .walk-model {
   margin-top: 12px; padding: 10px 12px; border-radius: 9px; border: 1px solid var(--line-firm);
   display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center;

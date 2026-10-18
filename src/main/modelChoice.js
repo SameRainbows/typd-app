@@ -60,7 +60,13 @@ function createChoice({ setting = () => 'auto', detect = () => hardware.detect()
     return { setting: s, auto: a.variant, why: a.why, variant: s === 'auto' ? a.variant : s, cuda: c.cuda, cudaWhy: c.why };
   }
 
-  return { variant, cuda, describe, forget: () => { cache = null; } };
+  /**
+   * Is the variant Automatic's pick (not one Settings pins)? Only then may the light model stand in while
+   * the full one downloads, or replace it when the CUDA pack is set aside (modelUpdate.js, light first).
+   */
+  const automatic = () => chosen() === 'auto';
+
+  return { variant, cuda, describe, automatic, forget: () => { cache = null; } };
 }
 
 module.exports = { createChoice, CHOICES, CACHE_MS };

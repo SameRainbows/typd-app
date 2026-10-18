@@ -32,3 +32,6 @@ bench/recordings/*.wav
 # Tester build config: holds an upload key, never committed (src/main/sharing.js)
 tester.json
 tester.*.json
+
+# bench outputs (bench/low-memory.js --real)
+bench/results/
