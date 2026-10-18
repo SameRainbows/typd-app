@@ -322,6 +322,11 @@ select option { background: var(--card); color: var(--text); }
 
 .about { margin-top: 22px; padding: 0 4px; font-size: 12.5px; display: flex; flex-direction: column; gap: 4px; }
 .about strong { font-weight: 600; }
+.updates { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 2px; }
+.updates-line { color: var(--dim); }
+.updates-line:empty { display: none; }
+.updates-btns { display: flex; gap: 6px; }
+.updates-btns .btn { height: 28px; padding: 0 12px; font-size: 12.5px; }
 
 /* ------------------------------------------------------------- what's new */
 

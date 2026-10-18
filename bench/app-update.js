@@ -431,7 +431,7 @@ async function updaterTests() {
     s.fileStatus = null;
     u = make({ appVersion: '0.7.0', statfs: async () => ({ bavail: 10, bsize: 4096 }) });
     r = await u.check();
-    check('not enough disk: skipped until the next check, nothing downloaded', r.state === 'space' && r.next === 6 * 3600e3 && /disk space/.test(u.line().label), r);
+    check('not enough disk: skipped until the next check, nothing downloaded', r.state === 'space' && r.next === 3600e3 && /disk space/.test(u.line().label), r);
     fs.rmSync(path.join(dir, '0.9.0'), { recursive: true, force: true });
     const { bytes } = publish('0.9.1');
     u = make({ appVersion: '0.7.0', rate: 1024 * 1024 });
@@ -760,7 +760,7 @@ async function macStageTest() {
     s.requests = [];
     const r = await u.check();
     const manifests = s.requests.filter((q) => q.url === '/v1/app/manifest').length;
-    check('one check on a Mac: one manifest request, one helper, one quit', r.state === 'applying' && manifests === 1 && helpers === 1 && quits === 1, { state: r.state, manifests, helpers, quits });
+    check('one check on a Mac: one check (its manifest request, and the re-read just before applying), one helper, one quit', r.state === 'applying' && manifests === 2 && helpers === 1 && quits === 1, { state: r.state, manifests, helpers, quits });
   } finally {
     s.server.close();
   }

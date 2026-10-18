@@ -18,7 +18,9 @@
  * Run from source with neither file, it is off, as before. TYPD_MODEL_DIR (eval tools, a fixed
  * model folder) and TYPD_NO_MODEL_UPDATE=1 (CI, tests) turn it off.
  *
- * 60 s after launch and every 6 hours it reads the manifest (typd-collect, GET <routes>/manifest);
+ * 20 s after launch, then every hour give or take 10 % (or at the interval the server asks for, within
+ * 15 min to 6 h), and on wake or unlock when the last check is 15 minutes old (checkCadence.js), it reads
+ * the manifest (typd-collect, GET <routes>/manifest);
  * in a packaged build that request also carries the version counts' headers (versionStats.js),
  * keyed or not. The manifest must be SIGNED: its exact text, with an Ed25519 signature over
  * SIG_PREFIX + text in the X-Typd-Manifest-Key and X-Typd-Manifest-Sig headers, by a key in
@@ -42,6 +44,9 @@
  * sha256 -- the mmproj, which rarely changes, or the bundled model itself -- is copied rather
  * than downloaded. After one good warm start (the server answered and passed its self-test) the
  * previous downloaded version is deleted; the bundled model in the app's resources never is.
+ *
+ * Always the latest: a downloaded version is switched to only if, read again just before the switch, the
+ * manifest still names it; if it names a newer one, that one is fetched instead (never one step at a time).
  *
  * If the new model does not start, current.json goes back to the previous model and the version
  * is remembered as bad (state.json), not retried until the manifest changes. A switch that
@@ -94,9 +99,10 @@ const fsp = fs.promises;
 const path = require('path');
 const crypto = require('crypto');
 const { once } = require('events');
+const { createCadence, WAKE_DELAY_MS } = require('./checkCadence');
 
-const FIRST_CHECK_MS = 60e3;
-const CHECK_EVERY_MS = 6 * 3600e3;
+const FIRST_CHECK_MS = 20e3;              // "check once on launch": a moment after start
+const CHECK_EVERY_MS = 3600e3;            // then hourly, +-10 % (checkCadence.js), or the server's interval
 const BACKOFF_MIN_MS = 60e3;
 const BACKOFF_MAX_MS = 3600e3;
 const RATE = 2 * 1024 * 1024;            // bytes a second (~16 Mbit/s): ~10 minutes for the 1.7B model
@@ -364,8 +370,18 @@ function createUpdater({
   askAboveBytes = ASK_ABOVE_BYTES, laterMs = LATER_MS, now = () => Date.now(),
   firstNeedMs = FIRST_NEED_MS, needBackoffMinMs = NEED_BACKOFF_MIN_MS, needBackoffMaxMs = NEED_BACKOFF_MAX_MS,
   needEveryMs = NEED_EVERY_MS, offlinePollMs = OFFLINE_POLL_MS, expectedBytes = EXPECTED_BYTES,
-  cuda = null, cudaWanted = () => false, switchBackend = async () => {}
+  cuda = null, cudaWanted = () => false, switchBackend = async () => {}, random = Math.random
 }) {
+  const cadence = createCadence({ everyMs, now, random });
+  // "Check for updates": promises waiting for this check's first verdict ({outcome, ...}; notePhase).
+  let phaseWaiters = [];
+  let lastOutcome = null;
+  function notePhase(o) {
+    lastOutcome = { ...o, at: new Date(now()).toISOString() };
+    const w = phaseWaiters;
+    phaseWaiters = [];
+    for (const fn of w) { try { fn(lastOutcome); } catch { /* a listener's problem */ } }
+  }
   const stateFile = path.join(modelsDir, 'state.json');
   const dirOf = (v) => path.join(modelsDir, v);
   let state = 'idle';             // what line() says: idle, current, downloading, ready, failed, app, space, stopped, none, refused, ask, later
@@ -502,7 +518,7 @@ function createUpdater({
   async function refused(res, what) {
     await res.body?.cancel().catch(() => {});
     if (res.status === 401) { revoked = true; throw new Error('key refused'); }
-    if (res.status === 429) throw new Retry(what + ': the server is busy (429)', retryAfter(res) || everyMs);
+    if (res.status === 429) throw new Retry(what + ': the server is busy (429)', retryAfter(res) || cadence.every());
     throw new Retry(what + ': HTTP ' + res.status);
   }
 
@@ -618,11 +634,11 @@ function createUpdater({
     log(m.version, 'needs', fmtSize(need), '-', always ? 'asking first (the setting is on)' : 'the connection is ' + why + '; asking first', left > 0 ? '(asked to wait until ' + new Date(until).toISOString() + ')' : '');
     if (kind === 'pack') {
       packAsking = { version: m.version, variant: 'pack', bytes: need, why, kind };
-      if (left > 0) return { ...setPack('later'), next: Math.min(everyMs, left + 1000) };
+      if (left > 0) return { ...setPack('later'), next: Math.min(cadence.every(), left + 1000) };
       return setPack('ask');
     }
     asking = { version: m.version, variant: got, bytes: need, why, kind };
-    if (left > 0) return { ...set('later'), next: Math.min(everyMs, left + 1000) };
+    if (left > 0) return { ...set('later'), next: Math.min(cadence.every(), left + 1000) };
     return set('ask');
   }
 
@@ -637,7 +653,7 @@ function createUpdater({
     try { const s = await statfs(modelsDir); free = Number(s.bavail) * Number(s.bsize); } catch { /* unknown: try */ }
     if (free < left * SPACE_FACTOR) {
       log('not enough disk space for', m.version, '- need', Math.round((left * SPACE_FACTOR) / 1e6), 'MB, have', Math.round(free / 1e6));
-      throw Object.assign(new Retry('no space', everyMs), { space: true });
+      throw Object.assign(new Retry('no space', cadence.every()), { space: true });
     }
     progress = { done: total - left, total };
     set('downloading');
@@ -695,10 +711,18 @@ function createUpdater({
    * Point current.json at `version` (null: the bundled model, which is `label`), restart the
    * server once nothing is being dictated, then confirm or revert.
    */
-  async function activate(version, tag, label = version) {
+  async function activate(version, tag, label = version, want = null) {
     target = label;
     set('ready');
     await waitIdle();
+    if (version && want) {
+      const now2 = await liveEntry(want);
+      if (now2 && now2.version !== version) {
+        log('the manifest names', now2.version, 'now, not', version, '- fetching that one instead');
+        target = null;
+        throw new Retry(`a newer model (${now2.version}) is live; fetching it instead of ${version}`, 1000);
+      }
+    }
     const cur = readCurrent(modelsDir);
     const previous = cur && activeModel(modelsDir) ? cur.version : null;
     switching = true;
@@ -774,10 +798,12 @@ function createUpdater({
     if (!online()) {
       if (needed) set('offline');
       if (packHurry && !needed) setPack('offline');
+      notePhase({ outcome: 'offline' });
       throw new Retry('offline', soon ? offlinePollMs : undefined);
     }
     let res;
     try {
+      cadence.checked();
       let extra = {};
       try { extra = stats() || {}; } catch { extra = {}; }   // counting must never stop a check
       res = await fetch(routes() + '/manifest', { headers: { ...extra, ...auth() }, signal: AbortSignal.timeout(30e3) });
@@ -786,13 +812,14 @@ function createUpdater({
       if (packHurry && !needed) setPack('offline');
       throw new Retry('manifest: ' + ((err && err.message) || err), soon ? offlinePollMs : undefined);
     }
-    if (res.status === 404) { await res.body?.cancel().catch(() => {}); return set('none'); }
+    if (res.status === 404) { await res.body?.cancel().catch(() => {}); notePhase({ outcome: 'current' }); return set('none'); }
     if (!res.ok) await refused(res, 'manifest');
     const text = await res.text();
     const unsigned = checkSignature(text, res.headers.get('x-typd-manifest-key'), res.headers.get('x-typd-manifest-sig'), keys);
     if (unsigned) { log('manifest refused:', unsigned); return set('refused', { why: unsigned }); }
     let m;
     try { m = JSON.parse(text); } catch { m = null; }
+    cadence.fromResponse(res.headers, m);   // the server's interval, if it asks for one
     const bad = checkManifest(m) || (Number.isSafeInteger(m.seq) ? null : 'no seq');
     if (bad) { log('manifest refused:', bad); return set('none'); }
     const tag = crypto.createHash('sha256').update(text).digest('hex');
@@ -841,10 +868,32 @@ function createUpdater({
     if (!isComplete(dirOf(e.version))) {
       await tidy(active && active.version);
       const waiting = await askBefore(e, got, await bytesToFetch(e));
-      if (waiting) return waiting;
+      if (waiting) { notePhase({ outcome: 'ask', what: 'model', version: e.version, size: fmtSize(asking && asking.bytes) }); return { ...waiting, phase: true }; }
+      notePhase({ outcome: 'downloading', what: 'model', version: e.version });
       await fetchVersion(e, tag);
+    } else {
+      notePhase({ outcome: 'downloading', what: 'model', version: e.version });
     }
-    return activate(e.version, tag);
+    return activate(e.version, tag, e.version, want);
+  }
+
+  /**
+   * The entry the live manifest names for `want` now (signature checked), or null when it cannot be read
+   * (offline, refused): read again just before a downloaded version is switched to, so a newer one
+   * published meanwhile is fetched instead of stepping through the older one.
+   */
+  async function liveEntry(want) {
+    try {
+      const res = await fetch(routes() + '/manifest', { headers: auth(), signal: AbortSignal.timeout(30e3) });
+      if (!res.ok) { await res.body?.cancel().catch(() => {}); return null; }
+      const text = await res.text();
+      if (checkSignature(text, res.headers.get('x-typd-manifest-key'), res.headers.get('x-typd-manifest-sig'), keys)) return null;
+      const m = JSON.parse(text);
+      if (checkManifest(m) || !Number.isSafeInteger(m.seq)) return null;
+      return selectVariant(m, want).entry;
+    } catch {
+      return null;
+    }
   }
 
   /* -------------------------------------------------------------- the CUDA pack */
@@ -874,7 +923,8 @@ function createUpdater({
     const zipFile = path.join(cuda.packsDir, e.version + '.partial', f.name);
     const have = await fsp.stat(zipFile).then((st) => Math.min(st.size, f.size), () => 0);
     const waiting = await askBefore(e, 'pack', f.size - have, 'pack');
-    if (waiting) { packHurry = false; return waiting; }
+    if (waiting) { packHurry = false; notePhase({ outcome: 'ask', what: 'pack', version: e.version, size: fmtSize(f.size - have) }); return waiting; }
+    notePhase({ outcome: 'downloading', what: 'pack', version: e.version });
     await fetchPack(e, tag, zipFile);
     return activatePack(e, tag);
   }
@@ -890,7 +940,7 @@ function createUpdater({
     const room = (left + cuda.total()) * SPACE_FACTOR;   // the rest of the zip, then what it unpacks to
     if (free < room) {
       log('not enough disk space for the CUDA pack', e.version, '- need', Math.round(room / 1e6), 'MB, have', Math.round(free / 1e6));
-      throw Object.assign(new Retry('no space for the CUDA pack', everyMs), { space: true, pack: true });
+      throw Object.assign(new Retry('no space for the CUDA pack', cadence.every()), { space: true, pack: true });
     }
     packProgress = { done: have, total: f.size };
     setPack('downloading');
@@ -953,17 +1003,19 @@ function createUpdater({
         const r = await run();
         failures = 0;
         // Still no model (no manifest, refused, a newer Typd needed, waiting for an answer): look again sooner.
-        return { next: haveModel() ? everyMs : needEveryMs, ...r };
+        if (!r.phase) notePhase({ outcome: r.state === 'ask' || r.state === 'later' ? 'ask' : r.state === 'app' ? 'app' : r.state === 'refused' ? 'error' : 'current', why: r.why });
+        return { next: haveModel() ? cadence.next() : needEveryMs, ...r };
       } catch (err) {
         if (revoked) { log('the server refused the key; updates stopped until restart'); return { ...set('stopped'), next: null }; }
-        if (err && err.badPack) { log((err && err.message) || err); failures = 0; return { ...setPack('failed'), state, next: everyMs }; }
+        if (err && err.badPack) { log((err && err.message) || err); failures = 0; notePhase({ outcome: 'current' }); return { ...setPack('failed'), state, next: cadence.every() }; }
+        notePhase({ outcome: !online() || /offline|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|fetch failed|timeout/i.test(String(err && err.message)) ? 'offline' : 'error', why: String((err && err.message) || err) });
         if (!(err instanceof Retry)) log('update error:', (err && err.stack) || err);
         failures++;
         // No model yet, or the CUDA pack wanted and not here: retried in seconds, not minutes.
         const hurry = !haveModel() || packHurry;
         let next = err.after || Math.min(hurry ? needBackoffMaxMs : BACKOFF_MAX_MS, (hurry ? needBackoffMinMs : BACKOFF_MIN_MS) * 2 ** (failures - 1));
         if (!err.after) next = next / 2 + Math.random() * (next / 2);
-        next = Math.min(Math.max(next, 1000), err.after ? 86400e3 : everyMs);
+        next = Math.min(Math.max(next, 1000), err.after ? 86400e3 : cadence.every());
         if (/429/.test(err.message)) notBefore = Date.now() + next;
         log((err && err.message) || err, '- next try in', Math.round(next / 1000), 's');
         if (err.space && err.pack) return { ...setPack('space'), state, next };
@@ -1081,7 +1133,7 @@ function createUpdater({
     await writeState(s);
     log('later:', a.version, 'asked again after', new Date(s[key].until).toISOString());
     if (a.kind === 'pack') setPack('later'); else set('later');
-    if (started && !running) schedule(Math.min(everyMs, laterMs + 1000));
+    if (started && !running) schedule(Math.min(cadence.every(), laterMs + 1000));
     return true;
   }
 
@@ -1131,6 +1183,33 @@ function createUpdater({
     },
     /** Back from sleep or offline, or the model choice changed: check soon (never before a 429's Retry-After). */
     wake(ms = firstCheckMs) { if (config && !running) schedule(ms); },
+    /** Woken from sleep or unlocked: a check soon if the last one is 15 minutes old (checkCadence.js). True if one was set. */
+    wakeIfDue(ms = WAKE_DELAY_MS) {
+      if (!config || running || !cadence.wakeDue()) return false;
+      schedule(ms);
+      return true;
+    },
+    /**
+     * "Check for updates": a check now. Resolves as soon as the manifest has been read: {outcome:
+     * 'current' | 'downloading' | 'ask' | 'app' | 'offline' | 'error' | 'busy' | 'off', what, version,
+     * why}. A check or download already under way answers at once with where it is.
+     */
+    checkNow() {
+      if (!config) return Promise.resolve({ outcome: 'off' });
+      // A download or switch under way: say where it is. A check just finishing: wait for it, then look again.
+      if (running && ['downloading', 'retrying', 'ready'].includes(state)) return Promise.resolve({ outcome: 'downloading', what: 'model', version: target });
+      if (running && ['downloading', 'retrying', 'installing', 'ready'].includes(packState)) return Promise.resolve({ outcome: 'downloading', what: 'pack', version: packTarget });
+      return (running ? running.catch(() => {}) : Promise.resolve()).then(() => {
+        if (notBefore > Date.now()) return { outcome: 'busy', retryAt: new Date(notBefore).toISOString() };
+        return new Promise((resolve) => {
+          phaseWaiters.push(resolve);
+          // Straight away, not through the timer (a check just ending reschedules it); the next regular check after.
+          check().then((r) => { if (started) schedule(r.next); }, () => {});
+        });
+      });
+    },
+    get lastOutcome() { return lastOutcome; },
+    get cadence() { return cadence; },
     stop() { clearTimeout(timer); timer = null; },
     get state() { return state; },
     get packState() { return packState; },
@@ -1220,7 +1299,9 @@ function start({ bundledDir, busy, switchModel, onWarm, changed, variant, askFir
   if (config) {
     debug('model updates on, from', config.endpoint, config.key ? '(with a key)' : '(public routes, no key)');
     main.start();
-    powerMonitor.on('resume', () => main.wake());
+    // Woken or unlocked: a check if the last one is 15 minutes old (checkCadence.js).
+    powerMonitor.on('resume', () => main.wakeIfDue());
+    powerMonitor.on('unlock-screen', () => main.wakeIfDue());
   }
   return main;
 }
@@ -1244,13 +1325,15 @@ const later = () => (main ? main.later() : Promise.resolve(false));
 const recheck = (ms = 1500) => { if (main) main.wake(ms); };
 /** {want, got} from the last check. */
 const chosen = () => (main ? main.chosen : null);
+/** "Check for updates" (index.js): a check now, resolved once the manifest is read (createUpdater's checkNow()). */
+const checkNow = () => (main ? main.checkNow() : Promise.resolve({ outcome: 'off' }));
 /** The CUDA pack's tray line, or null (see createUpdater's packLine()). */
 const packLine = () => (main ? main.packLine() : null);
 /** The CUDA pack, for Settings, or null (see createUpdater's packInfo()). */
 const packInfo = () => (main ? main.packInfo() : null);
 
 module.exports = {
-  start, line, needed, following, pending, approve, later, recheck, chosen, packLine, packInfo,
+  start, line, needed, following, pending, approve, later, recheck, chosen, packLine, packInfo, checkNow,
   createUpdater, activeModel, activeVersion, versionOf, readCurrent, isComplete, checkManifest, checkSignature, selectVariant, selectPack, fmtSize, labelOf, older, sha256File, readConfig, findConfig,
   ENDPOINT, SIG_PREFIX, ASK_ABOVE_BYTES, LATER_MS, EXPECTED_BYTES
 };

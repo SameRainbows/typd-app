@@ -22,14 +22,17 @@ function fakeModelServer() {
   const KID = 'typd-model-bench';
   const s = {
     keys: { [KID]: KP.publicKey.export({ type: 'spki', format: 'pem' }) },
-    manifest: null, seq: Math.floor(Date.now() / 1000), sign: 'ok', files: {}, cutNext: {}, corrupt: {}, slow: 0, requests: []
+    manifest: null, seq: Math.floor(Date.now() / 1000), sign: 'ok', files: {}, cutNext: {}, corrupt: {}, slow: 0, requests: [],
+    manifestHeaders: {},   // extra headers on the manifest (X-Typd-Check-Every-Sec)
+    manifestStatus: 200    // another status for the manifest (500: the server failing)
   };
   s.server = http.createServer((req, res) => {
     s.requests.push({ url: req.url, range: req.headers.range || null, auth: req.headers.authorization || null, at: Date.now() });
     if (req.url === '/v1/model/public/manifest') {
-      if (!s.manifest) { res.writeHead(404); return res.end('{}'); }
+      if (s.manifestStatus !== 200) { res.writeHead(s.manifestStatus); return res.end('{}'); }
+      if (!s.manifest) { res.writeHead(404, s.manifestHeaders); return res.end('{}'); }
       const text = JSON.stringify({ ...s.manifest, seq: s.seq }, null, 2) + '\n';
-      const headers = { 'Content-Type': 'application/json' };
+      const headers = { 'Content-Type': 'application/json', ...s.manifestHeaders };
       if (s.sign !== 'none') {
         headers['X-Typd-Manifest-Key'] = KID;
         headers['X-Typd-Manifest-Sig'] = crypto.sign(null, Buffer.from(SIG_PREFIX + (s.sign === 'bad' ? text + ' ' : text)), KP.privateKey).toString('base64');

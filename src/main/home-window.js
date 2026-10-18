@@ -302,6 +302,11 @@ function register(d) {
   handle('model:now', async () => (deps.modelNow ? deps.modelNow() : false));
   handle('model:later', async () => (deps.modelLater ? deps.modelLater() : false));
 
+  // Updates (Settings, under the version): where they stand, "Check for updates", "Restart now".
+  handle('updates:get', async () => (deps.updatesInfo ? deps.updatesInfo() : null));
+  handle('updates:check', async () => (deps.checkForUpdates ? deps.checkForUpdates() : null));
+  handle('updates:restart', async () => (deps.restartForUpdate ? deps.restartForUpdate() : false));
+
   // The walkthrough: its practice box takes the key while it has focus (index.js, intercept), and
   // it is shown once by itself (index.js), then only from Settings.
   handle('walkthrough:practice', (on) => { practicing = on === true; return true; });
@@ -433,7 +438,7 @@ function syncDock() {
 function open(section = 'home', opts = {}) {
   const s = SECTIONS.includes(section) ? section : 'home';
   if (win && !win.isDestroyed()) {
-    send('home:show', { section: s, capture: Boolean(opts.capture), walkthrough: Boolean(opts.walkthrough) });
+    send('home:show', { section: s, capture: Boolean(opts.capture), walkthrough: Boolean(opts.walkthrough), updates: Boolean(opts.updates) });
     bringForward();
     return;
   }
@@ -474,7 +479,7 @@ function open(section = 'home', opts = {}) {
     life.log('window closed', 'after ' + Math.round((Date.now() - openedAt) / 1000) + ' s; Typd keeps running');
     debug('window closed; Typd keeps running');
   });
-  win.loadFile(PAGE, { query: { section: s, capture: opts.capture ? '1' : '', walkthrough: opts.walkthrough ? '1' : '' } });
+  win.loadFile(PAGE, { query: { section: s, capture: opts.capture ? '1' : '', walkthrough: opts.walkthrough ? '1' : '', updates: opts.updates ? '1' : '' } });
 }
 
 /** The walkthrough's practice box has focus (and the window too): the key dictates into it. */

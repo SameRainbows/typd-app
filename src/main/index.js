@@ -526,6 +526,8 @@ const trayUi = createTray({
   forget: (term) => forget(term),
   modelLine: () => modelUpdate.line(),
   packLine: () => modelUpdate.packLine(),
+  // "Check for updates": both updaters look now; the answer shows in Settings (its Updates line).
+  checkUpdates: () => { checkForUpdates('the tray menu').catch(() => {}); home.open('settings', { updates: true, by: 'Check for updates' }); },
   modelPrompt: () => modelUpdate.pending(),
   modelNow: () => { modelUpdate.approve().catch(() => {}); },
   modelLater: () => { modelUpdate.later().catch(() => {}); },
@@ -682,6 +684,77 @@ function switchBackend() {
   });
 }
 
+/* ------------------------------------------------------- check for updates */
+
+/*
+ * "Check for updates" (the tray menu, Settings): the app and the model updaters look now (each resolves
+ * as soon as it has read its manifest; a new version then downloads at full speed), and the answer
+ * shows in Typd's own window -- Settings' Updates line, under the version -- never in an OS dialog:
+ * up to date (with the versions), downloading with its progress, ready ("installs the next time you're
+ * away", with Restart now), offline, or could not check. updatesInfo() reads the updaters' live state
+ * each time, so progress moves while the window is open (home.changed('updates')).
+ */
+let updatesUi = { checking: false, app: null, model: null, at: null };
+
+const withTimeout = (p, ms) => Promise.race([p, new Promise((r) => { const t = setTimeout(() => r({ outcome: 'error', why: 'no answer' }), ms); if (t.unref) t.unref(); })]);
+
+async function checkForUpdates(by) {
+  if (updatesUi.checking) return updatesInfo();
+  updatesUi = { ...updatesUi, checking: true };
+  life.log('updates', 'check for updates, from ' + (by || 'Settings'));
+  home.changed('updates');
+  const safe = (p) => withTimeout(Promise.resolve(p), 45000).catch((e) => ({ outcome: 'error', why: String((e && e.message) || e) }));
+  const [a, m] = await Promise.all([appUpdater ? safe(appUpdater.checkNow()) : { outcome: 'off' }, safe(modelUpdate.checkNow())]);
+  updatesUi = { checking: false, app: a, model: m, at: new Date().toISOString() };
+  refreshTray();
+  home.changed('updates');
+  return updatesInfo();
+}
+
+/** "Restart now": the downloaded Typd installs at once (no dictation in progress); Typd quits for it. */
+function restartForUpdate() {
+  const ok = Boolean(appUpdater && appUpdater.applyNow());
+  if (ok) life.log('updates', 'restart now: installing ' + appUpdater.target);
+  return ok;
+}
+
+/** For Settings: {versions, text, checking, canRestart, pct}. */
+function updatesInfo() {
+  const local = require('./pipeline/local');
+  let model = '';
+  try { model = local.modelVersion(); } catch { model = ''; }
+  const ver = app.getVersion();
+  const versions = 'Typd ' + ver + (model && model !== 'unknown' ? ' · model ' + model : '');
+  const u = appUpdater;
+  const pct = (p) => (p && p.total ? Math.floor((100 * p.done) / p.total) : 0);
+  let text = '', canRestart = false, progress = null;
+  if (u && ['downloading', 'retrying'].includes(u.state)) {
+    progress = pct(u.progress);
+    text = 'Downloading Typd ' + u.target + '… ' + progress + ' %' + (u.state === 'retrying' ? ' (paused; it goes on by itself)' : '');
+  } else if (u && u.state === 'ready') {
+    text = 'Typd ' + u.target + ' is ready: it installs the next time you’re away.';
+    canRestart = true;
+  } else if (u && u.state === 'applying') {
+    text = 'Installing Typd ' + u.target + '… Typd restarts in a moment.';
+  } else if (u && ['reinstall', 'manual'].includes(u.state)) {
+    text = (u.line() || {}).label || 'A new Typd is out.';
+  } else if (/· updating \d+ %/.test(modelUpdate.line() || '') || /downloading/.test(modelUpdate.packLine() || '')) {
+    const m = /· updating (\d+) %( \(paused\))?/.exec(modelUpdate.line() || '');
+    text = m ? 'Downloading the new model… ' + m[1] + ' %' + (m[2] ? ' (paused; it goes on by itself)' : '') : modelUpdate.packLine();
+  } else if (updatesUi.checking) {
+    text = 'Checking for updates…';
+  } else if (updatesUi.at) {
+    const o = [updatesUi.app, updatesUi.model].map((x) => (x && x.outcome) || 'error');
+    if (o.every((x) => x === 'off')) text = 'Updates are off in this copy of Typd.';
+    else if (o.includes('offline')) text = 'Couldn’t check for updates: no internet connection.';
+    else if (o.includes('error') || o.includes('busy')) text = 'Couldn’t check for updates right now. Typd tries again by itself.';
+    else if (updatesUi.model && updatesUi.model.outcome === 'ask') text = 'A new ' + (updatesUi.model.what === 'pack' ? 'GPU acceleration download' : 'model') + ' (' + updatesUi.model.size + ') is waiting for your OK above.';
+    else if (o.includes('downloading')) text = 'Downloading…';
+    else text = 'Typd is up to date (' + ver + (model && model !== 'unknown' ? ', model ' + model : '') + ').';
+  }
+  return { versions, text, checking: updatesUi.checking, canRestart, progress, at: updatesUi.at, enabled: Boolean(u) || modelUpdate.following() };
+}
+
 /* ------------------------------------------------------------ walkthrough */
 
 /**
@@ -794,8 +867,10 @@ function startAppUpdate() {
     // Never while dictating; not while a Typd window is open, unless nobody has touched the
     // computer for half an hour (a window left open must not hold updates back for days).
     busy: () => Boolean(session) || (visible().length > 0 && !away()),
+    // "Restart now" waits only for a dictation in progress, never for the window it was pressed in.
+    dictating: () => Boolean(session),
     onWarm: local.onWarm,
-    changed: () => refreshTray(),
+    changed: () => { refreshTray(); home.changed('updates'); },
     quit: quitForUpdate,
     // ax: is this Typd trusted for Accessibility (macOS)? The Mac CI's update test grants the old
     // version by its designated requirement and checks the new one inherits it (docs/MAC.md).
@@ -1055,6 +1130,9 @@ app.whenReady().then(() => {
     chooseSharing,
     flagKey: () => (flagKey && flagKey.binding) || null,
     modelInfo,
+    updatesInfo,
+    checkForUpdates: () => checkForUpdates('Settings'),
+    restartForUpdate,
     modelNow: () => modelUpdate.approve(),
     modelLater: () => modelUpdate.later(),
     // Automatic / Full / Light, or the asking switch, changed: read the hardware again and check soon.

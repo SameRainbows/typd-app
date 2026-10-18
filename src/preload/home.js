@@ -53,6 +53,12 @@ contextBridge.exposeInMainWorld('typdHome', {
     later: call('model:later')
   },
 
+  updates: {
+    get: call('updates:get'),
+    check: call('updates:check'),
+    restart: call('updates:restart')
+  },
+
   walkthrough: {
     practice: call('walkthrough:practice'),
     done: call('walkthrough:done')
