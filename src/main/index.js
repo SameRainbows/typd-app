@@ -1267,6 +1267,9 @@ app.whenReady().then(() => {
     // must not hold its permissions: mac/app-location.js), and a Typd running from Downloads, the
     // Desktop, a disk image or a translocated copy offers to move to Applications first.
     const location = require('./mac/app-location');
+    // macOS's microphone prompt unanswered after a check's wait: the Typd window, on its card (or the
+    // walkthrough's box), not a modal dialog over macOS's prompt (permissions-mac.js).
+    require('./permissions-mac').whenUnanswered(() => home.open('home', { by: 'an unanswered macOS microphone prompt' }));
     // The LaunchServices scan (lsregister -dump) only while the microphone is not on: then a stale entry
     // for a copy of Typd that is gone may be what keeps macOS from asking.
     const micOn = () => { try { return systemPreferences.getMediaAccessStatus('microphone') === 'granted'; } catch { return true; } };

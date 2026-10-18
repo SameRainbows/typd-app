@@ -112,7 +112,7 @@ async function offerMove() {
  * The paths LaunchServices holds for ai.typd.app (`lsregister -dump`, streamed: on a Mac with many apps it
  * is tens of MB). In the dump a bundle's "path:" line comes before its "identifier:" line.
  */
-function registeredPaths(id = 'ai.typd.app', ms = 20000) {
+function registeredPaths(id = 'ai.typd.app', ms = 8000) {
   return new Promise((resolve) => {
     const found = new Set();
     let child;
