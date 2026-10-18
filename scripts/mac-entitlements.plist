@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Typd's entitlements, signed into the app and its helpers by scripts/after-pack.js and into the
+  update package's app by scripts/app-update-package.js (docs/MAC.md "Code signing").
+
+  com.apple.security.device.audio-input: the microphone. macOS enforces it only under the hardened
+  runtime, which Typd does not use (not notarized; it would change nothing for Gatekeeper), so today
+  it states intent and costs nothing; with the hardened runtime, a missing one makes macOS refuse the
+  microphone with no prompt and no entry in Privacy & Security (checked in CI: a hardened build
+  without it was refused at once on macOS 14, 15, 26 and 27). The Mac CI checks it is in every
+  bundle. Entitlements are not part of the designated requirement, so privacy switches stay on.
+-->
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.device.audio-input</key>
+  <true/>
+</dict>
+</plist>

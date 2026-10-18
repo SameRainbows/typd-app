@@ -158,4 +158,23 @@ function tail(n = 200) {
   return lines.slice(-n);
 }
 
-module.exports = { init, log, ended, tail, clean, errorLine, dumps, get file() { return file; } };
+/**
+ * One dictation's timings, as the detail of a 'dictation' line (index.js logDictation):
+ *   dictate, 4.2 s audio, 38 chars, release to text 820 ms, text to paste 46 ms, pasted, model 2026-10-01, GPU
+ * Counts and fixed words only -- never the text, the app or the context: every field is a number
+ * or one of a few known words, and the model's version keeps only [A-Za-z0-9._+-].
+ */
+function dictationLine(o = {}) {
+  const num = (v, digits = 0) => (typeof v === 'number' && Number.isFinite(v) && v >= 0
+    ? (digits ? (Math.round(v * 10 ** digits) / 10 ** digits).toFixed(digits) : String(Math.round(v))) : '?');
+  const mode = ['dictate', 'revise'].includes(o.mode) ? o.mode : 'other';
+  // offered: not pasted, there was no text field; the copy pop-up offered it (0.2.10).
+  const outcome = ['pasted', 'copied', 'offered'].includes(o.outcome) ? o.outcome : 'other';
+  const model = String(o.model || 'unknown').replace(/[^A-Za-z0-9._+-]/g, '').slice(0, 60) || 'unknown';
+  const device = o.device === 'GPU' || o.device === 'CPU' ? o.device : 'device unknown';
+  return mode + ', ' + num(o.audioSeconds, 1) + ' s audio, ' + num(o.chars) + ' chars, release to text ' +
+    num(o.releaseToTextMs) + ' ms, text to paste ' + num(o.textToPasteMs) + ' ms, ' + outcome +
+    ', model ' + model + ', ' + device + (o.lowMemory === true ? ', low memory' : '');
+}
+
+module.exports = { init, log, ended, tail, clean, errorLine, dumps, dictationLine, get file() { return file; } };

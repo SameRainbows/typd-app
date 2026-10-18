@@ -49,8 +49,19 @@ macOS asks for some of them by itself. If it does not, turn them on yourself.
 | **Accessibility** | To type the finished text into the app you were using (it presses ⌘V for you) and to read the text you highlighted when you ask it to change that text. |
 | **Input Monitoring** | To notice when you press the Typd key while another app is in front. It watches only for that key. It does not record what you type. |
 
-For each one: open **System Settings → Privacy & Security**, click the permission, and turn on
-**Typd**. If Typd is not in the list, click **+**, choose Typd from Applications, and turn it on.
+For Accessibility and Input Monitoring: open **System Settings → Privacy & Security**, click the
+permission, and turn on **Typd**. If Typd is not in the list, click **+**, choose Typd from
+Applications, and turn it on.
+
+**The microphone is different:** its list has no **+**. macOS adds Typd to it only when Typd asks
+and you answer, so Typd asks when you first open it ("Allow “Typd” to access your microphone?":
+click **Allow**). Missed it? The walkthrough's **Allow microphone** button, or pressing the Typd
+key, asks again. If Typd says the microphone is off but Typd is not in the Microphone list, click
+**Ask macOS Again** in its message (from 0.2.7). By hand, in Terminal:
+`tccutil reset Microphone ai.typd.app`, then quit Typd and open it again from Applications. A copy
+of Typd you ran from Downloads and then deleted can leave macOS pointing at it; Typd 0.2.7 offers to
+move itself to Applications before macOS asks anything, and tidies that up. Open Typd from Finder,
+Launchpad or Spotlight, not from Terminal: started from Terminal, the microphone belongs to Terminal.
 
 After you turn on Input Monitoring, **quit Typd and open it again**. macOS only applies that one
 when the app starts. Accessibility works as soon as you turn it on.
@@ -131,8 +142,16 @@ the targets: with `--arm64` alone, electron-builder still builds every arch list
   `MAC_CODESIGN_P12` and `MAC_CODESIGN_P12_PASSWORD`, with an encrypted backup in
   `dictation-research/.secrets/`). `scripts/mac-signing-import.sh` imports it into a keychain of its
   own and sets `TYPD_MAC_SIGN_IDENTITY` (its SHA-1) and `TYPD_MAC_SIGN_KEYCHAIN`; without them a
-  local build is signed ad hoc (`codesign --sign -`), as before. Hardened runtime stays off and
-  there are no entitlements, as before.
+  local build is signed ad hoc (`codesign --sign -`), as before. Hardened runtime stays off. From
+  0.2.7 the app and its helpers carry one entitlement, `com.apple.security.device.audio-input`
+  (`scripts/mac-entitlements.plist`; macOS enforces it only under the hardened runtime, so today it
+  changes nothing), and every helper app has the main app's `NSMicrophoneUsageDescription`. The Mac
+  CI checks both in the app and in the update package, and `scripts/mac-mic-check.sh` checks on
+  macOS 14, 15, 26 and 27 that macOS prompts for the microphone as `ai.typd.app` and that Typd
+  recovers when the prompt goes unanswered or a deleted copy holds a "denied".
+- **The icon.** `build/icon.icns` is made by Apple's `iconutil` (`scripts/build-mac-icon.sh`, from
+  `assets/typd.png`); `scripts/check-icns.js` checks every size. electron-builder's own conversion
+  (0.2.6 and earlier) put 512 and 1024 px images in the 128@2x and 256@2x slots.
   - **Why:** macOS remembers a privacy permission for an app's *designated requirement*
     (`codesign -d -r- Typd.app`). Ad hoc, that is the build's own hash, so every update was a new
     app to macOS and lost its switches. Signed with the certificate, every build's requirement is

@@ -1,0 +1,115 @@
+From: Typd <dev@typd.ai>
+Subject: [PATCH] mtmd: qwen3a: run the audio conv front-end in groups of chunks
+
+Qwen3-ASR's audio encoder runs its 3-layer conv2d front-end on all 100-frame
+chunks of a 30 s window at once. On the CPU the im2col and conv activations of
+30 chunks dominate the encoder's compute buffer (~554 MiB for the 0.6B model).
+
+With MTMD_QWEN3A_CONV_GROUP=G the chunks go through the front-end G at a time;
+each group's intermediates are freed before the next one is scheduled. The
+output is identical (same ops on the same data), the encoder compute buffer
+drops to ~21 MiB with G=1, and the per-clip time is unchanged within noise.
+Unset (the default), the graph is exactly the stock one.
+
+Base: llama.cpp b11351 (631109b34da437a3c4a5ebd75091d677671392e3).
+---
+diff --git a/tools/mtmd/models/qwen3a.cpp b/tools/mtmd/models/qwen3a.cpp
+index 4de9695..32de278 100644
+--- a/tools/mtmd/models/qwen3a.cpp
++++ b/tools/mtmd/models/qwen3a.cpp
+@@ -1,4 +1,6 @@
+ #include "models.h"
++#include <cstdlib>
++#include <algorithm>
+ 
+ ggml_cgraph * clip_graph_qwen3a::build() {
+     // Ref implementation: https://github.com/QwenLM/Qwen3-ASR/blob/main/qwen_asr/core/transformers_backend/modeling_qwen3_asr.py
+@@ -14,45 +16,51 @@ ggml_cgraph * clip_graph_qwen3a::build() {
+     GGML_ASSERT(n_frames % chunk_size == 0); // preprocessor should already pad the input
+     GGML_ASSERT(inp->type == GGML_TYPE_F32);
+ 
+-    // View mel spectrogram as batched 100-frame chunks: [chunk_size, n_mel, 1, n_chunks]
+-    inp = ggml_view_4d(ctx0, inp,
+-        chunk_size, n_mel, 1, n_chunks,
+-        n_frames   * (int64_t)sizeof(float), // nb[1]: stride over mel bins
+-        chunk_size * (int64_t)sizeof(float), // nb[2]: stride for C=1 (unused)
+-        chunk_size * (int64_t)sizeof(float), // nb[3]: stride over chunks
+-        0);
+-    inp = ggml_cont(ctx0, inp);
+-    cb(inp, "inp_chunks", -1);
+-
+-    // 3 x conv2d + gelu
+-    {
+-        // conv output [OW, OH, C_out, n_chunks]
+-        auto conv_block = [&](ggml_tensor * x, ggml_tensor * w, ggml_tensor * b) {
+-            x = ggml_conv_2d(ctx0, w, x, 2, 2, 1, 1, 1, 1);
+-            if (b) {
+-                x = ggml_add(ctx0, x, ggml_reshape_4d(ctx0, b, 1, 1, x->ne[2], 1));
+-            }
+-            return ggml_gelu_erf(ctx0, x);
+-        };
+-
+-        inp = conv_block(inp, model.conv2d_1_w, model.conv2d_1_b);
+-        inp = conv_block(inp, model.conv2d_2_w, model.conv2d_2_b);
+-        inp = conv_block(inp, model.conv2d_3_w, model.conv2d_3_b);
+-        // inp: [OW=13, OH=16, OC=480, n_chunks]
+-        cb(inp, "after_conv_blocks", -1);
++    // Run the conv front-end in groups of G 100-frame chunks (env MTMD_QWEN3A_CONV_GROUP; unset = all chunks at
++    // once, the stock graph). The math is identical; only the peak size of the im2col / conv activations changes,
++    // because each group's intermediates are freed before the next: for a 30 s window the encoder's compute
++    // buffer is ~554 MiB with all 30 chunks at once and ~21 MiB with G = 1, with the same output.
++    int64_t G = n_chunks;
++    if (const char * e = getenv("MTMD_QWEN3A_CONV_GROUP")) {
++        const int64_t g = atoll(e);
++        if (g > 0 && g < n_chunks) {
++            G = g;
++        }
+     }
+-
+-    // permute [OW=25, OH=16, OC=480, n_chunks] -> [OH=16, OC=480, OW=25, n_chunks]
+-    // reshape to [OH*OC=7680, OW*n_chunks]
+-    // feature index h+16*c = c*16+f (matches python code)
+-    inp = ggml_cont(ctx0, ggml_permute(ctx0, inp, 2, 0, 1, 3));
+-    inp = ggml_reshape_2d(ctx0, inp, inp->ne[0] * inp->ne[1], inp->ne[2] * inp->ne[3]);
+-
+-    // Project to d_model: [d_model, 25*n_chunks]
+-    inp = ggml_mul_mat(ctx0, model.conv_out_w, inp);
+-    if (model.conv_out_b) {
+-        inp = ggml_add(ctx0, inp, model.conv_out_b);
++    auto conv_block = [&](ggml_tensor * x, ggml_tensor * w, ggml_tensor * b) {
++        x = ggml_conv_2d(ctx0, w, x, 2, 2, 1, 1, 1, 1);
++        if (b) {
++            x = ggml_add(ctx0, x, ggml_reshape_4d(ctx0, b, 1, 1, x->ne[2], 1));
++        }
++        return ggml_gelu_erf(ctx0, x);
++    };
++    ggml_tensor * all = nullptr;
++    for (int64_t c0 = 0; c0 < n_chunks; c0 += G) {
++        const int64_t g = std::min(G, n_chunks - c0);
++        // View mel spectrogram as batched 100-frame chunks: [chunk_size, n_mel, 1, g]
++        ggml_tensor * x = ggml_view_4d(ctx0, inp,
++            chunk_size, n_mel, 1, g,
++            n_frames   * (int64_t)sizeof(float), // nb[1]: stride over mel bins
++            chunk_size * (int64_t)sizeof(float), // nb[2]: stride for C=1 (unused)
++            chunk_size * (int64_t)sizeof(float), // nb[3]: stride over chunks
++            c0 * chunk_size * (int64_t)sizeof(float));
++        x = ggml_cont(ctx0, x);
++        x = conv_block(x, model.conv2d_1_w, model.conv2d_1_b);
++        x = conv_block(x, model.conv2d_2_w, model.conv2d_2_b);
++        x = conv_block(x, model.conv2d_3_w, model.conv2d_3_b);
++        // [OW, OH, OC, g] -> [OH, OC, OW, g] -> [OH*OC, OW*g]
++        x = ggml_cont(ctx0, ggml_permute(ctx0, x, 2, 0, 1, 3));
++        x = ggml_reshape_2d(ctx0, x, x->ne[0] * x->ne[1], x->ne[2] * x->ne[3]);
++        x = ggml_mul_mat(ctx0, model.conv_out_w, x);
++        if (model.conv_out_b) {
++            x = ggml_add(ctx0, x, model.conv_out_b);
++        }
++        if (G < n_chunks) {
++            ggml_build_forward_expand(gf, x); // schedule this group before the next one
++        }
++        all = all ? ggml_concat(ctx0, all, x, 1) : x;
+     }
++    inp = all;
+     cb(inp, "after_conv_out", -1);
+ 
+     const int64_t n_pos = inp->ne[1]; // 25 * n_chunks

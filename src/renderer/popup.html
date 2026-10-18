@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en" data-scheme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; script-src 'self'; style-src 'self'" />
+  <title>Typd: not pasted</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <!-- The copy pop-up (src/main/copy-popup.js): a dictation that was not pasted, with Copy.
+       It never takes the focus; screen readers find it as a region and hear it through the
+       status line below. -->
+  <div class="popup" id="popup" role="region" aria-label="Typd: dictation not pasted" data-visible="false" data-kind="offer">
+    <div class="card" id="card">
+      <div class="words">
+        <p class="label" id="label">No text field — not pasted</p>
+        <p class="preview" id="preview"></p>
+      </div>
+      <button class="copy" id="copy" type="button" tabindex="-1" aria-describedby="preview">
+        <svg class="tick" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 12.4 L10.4 15.8 L17 9.2" /></svg>
+        <span id="copyText">Copy</span>
+      </button>
+      <button class="close" id="close" type="button" tabindex="-1" aria-label="Dismiss" title="Dismiss">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 8.5 L15.5 15.5 M15.5 8.5 L8.5 15.5" /></svg>
+      </button>
+      <span class="bar" id="bar" aria-hidden="true"></span>
+    </div>
+    <p class="sr" id="announce" role="status" aria-live="polite"></p>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,5 +1,37 @@
 # What's new
 
+## 0.2.10 · October 2026
+
+- **Nothing to paste into? Copy it instead.** When you dictate with no text field selected — on the desktop, in File Explorer or Finder, on a button — Typd no longer pastes into nowhere. A small card appears just above the pill with the start of what you said and a **Copy** button. It stays about six seconds (a thin bar shows how long), waits while your pointer is over it, and never takes the keyboard from the app you are in. Your clipboard is left alone until you click **Copy**, and the dictation is always in Home if you want it later. Browsers, terminals, chat apps, editors and games still get the paste as before: Typd only holds back when it is sure there is no text field.
+- **When a paste fails,** the same card replaces the old "Copied — press Ctrl+V" message: the text is already on your clipboard, and **Copy** puts it there again.
+
+## 0.2.9 · October 2026
+
+- **One download: the model that suits your computer.** A new install now downloads only the model Typd picks for its hardware — the full model on a PC with a strong NVIDIA GPU or a Mac with 16 GB or more, the Light model otherwise — instead of fetching the Light model first on a slow connection. A PC with an NVIDIA GPU still gets its GPU libraries before the full model starts, so the full model never runs slowly on the processor. An install that was already using the Light model while the full one downloaded simply finishes, and the Light model is removed afterwards.
+- **On a Mac, this update also brings everything from 0.2.7 and 0.2.8 below.**
+
+## 0.2.8 · October 2026
+
+- **Sharing is your choice.** A new install asks on its first screen whether to share your dictations (audio and text) to help train Typd's model, with nothing pre-selected, and shares nothing until you choose **Share**. A recent install that was never asked sees the same short question once; choosing **Don't share** there also deletes anything it had already shared. You can change it anytime in Settings.
+- **Copied dictations count too.** When sharing is on, a dictation Typd could not paste and left on the clipboard ("Copied — press Ctrl+V") is shared like any other.
+- **Low-memory mode.** On computers without a strong GPU, Typd's model now uses about 0.8 GB of memory instead of 1.4 GB, with the same accuracy. Long dictations are written in shorter pieces, and in this mode you can revise up to about 250 words at a time. It is on automatically with the Light model or on a computer with less than 8 GB of memory; **Settings → Low-memory mode** turns it on or off.
+- **Steadier on slow processors.** A long dictation on a slow computer is given more time to start writing before Typd calls it stuck.
+
+## 0.2.7 · October 2026
+
+- **Macs: Typd asks for the microphone so you can always say yes.** On some Macs Typd never got the microphone and was missing from System Settings › Privacy & Security › Microphone, so there was no switch to turn on. Typd now asks macOS when you first open it, again from the walkthrough's **Allow microphone** button, and whenever you press the Typd key before you have answered, also while the speech model is still downloading. It no longer waits forever on a macOS question nobody saw: it says what is missing and offers to ask again.
+- **"Microphone is off" with no Typd in the list?** Typd's message now has **Ask macOS Again**: it clears Typd's own microphone answer in macOS and asks once more. If macOS still refuses without asking, Typd says it is a rule on this Mac (a work Mac's profile, Screen Time), not your answer.
+- **Opened from Downloads or the disk image?** Typd offers to move itself to your Applications folder before macOS asks for anything, so a copy you delete later can't keep your permissions tied to it.
+- **The pill no longer pretends to hear you.** When the microphone could not be opened, the pill's level meter used to move anyway. It now stays flat and says what to do.
+- **The Typd icon looks right in Finder's list view.** Every icon size is now made by Apple's own tool, each at its proper size.
+
+## 0.2.6 · October 2026
+
+- **The ✕ and ✓ on the recording pill work again.** On some Windows PCs a click went straight through the pill. The buttons now take every click, on Windows and on a Mac, and the pill still never takes the focus from the app you are typing in. Typd also no longer watches every mouse move on the computer while the pill is up, so the pointer stays smooth while Typd is busy.
+- **Dictate sooner on a new PC with an NVIDIA GPU.** If the full model would take more than a few minutes to download, Typd first fetches the smaller Light model so you can dictate right away, then gets the full model in the background and switches to it the next time you are not dictating. Home says which model you are using and how far the full one is.
+- **No more slow dictation while the GPU libraries download.** On a PC with an NVIDIA GPU, Typd no longer runs the full model on the processor while the GPU libraries download (which made it lag): it starts the full model together with them, and until both are ready it uses the Light model or waits.
+- **Sharing is sturdier and explains itself.** A file briefly locked by an antivirus no longer stops a dictation from being shared, and **Copy diagnostics** now says whether sharing is on, what was shared and, if nothing was, why. Typd also keeps a short timing line for each dictation there (how long the text took, on which model and device), never the words.
+
 ## 0.2.5 · October 2026
 
 - **A much smaller download.** The installer no longer carries the speech model. On its first start Typd downloads the one that suits your computer (about 0.6 GB, or 1.6 GB on a PC with a strong NVIDIA GPU), checks it, and from then on works offline. The tray, Home and the walkthrough show how far it is, and on a metered connection Typd asks first.
