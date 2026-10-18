@@ -390,14 +390,6 @@ select option { background: var(--card); color: var(--text); }
   margin-top: 12px; padding: 9px 12px; border-radius: 9px; background: var(--chip);
   color: var(--text); font-size: 12.5px; line-height: 1.5; text-align: center;
 }
-.walk-model {
-  margin-top: 12px; padding: 10px 12px; border-radius: 9px; border: 1px solid var(--line-firm);
-  display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center;
-}
-.walk-model-text { font-size: 12.5px; line-height: 1.5; color: var(--text); }
-.walk-model.done .walk-model-text { color: var(--dim); }
-.walk-bar { width: 100%; height: 6px; border-radius: 3px; background: var(--chip-hover); overflow: hidden; }
-.walk-bar span { display: block; height: 100%; width: 0; background: var(--ink); border-radius: 3px; transition: width 300ms var(--ease); }
 .walk-try { margin-top: 14px; }
 .walk-try textarea {
   width: 100%; resize: none; padding: 10px 12px; border-radius: 9px;

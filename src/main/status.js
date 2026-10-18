@@ -11,9 +11,8 @@
  */
 
 const facts = {
-  model: 'loading',     // 'loading' | 'ready' | 'failed' | 'missing' (no model yet: a model-less install)
+  model: 'loading',     // 'loading' | 'ready' | 'failed'
   modelWhy: '',
-  modelFetch: null,     // with 'missing': the first model's download (modelUpdate.needed()), or null if none runs
   key: 'ok',            // 'ok' | 'failed'
   keyWhy: '',
   mic: 'ok',            // 'ok' | 'blocked'
@@ -81,7 +80,6 @@ function describe() {
       "The speech model didn't start." + (facts.modelWhy ? ' ' + facts.modelWhy : ''),
       { id: 'retry', label: 'Try again' }, 'dim');
   }
-  if (facts.model === 'missing') return missing(mk);
   if (facts.model === 'loading') {
     return mk('loading', 'Getting ready…', 'Getting ready…', null, 'dim');
   }
@@ -90,44 +88,6 @@ function describe() {
   }
   return mk('ready', 'Ready — ' + k.verb + ' ' + k.label + ' to dictate',
     'Ready. ' + k.verb.charAt(0).toUpperCase() + k.verb.slice(1) + ' {key} in any app and talk.', null, 'ready');
-}
-
-/**
- * No speech model yet (a public install's first launch: its installer has none, modelUpdate.js
- * downloads it). Dictation waits for it; the line says how far the download is and what, if
- * anything, it needs from the person: an OK on a metered connection, the internet, disk space.
- */
-function missing(mk) {
-  const f = facts.modelFetch;
-  if (!f) {
-    return mk('download', 'No speech model yet', 'Typd has no speech model yet, so it cannot dictate.', { id: 'retry', label: 'Try again' }, 'dim');
-  }
-  const about = (f.estimate ? 'about ' : '') + f.size;
-  switch (f.state) {
-    case 'downloading':
-      return mk('download', 'Downloading the speech model — ' + f.pct + ' %',
-        'Typd is downloading its speech model: ' + f.pct + ' % of ' + f.size + '. After that it works offline.', null, 'dim');
-    case 'retrying':
-      return mk('download', 'Downloading the speech model — ' + f.pct + ' %, paused',
-        'The download paused at ' + f.pct + ' % of ' + f.size + '. Typd tries again by itself.', null, 'dim');
-    case 'ready':
-      return mk('download', 'Getting the speech model ready…', 'The speech model is downloaded. Typd is getting it ready.', null, 'dim');
-    case 'ask':
-    case 'later':
-      return mk('download', 'Speech model needed (' + f.size + ') — Download now',
-        'Typd needs to download its speech model once (' + f.size + '). This connection may be metered, so Typd waits for your OK.',
-        { id: 'model-now', label: 'Download now' }, 'dim');
-    case 'offline':
-      return mk('download', 'Speech model needed — connect to the internet',
-        'Typd needs to download its model once, ' + about + '; after that it works offline.', null, 'dim');
-    case 'space':
-      return mk('download', 'Speech model needs more disk space',
-        'Typd needs ' + about + ' of free disk space, and a little more, to download its speech model.', null, 'dim');
-    case 'app':
-      return mk('download', 'Speech model needs a newer Typd', 'The speech model needs a newer Typd. Typd updates itself; then it downloads the model.', null, 'dim');
-    default:
-      return mk('download', 'Getting the speech model…', 'Typd is getting its speech model (' + about + '). After that it works offline.', null, 'dim');
-  }
 }
 
 function get() { return { ...facts }; }

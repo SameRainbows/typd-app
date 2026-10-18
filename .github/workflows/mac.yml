@@ -43,6 +43,10 @@ on:
         type: choice
         options: [both, arm64, x64]
         default: both
+      checks_only:
+        description: Only the menu-bar close checks on several macOS versions (no signed build, no release)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -57,7 +61,7 @@ env:
 
 jobs:
   build:
-    if: github.repository == 'SameRainbows/typd-app'
+    if: github.repository == 'SameRainbows/typd-app' && !inputs.checks_only
     runs-on: macos-14
     timeout-minutes: 120
     permissions:
@@ -137,10 +141,7 @@ jobs:
           flags=""
           for a in $ARCHS; do flags="$flags --$a"; done
           unset TYPD_TESTER_CONFIG
-          # The public dmg ships WITHOUT the dictation model (0.2.5): the app downloads the one its
-          # hardware suits at first launch (src/main/modelUpdate.js). The model fetched above is
-          # for the tests below (TYPD_MODEL_DIR, smoke tests), never packaged.
-          TYPD_NO_BUNDLED_MODEL=1 npx electron-builder --mac dmg $flags --publish never
+          npx electron-builder --mac dmg $flags --publish never
           ls -la dist
 
       - name: Inspect the app
@@ -162,10 +163,11 @@ jobs:
             spctl --assess --type execute -vv "$app" 2>&1 || true
             plutil -p "$app/Contents/Info.plist" | grep -E 'LSUIElement|NSMicrophoneUsageDescription|NSAppleEventsUsageDescription|LSMinimumSystemVersion|CFBundleIdentifier'
             test "$(plutil -extract LSUIElement raw -o - "$app/Contents/Info.plist")" = true
+            # A menu-bar app with no window open must never be ended or napped by macOS (docs/MAC.md).
+            test "$(plutil -extract NSSupportsAutomaticTermination raw -o - "$app/Contents/Info.plist")" = false
+            test "$(plutil -extract NSSupportsSuddenTermination raw -o - "$app/Contents/Info.plist")" = false
+            test "$(plutil -extract LSAppNapIsDisabled raw -o - "$app/Contents/Info.plist")" = true
             ls -la "$app/Contents/Resources/llama" "$app/Contents/Resources/models/typd-dictate"
-            # Model-less: no model.json and no .gguf anywhere in the app.
-            test ! -e "$app/Contents/Resources/models/typd-dictate/model.json"
-            if find "$app" -name '*.gguf' | grep -q .; then echo "the public app must not contain a model"; exit 1; fi
             file "$app/Contents/Resources/llama/llama-server"
             test -x "$app/Contents/Resources/llama/llama-server"
             if [ -e "$app/Contents/Resources/tester.json" ]; then echo "the app must not contain tester.json"; exit 1; fi
@@ -181,7 +183,7 @@ jobs:
         if: contains(env.ARCHS, 'arm64')
         run: |
           R=dist/mac-arm64/Typd.app/Contents/Resources
-          node scripts/smoke-llama.js --server $R/llama/llama-server --models "$PWD/models/typd-dictate" --gpu-layers 0 --port 8790
+          node scripts/smoke-llama.js --server $R/llama/llama-server --models $R/models/typd-dictate --gpu-layers 0 --port 8790
 
       - name: Smoke test, Metal (arm64)
         if: contains(env.ARCHS, 'arm64')
@@ -190,7 +192,7 @@ jobs:
         continue-on-error: true
         run: |
           R=dist/mac-arm64/Typd.app/Contents/Resources
-          node scripts/smoke-llama.js --server $R/llama/llama-server --models "$PWD/models/typd-dictate" --gpu-layers 99 --port 8791
+          node scripts/smoke-llama.js --server $R/llama/llama-server --models $R/models/typd-dictate --gpu-layers 99 --port 8791
 
       - name: Smoke test, as the app starts (arm64)
         if: contains(env.ARCHS, 'arm64')
@@ -198,7 +200,7 @@ jobs:
         # wrong text restarts on the CPU and tests again. A gate: this is what a Mac user's Typd does.
         run: |
           R=dist/mac-arm64/Typd.app/Contents/Resources
-          node scripts/smoke-llama.js --server $R/llama/llama-server --models "$PWD/models/typd-dictate" --port 8793 2>&1 | tee smoke-default.log
+          node scripts/smoke-llama.js --server $R/llama/llama-server --models $R/models/typd-dictate --port 8793 2>&1 | tee smoke-default.log
           grep -E 'self-test|path chosen' smoke-default.log
 
       - name: Smoke test, CPU (x64 under Rosetta)
@@ -206,7 +208,7 @@ jobs:
         continue-on-error: true
         run: |
           R=dist/mac/Typd.app/Contents/Resources
-          node scripts/smoke-llama.js --server $R/llama/llama-server --models "$PWD/models/typd-dictate" --gpu-layers 0 --port 8792
+          node scripts/smoke-llama.js --server $R/llama/llama-server --models $R/models/typd-dictate --gpu-layers 0 --port 8792
 
       - name: App-update packages (README "App updates")
         # The app without its model, signed again with Typd's certificate (the same designated
@@ -239,8 +241,8 @@ jobs:
         run: |
           APP="$PWD/dist/mac-arm64/Typd.app"
           # No model download and no app update from CI; no walkthrough window; no sharing (a public
-          # build shares by default since 0.2.4). The app is model-less: it loads the fetched model.
-          TYPD_DEBUG=1 TYPD_NO_MODEL_UPDATE=1 TYPD_NO_APP_UPDATE=1 TYPD_NO_WALKTHROUGH=1 TYPD_NO_SHARE=1 TYPD_MODEL_DIR="$PWD/models/typd-dictate" "$APP/Contents/MacOS/Typd" > app.log 2>&1 &
+          # build shares by default since 0.2.4).
+          TYPD_DEBUG=1 TYPD_NO_MODEL_UPDATE=1 TYPD_NO_APP_UPDATE=1 TYPD_NO_WALKTHROUGH=1 TYPD_NO_SHARE=1 "$APP/Contents/MacOS/Typd" > app.log 2>&1 &
           pid=$!
           ok=0
           for i in $(seq 1 120); do
@@ -263,8 +265,6 @@ jobs:
 
       - name: Close the Typd window, stay running (arm64)
         if: contains(env.ARCHS, 'arm64')
-        env:
-          TYPD_MODEL_DIR: ${{ github.workspace }}/models/typd-dictate
         # Closing the Typd window must not take Typd's key with it. scripts/mac-close-check.sh
         # opens and closes the window in the packaged app (TYPD_TEST_CLOSE_HOME), presses keys
         # before, during and after, dictates with Right ⌘ after the close, then quits Typd. Two
@@ -297,8 +297,6 @@ jobs:
 
       - name: Close the Typd window, stay running, its own app with its switches on (arm64)
         if: contains(env.ARCHS, 'arm64')
-        env:
-          TYPD_MODEL_DIR: ${{ github.workspace }}/models/typd-dictate
         # The open pass again, now that Typd holds its permissions as itself (a user's Mac after the
         # permission dialog), with a minute alone after the close. Then eight more launches, each
         # of which must come up and quit: uiohook-napi's start used to hang Typd at launch here.
@@ -309,42 +307,29 @@ jobs:
           scripts/mac-launch-loop.sh "$PWD/dist/mac-arm64/Typd.app" 8 || fail=1
           test $fail = 0
 
-      - name: First launch with no model (arm64, informational)
-        # The public app as a new user starts it: no model anywhere. First with model updates off: it
-        # must stay up and say it has no model (no crash, no dialog). Then as shipped: it downloads
-        # the variant this runner's hardware gets through the public routes (signed manifest, sha256
-        # of every file), switches to it and passes its self-test.
+      - name: Open from the menu bar, close with the red X, stay running (arm64)
         if: contains(env.ARCHS, 'arm64')
-        continue-on-error: true
+        # A tester's Mac: menu-bar icon > "Open Typd" > the red X, and Typd was gone, menu-bar icon and
+        # all. scripts/mac-tray-close-check.sh takes that path, started as Finder starts Typd: first
+        # through the menu's own "Open Typd" and win.close(), then with real clicks on the menu-bar
+        # icon, the menu and the red X. Each pass then watches Typd alone for 150 s (alive, its
+        # menu-bar icon, CPU, App Nap, its key). A gate.
         run: |
-          APP="$PWD/dist/mac-arm64/Typd.app"
-          BIN="$APP/Contents/MacOS/Typd"
-          UD="$HOME/Library/Application Support/typd"
-          pkill -f "$BIN" || true
-          rm -rf "$UD/models"
-          TYPD_DEBUG=1 TYPD_NO_MODEL_UPDATE=1 TYPD_NO_APP_UPDATE=1 TYPD_NO_WALKTHROUGH=1 TYPD_NO_SHARE=1 "$BIN" > nomodel-off.log 2>&1 &
-          pid=$!
-          sleep 20
-          alive=0; kill -0 $pid 2>/dev/null && alive=1
-          kill $pid 2>/dev/null || true; sleep 2
-          grep -E '\[typd:model\]' nomodel-off.log || true
-          echo "alive after 20 s with no model and updates off: $alive"
-          grep -q '\[typd:model\] no speech model yet: no download' nomodel-off.log && test $alive = 1 || { tail -40 nomodel-off.log; exit 1; }
-          TYPD_DEBUG=1 TYPD_NO_APP_UPDATE=1 TYPD_NO_WALKTHROUGH=1 TYPD_NO_SHARE=1 "$BIN" > nomodel.log 2>&1 &
-          pid=$!
-          ok=0
-          for i in $(seq 1 600); do
-            if grep -qE '\[typd:local\] model .* ready' nomodel.log; then ok=1; break; fi
-            kill -0 $pid 2>/dev/null || break
-            sleep 1
-          done
-          grep -E '\[typd:model\]|\[typd:models\] (variant|downloading|verified|switching|now running)' nomodel.log | head -30
-          grep -E '\[typd:local\] (self-test|path chosen|model .* ready)' nomodel.log || true
-          ls -la "$UD/models" || true
-          kill $pid 2>/dev/null || true; sleep 2
-          pkill -f "$APP/Contents/Resources/llama/llama-server" || true
-          echo "- first launch with no model: downloaded and ready = $ok" >> "$GITHUB_STEP_SUMMARY"
-          test $ok = 1
+          swiftc -O scripts/mac-ui.swift -o "$RUNNER_TEMP/mac-ui"
+          chmod +x scripts/mac-tray-close-check.sh
+          fail=0
+          scripts/mac-tray-close-check.sh "$PWD/dist/mac-arm64/Typd.app" tray-menu tray || fail=1
+          scripts/mac-tray-close-check.sh "$PWD/dist/mac-arm64/Typd.app" gui-clicks gui || fail=1
+          test $fail = 0
+
+      - name: An update opens no window (arm64)
+        if: contains(env.ARCHS, 'arm64')
+        # The first-run walkthrough is for fresh installs only: Typd started on a user-data folder as
+        # 0.2.3 left it (the walkthrough never shown) must open no window; a fresh install must show
+        # it (the control). scripts/mac-first-launch-check.sh. A gate.
+        run: |
+          chmod +x scripts/mac-first-launch-check.sh
+          scripts/mac-first-launch-check.sh "$PWD/dist/mac-arm64/Typd.app"
 
       - name: The app inside each dmg checked for keys (scripts/public-build.js verify)
         run: |
@@ -358,7 +343,7 @@ jobs:
             hdiutil attach "$dmg" -nobrowse -readonly -mountpoint "$mnt"
             codesign --verify --deep --strict "$mnt/Typd.app"
             codesign -d -r- "$mnt/Typd.app" 2>&1 | grep designated | grep -qi "$want"
-            node scripts/public-build.js verify --app "$mnt/Typd.app" --platform "mac-$a" --installer "$dmg" --expect-model no
+            node scripts/public-build.js verify --app "$mnt/Typd.app" --platform "mac-$a" --installer "$dmg"
             hdiutil detach "$mnt"
           done
           ls -la dist/*.dmg dist/*.dmg.public.json
@@ -398,3 +383,89 @@ jobs:
       - name: Remove the signing keychain
         if: always()
         run: bash scripts/mac-signing-import.sh --delete
+
+  menubar:
+    # The menu-bar close checks on several macOS versions, on an ad-hoc-signed arm64 build of this
+    # commit (no secrets in this job). macos-14 is the build job's runner; the tester's Mac runs
+    # macOS 27 (xcode-27 is that image, in preview).
+    if: github.repository == 'SameRainbows/typd-app'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15, macos-26, xcode-27]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 75
+    steps:
+      - name: Check out this commit (plain git, no token)
+        run: |
+          set -e
+          git init -q .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git fetch -q --depth 1 origin "$GITHUB_SHA"
+          git checkout -q --detach FETCH_HEAD
+          git log -1 --format='%H %s'
+          sw_vers; uname -r; csrutil status || true
+
+      - name: Node.js 24 (nodejs.org, sha256 pinned)
+        env:
+          NODE_VERSION: v24.22.0
+          NODE_SHA256: 6a9724d9b50a5f22b4816cded441b5a8d9ddae546191a5e5b7efa5a5e2ee26d5   # node-v24.22.0-darwin-arm64.tar.gz
+        run: |
+          set -e
+          test "$(uname -m)" = arm64
+          f="node-$NODE_VERSION-darwin-arm64.tar.gz"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$f" "https://nodejs.org/dist/$NODE_VERSION/$f"
+          echo "$NODE_SHA256  $RUNNER_TEMP/$f" | shasum -a 256 -c -
+          tar -xzf "$RUNNER_TEMP/$f" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/node-$NODE_VERSION-darwin-arm64/bin" >> "$GITHUB_PATH"
+
+      - name: No tester build, ever
+        run: |
+          set -e
+          test -z "${TYPD_TESTER_CONFIG:-}${TYPD_TESTER_DEV:-}${TYPD_TESTER_JSON:-}"
+          if find . -path ./node_modules -prune -o \( -name 'tester.json' -o -name 'tester.*.json' -o -name 'model-updates.json' \) -print | grep .; then exit 1; fi
+
+      - name: Install dependencies, the model, llama.cpp and the fixed uiohook (arm64)
+        run: |
+          set -e
+          npm ci
+          node scripts/fetch-model.js --accept-license | tail -3
+          node scripts/fetch-llama-mac.js arm64
+          node scripts/build-uiohook-mac.js arm64
+
+      - name: Package (arm64, signed ad hoc, no dmg)
+        run: |
+          set -e
+          unset TYPD_TESTER_CONFIG
+          npx electron-builder --mac dir --arm64 --publish never
+          app=dist/mac-arm64/Typd.app
+          codesign --verify --deep --strict "$app"
+          plutil -p "$app/Contents/Info.plist" | grep -E 'LSUIElement|Termination|AppNap|CFBundleShortVersionString'
+          swiftc -O scripts/mac-ui.swift -o "$RUNNER_TEMP/mac-ui"
+
+      - name: Let Typd through macOS privacy (runner only, best effort)
+        continue-on-error: true
+        run: |
+          now=$(date +%s)
+          grant() {
+            sudo sqlite3 "$1" "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version, flags, last_modified) VALUES ('$2', 'ai.typd.app', 0, 2, 4, 1, 0, $now);" && echo "granted $2" || echo "could not grant $2"
+          }
+          SYS="/Library/Application Support/com.apple.TCC/TCC.db"
+          USR="$HOME/Library/Application Support/com.apple.TCC/TCC.db"
+          for svc in kTCCServiceAccessibility kTCCServiceListenEvent kTCCServicePostEvent; do grant "$SYS" $svc; done
+          grant "$USR" kTCCServiceMicrophone
+
+      - name: Close checks, ${{ matrix.os }}
+        run: |
+          chmod +x scripts/mac-close-check.sh scripts/mac-tray-close-check.sh scripts/mac-first-launch-check.sh
+          APP="$PWD/dist/mac-arm64/Typd.app"
+          fail=0
+          # An update (an existing install) opens no window; a fresh install shows the walkthrough.
+          scripts/mac-first-launch-check.sh "$APP" || fail=1
+          # The old check (the window opened and closed from inside Typd), for comparison.
+          IDLE=0 scripts/mac-close-check.sh open "$APP" inside-${{ matrix.os }} || fail=1
+          # The tester's path: the menu's own item + win.close(), then real clicks.
+          scripts/mac-tray-close-check.sh "$APP" tray-${{ matrix.os }} tray || fail=1
+          scripts/mac-tray-close-check.sh "$APP" gui-${{ matrix.os }} gui || fail=1
+          pkill -f "$APP/Contents" || true
+          test $fail = 0

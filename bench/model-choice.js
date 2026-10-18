@@ -442,12 +442,17 @@ function walkthroughTests() {
   const due = (idx.match(/function walkthroughDue\(\) \{[\s\S]*?\n\}/) || [''])[0];
   const start = (idx.match(/function startWalkthrough\(afterUpdate\) \{[\s\S]*?\n\}/) || [''])[0];
   check('only in a packaged build (from source with TYPD_WALKTHROUGH=1)', /!app\.isPackaged && process\.env\.TYPD_WALKTHROUGH !== '1'/.test(due));
-  check("only while settings' walkthrough is '' (once per install)", /settings\.get\('walkthrough'\) === ''/.test(due));
+  check("only while settings' walkthrough is 'due' (a fresh install, once)", /settings\.get\('walkthrough'\) === 'due'/.test(due));
+  check('decided by settings.walkthroughFor (fresh install, not after an update) before anything shows',
+    /settings\.walkthroughFor\(\{ fresh: settings\.isFreshInstall\(\), afterUpdate: Boolean\(afterUpdate\) \}\)/.test(start) && start.indexOf('walkthroughFor') < start.indexOf('walkthroughDue()'));
+  check('fresh or not is read before this launch writes anything (before isFirstRun, the overlay and the model updater)',
+    idx.indexOf('settings.isFreshInstall();') > 0 && idx.indexOf('settings.isFreshInstall();') < idx.indexOf('firstRunNote = settings.isFirstRun();') &&
+    idx.indexOf('settings.isFreshInstall();') < idx.indexOf('modelUpdate.start({'));
   check('never with --stub, --preview, TYPD_NO_WALKTHROUGH=1 or the CI window test', /stub \|\| preview/.test(due) && /TYPD_NO_WALKTHROUGH === '1'/.test(due) && /TYPD_TEST_CLOSE_HOME/.test(due));
-  check("after an app update's quiet relaunch: not until someone is at the keyboard (appUpdate.whenUserActive)", /if \(afterUpdate\) appUpdate\.whenUserActive\(/.test(start));
+  check("never after an app update: no path in startWalkthrough waits for one", !/whenUserActive/.test(start));
   check('started with afterUpdate = the first start after an app update', /startWalkthrough\(Boolean\(appUpdater && appUpdater\.firstStart\)\)/.test(idx));
   check('one question at a time: it waits while the Mac permission dialog is open (there is no consent screen)', !/consent/.test(start.replace(/\/\*[\s\S]*?\*\//g, '')) && /isAsking\(\)/.test(start));
-  check('marked done as it opens (closing it early does not bring it back), in the home window', /settings\.set\('walkthrough', 'done'\);\s*home\.open\('home', \{ walkthrough: true \}\)/.test(start));
+  check('marked done as it opens (closing it early does not bring it back), in the home window', /settings\.set\('walkthrough', 'done'\);\s*home\.open\('home', \{ walkthrough: true[^}]*\}\)/.test(start));
   check("the practice box: the key dictates there, and only there, in Typd's own window", /if \(session \|\| !home\.isFocused\(\) \|\| home\.isPracticing\(\)\) return false;/.test(idx));
   const hw = read('src/main/home-window.js');
   check('isPracticing needs the box focused and the window focused', /practicing && win && !win\.isDestroyed\(\) && win\.isFocused\(\)/.test(hw) && /practicing = false;/.test(hw));

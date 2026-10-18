@@ -102,9 +102,7 @@
     var m = S.model || {};
     $('modelLine').textContent = status.state === 'loading'
       ? 'Loading the speech model on this ' + S.platform.machine + '.'
-      : status.state === 'download'
-        ? 'Dictation starts as soon as the speech model is ready.'
-        : 'Speech model ' + (m.name || '') + ' · on this ' + S.platform.machine + (m.device ? ' · ' + m.device : '');
+      : 'Speech model ' + (m.name || '') + ' · on this ' + S.platform.machine + (m.device ? ' · ' + m.device : '');
     var btn = $('statusAction');
     if (status.action) {
       btn.hidden = false;
@@ -552,8 +550,36 @@
         ? 'Your voice is never sent anywhere while sharing is paused.'
         : 'While sharing is on, your recordings are also sent to ' + sh.with + '.';
     }
+    renderPast();
     renderBeta();
   }
+
+  // Past dictations (backfill.js): offered while sharing is on and recordings are kept.
+  function renderPast() {
+    var s = S.settings, sh = s.sharing, bf = sh && sh.backfill;
+    var on = Boolean(sh) && (sh.mode === 'tester' ? sh.state !== 'stopped' && !s.sharePaused : sh.state === 'on');
+    $('sendPast').hidden = !(on && s.recordings.count && bf && bf.state !== 'running' && bf.state !== 'never');
+    var line = '';
+    if (bf && bf.state === 'running') {
+      line = 'Sending your past dictations: ' + bf.sent.toLocaleString() + (bf.total ? ' of ' + bf.total.toLocaleString() : '') +
+        ' sent so far, about one every minute or two' + (on ? '.' : ' once sharing is on again.');
+    } else if (bf && bf.state === 'done') {
+      line = 'Your past dictations have been sent.';
+    }
+    $('pastLine').hidden = !line;
+    $('pastLine').textContent = line;
+  }
+
+  $('sendPast').addEventListener('click', function () {
+    $('sendPast').disabled = true;
+    api.sharing.backfill().then(function (r) {
+      $('sendPast').disabled = false;
+      if (!r) return;
+      if (r.settings) { S.settings = r.settings; renderRecordings(); }
+      if (r.ok) toast('Sending your past dictations over the next few hours');
+      else failSettings(r.state === 'never' ? 'This ' + S.platform.machine + ' deleted what it shared, so past dictations stay here.' : 'Turn sharing on first.');
+    });
+  });
 
   /* ------------------------------------------------------ sharing, public builds */
 
@@ -957,14 +983,12 @@
         body = 'Click in the box, ' + h.verb + ' {key} and say a sentence, then ' + h.verb + ' {key} again.';
         pad.value = '';
         pad.placeholder = 'Your words land here…';
-        stepHint = 'Typd’s key types into this box while it has focus. Anywhere else, it works the same.';
-        hint(stepHint);
+        hint('Typd’s key types into this box while it has focus. Anywhere else, it works the same.');
       } else if (step === 3) {
         title = 'Change what you wrote';
         body = 'Highlight text, ' + h.verb + ' {key} and say the change: “make this shorter”, “make it friendlier”, “turn this into a list”.';
         pad.value = SAMPLE;
-        stepHint = 'Try it here: ' + (p.mac ? '⌘A' : 'Ctrl+A') + ' highlights the whole box.';
-        hint(stepHint);
+        hint('Try it here: ' + (p.mac ? '⌘A' : 'Ctrl+A') + ' highlights the whole box.');
       } else if (step === 4) {
         title = 'Typd got it wrong? Say so';
         body = '{key} flags your last dictation, or pick “That was wrong…” in Typd’s menu. ' +
@@ -980,46 +1004,6 @@
       $('walkNote').textContent = note;
       $('walkNote').hidden = !note;
       if (step !== 2 && step !== 3) hint('');
-      else if (S.needed) hint(WAIT_HINT);
-      renderModel();
-    }
-
-    // No speech model yet: what the download is doing, and the one thing it may need from the
-    // person (an OK on a metered connection). S.needed is modelUpdate.needed(), from model:get.
-    var hadNeed = false;
-    var stepHint = '';
-    var WAIT_HINT = 'The practice box works once the speech model is ready.';
-    function renderModel() {
-      var n = S.needed, box = $('walkModel');
-      // Steps 2 and 3: the practice box's hint follows the model (a pasted result's ✓ line stays).
-      if ((step === 2 || step === 3) && !$('walkHint').classList.contains('ok-line')) hint(n ? WAIT_HINT : stepHint);
-      $('walkModelNow').hidden = true;
-      $('walkBar').hidden = true;
-      box.classList.remove('done');
-      if (!n) {
-        box.hidden = !hadNeed;
-        if (hadNeed) { box.classList.add('done'); $('walkModelText').textContent = '✓ The speech model is ready.'; }
-        return;
-      }
-      hadNeed = true;
-      box.hidden = false;
-      var about = (n.estimate ? 'about ' : '') + n.size, text;
-      var bar = function () {
-        $('walkBar').hidden = false;
-        $('walkBarFill').style.width = Math.max(0, Math.min(100, n.pct || 0)) + '%';
-      };
-      if (n.state === 'downloading') { text = 'Getting Typd’s speech model: ' + n.pct + ' % of ' + n.size + '. Read on; dictation starts when it’s done.'; bar(); }
-      else if (n.state === 'retrying') { text = 'The download paused at ' + n.pct + ' % of ' + n.size + '. Typd tries again by itself.'; bar(); }
-      else if (n.state === 'ready') text = 'Speech model downloaded. Getting it ready…';
-      else if (n.state === 'ask' || n.state === 'later') {
-        text = 'Typd needs to download its speech model once (' + n.size + '). This connection may be metered, so it waits for your OK.';
-        $('walkModelNow').textContent = 'Download now (' + n.size + ')';
-        $('walkModelNow').hidden = false;
-      } else if (n.state === 'offline') text = 'Typd needs to download its model once, ' + about + '; after that it works offline. Connect to the internet and it starts by itself.';
-      else if (n.state === 'space') text = 'Typd needs ' + about + ' of free disk space, and a little more, to download its speech model.';
-      else if (n.state === 'app') text = 'The speech model needs a newer Typd. Typd updates itself, then downloads it.';
-      else text = 'Getting Typd’s speech model (' + about + ')…';
-      $('walkModelText').textContent = text;
     }
 
     function go(n) {
@@ -1044,10 +1028,6 @@
     }
 
     $('walkNext').addEventListener('click', function () { go(step + 1); });
-    $('walkModelNow').addEventListener('click', function () {
-      $('walkModelNow').disabled = true;
-      api.model.now().then(function () { $('walkModelNow').disabled = false; refreshNeeded(); });
-    });
     $('walkBack').addEventListener('click', function () { go(step - 1); });
     $('walkSkip').addEventListener('click', close);
     $('walk').addEventListener('keydown', function (e) {
@@ -1065,7 +1045,6 @@
     return {
       open: open,
       close: close,
-      model: function () { if (step) renderModel(); },
       get step() { return step; },
       /** The key was heard here, outside the box: say where to click. */
       heard: function () {
@@ -1082,19 +1061,8 @@
     if (p.walkthrough) walk.open(1);
   });
 
-  // The first model's download (model:get's `needed`), for the walkthrough's strip.
-  function refreshNeeded() {
-    if (!api.model || !S) return;
-    api.model.get().then(function (m) {
-      if (!S) return;
-      S.needed = m && m.needed ? m.needed : null;
-      walk.model();
-    });
-  }
-
   api.on('home:changed', function (p) {
     if (p.what === 'sharing' && S) reloadSettings();
-    if (p.what === 'model' && S) refreshNeeded();
     if (p.what === 'model' && S && current === 'settings') loadModel();
     if (p.what === 'history' || p.what === 'counts') {
       api.get().then(function (st) { if (st) { S.counts = st.counts; renderCounts(st.counts); } });
@@ -1128,7 +1096,6 @@
       show(q.get('section') || 'home');
       if (q.get('capture') === '1') startCapture();
       if (q.get('walkthrough') === '1') walk.open(1);
-      refreshNeeded();
     });
   }
 

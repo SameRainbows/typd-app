@@ -1226,11 +1226,6 @@ module.exports = {
   usesContext: () => Boolean(SPEC.context),
   streams: () => Boolean(SPEC.stream),
   switchModel, onWarm, resolveModel, selfTestPasses, bringUp, reviseLora,
-  /**
-   * Are the files of the model in use there? False in a public install before its first model has
-   * downloaded (public installers ship without one, modelUpdate.js fetches it): Typd cannot dictate yet.
-   */
-  hasModel: () => fs.existsSync(MODEL) && fs.existsSync(MMPROJ),
   get MODEL() { return MODEL; },
   get MODEL_DIR() { return MODEL_DIR; },
   get VERSION() { return VERSION; },

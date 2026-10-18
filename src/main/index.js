@@ -32,6 +32,18 @@ const choice = require('./modelChoice').createChoice({
 
 const MAC = process.platform === 'darwin';
 
+/*
+ * A crash leaves a minidump on this computer: crashReporter, local only -- nothing is uploaded
+ * (no URL, uploadToServer false). The life log (lifelog.js) names any dump a run left behind when
+ * it ended without quitting, and the tray's "Copy diagnostics" lists them.
+ */
+try {
+  require('electron').crashReporter.start({ uploadToServer: false, compress: false });
+} catch (err) {
+  console.log('[typd] crash reporter:', err && err.message);
+}
+const life = require('./lifelog');
+
 /**
  * Keep each dictation's audio with everything needed to replay it -- the text Typd
  * produced, the model, the screen context and highlighted span it was given -- so real
@@ -147,8 +159,12 @@ function quit(by) {
 }
 
 const debugLife = (...args) => { if (process.env.TYPD_DEBUG) console.log('[typd:quit]', ...args); };
-app.on('before-quit', () => debugLife('before-quit, asked by ' + (quitBy || 'macOS or a signal (⌘Q, the Dock, logout, kill)')));
-process.on('exit', (code) => debugLife('process exit, code ' + code));
+app.on('before-quit', () => {
+  debugLife('before-quit, asked by ' + (quitBy || 'macOS or a signal (⌘Q, the Dock, logout, kill)'));
+  life.log('quit asked', 'by ' + (quitBy || 'macOS or a signal (Cmd-Q, the Dock, logout, kill)'));
+});
+app.on('quit', (_e, code) => life.ended('quit, exit code ' + code));
+process.on('exit', (code) => { debugLife('process exit, code ' + code); life.ended('process exit, code ' + code); });
 
 // Two copies fighting over one global hotkey is a confusing failure that looks
 // like the hotkey is simply broken. The second copy quits at once and does nothing
@@ -156,6 +172,23 @@ process.on('exit', (code) => debugLife('process exit, code ' + code));
 const primary = app.requestSingleInstanceLock();
 if (!primary) {
   quit('a second copy of Typd (the first keeps running)');
+} else {
+  // The life log (lifelog.js) belongs to the copy that runs: a second copy would report the first
+  // as lost and take its run marker.
+  const via = process.env.__CFBundleIdentifier;
+  life.init(app.getPath('userData'), {
+    crashDumps: (() => { try { return app.getPath('crashDumps'); } catch { return null; } })(),
+    info: 'Typd ' + app.getVersion() + (app.isPackaged ? '' : ' (from source)') + ', Electron ' + process.versions.electron + ', ' +
+      process.platform + ' ' + require('os').release() + ' ' + process.arch + (MAC ? ', macOS ' + process.getSystemVersion() : '') +
+      ', started ' + (via === 'ai.typd.app' ? 'by macOS (LaunchServices)' : via ? 'from ' + via : 'directly') +
+      (process.argv.some((a) => a === '--stub' || a === '--preview' || a === '--dev') ? ', ' + process.argv.filter((a) => /^--(stub|preview|dev)$/.test(a)).join(' ') : '')
+  });
+  // Errors nobody caught, for the log: one line each, nothing quoted (lifelog.errorLine).
+  process.on('uncaughtExceptionMonitor', (err) => life.log('uncaught exception', life.errorLine(err)));
+  process.on('unhandledRejection', (reason) => {
+    life.log('unhandled rejection', life.errorLine(reason));
+    if (process.env.TYPD_DEBUG) console.log('[typd] unhandled rejection:', reason);
+  });
 }
 
 /* ------------------------------------------------------------------ plumbing */
@@ -214,12 +247,6 @@ function appLabel(focus) {
 }
 
 function beginSession() {
-  // No speech model yet (a public install's first launch: modelUpdate.js is downloading it). The key
-  // says how far that is, in the pill, and nothing is recorded: no error, no dialog.
-  if (!session && modelMissing()) {
-    note(status.describe().line, 6000);
-    return;
-  }
   if (session) session.controller.abort();
 
   const controller = new AbortController();
@@ -474,18 +501,17 @@ status.useKey(keyInfo);
 
 /** A click on the tray's status line: whatever fixes what it says. */
 function statusAction(id) {
-  if (id === 'hotkey') return home.open('settings', { capture: true });
-  if (id === 'retry') { if (modelMissing()) { modelUpdate.recheck(0); return null; } return warmModel(); }
-  if (id === 'model-now') return modelUpdate.approve().catch(() => {});
+  if (id === 'hotkey') return home.open('settings', { capture: true, by: 'the menu bar status line' });
+  if (id === 'retry') return warmModel();
   if (id === 'privacy') {
     if (MAC) return require('./permissions-mac').openPane('microphone');
     return require('electron').shell.openExternal('ms-settings:privacy-microphone').catch(() => {});
   }
-  if (id === 'permissions') return home.open('home');
+  if (id === 'permissions') return home.open('home', { by: 'the menu bar status line' });
 }
 
 const trayUi = createTray({
-  open: (section, opts) => home.open(section, opts),
+  open: (section, opts) => home.open(section, { ...(opts || {}), by: 'the menu bar menu' }),
   copy: (text) => inject.copy(text),
   updateLine: () => appUpdate.line(),
   updateAction: () => require('electron').shell.openExternal(appUpdate.DOWNLOAD_PAGE).catch(() => {}),
@@ -501,10 +527,50 @@ const trayUi = createTray({
     return s ? (s.lastInfo() ? 'ready' : 'none') : null;
   },
   flagKey: () => (flagKey && flagKey.binding) || null,
-  quit: () => quit('the tray menu (Quit Typd)')
+  quit: () => quit('the tray menu (Quit Typd)'),
+  diagnostics: () => copyDiagnostics()
 });
 
 const refreshTray = () => trayUi.refresh();
+
+/**
+ * The tray's "Copy diagnostics": what a tester can send when Typd misbehaves. A few lines on this
+ * Typd and its state, then the life log's last 200 lines (lifelog.js). No dictated text, screen
+ * context, selection or window title is in either; minidumps are named, never attached.
+ */
+function diagnosticsText() {
+  const { BrowserWindow, systemPreferences: sp } = require('electron');
+  const safe = (fn) => { try { return fn(); } catch (err) { return 'unknown (' + life.clean(err && err.message, 60) + ')'; } };
+  const s = status.get();
+  const dumps = life.dumps();
+  const lines = [
+    'Typd diagnostics, ' + new Date().toISOString() + ' (no dictation text in here)',
+    'Typd ' + app.getVersion() + (app.isPackaged ? '' : ' (from source)') + ', Electron ' + process.versions.electron + ', ' +
+      process.platform + ' ' + require('os').release() + ' ' + process.arch + (MAC ? ', macOS ' + safe(() => process.getSystemVersion()) : ''),
+    'running ' + Math.round(process.uptime()) + ' s, pid ' + process.pid,
+    'key: ' + (hotkeys ? hotkeys.state() : 'none') + (hotkeys && hotkeys.health ? ', tap ' + safe(() => JSON.stringify(hotkeys.health())) : ''),
+    'status: ' + safe(() => status.describe().line) + '; model ' + s.model + (s.perms && s.perms.length ? '; switches off: ' + s.perms.join(', ') : ''),
+    ...(MAC ? ['accessibility trusted: ' + safe(() => sp.isTrustedAccessibilityClient(false)) + ', microphone: ' + safe(() => sp.getMediaAccessStatus('microphone')),
+      'Dock icon: ' + safe(() => (app.dock.isVisible() ? 'shown' : 'hidden')) + ' (Show Typd in the Dock ' + (settings.get('showInDock') ? 'on' : 'off') + ')'] : []),
+    'menu-bar/tray icon: ' + (trayUi.tray && !trayUi.tray.isDestroyed() ? 'yes' : 'no') + ', windows: ' + BrowserWindow.getAllWindows().length +
+      ', Typd window ' + (home.isOpen() ? 'open' : 'closed') + ', pill ' + (overlay && !overlay.isDestroyed() ? 'alive' : 'gone'),
+    'model file: ' + safe(() => require('path').basename(require('./pipeline/local').MODEL)),
+    'minidumps: ' + (dumps.length ? dumps.length + ', newest ' + dumps.slice(0, 3).map((d) => d.name + ' ' + d.at).join('; ') : 'none'),
+    '--- life log, last 200 lines',
+    ...life.tail(200)
+  ];
+  return lines.join('\n') + '\n';
+}
+
+function copyDiagnostics() {
+  try {
+    require('electron').clipboard.writeText(diagnosticsText());
+    life.log('diagnostics copied');
+    note('Diagnostics copied — paste them into a message', 5000);
+  } catch (err) {
+    life.log('diagnostics failed', life.errorLine(err));
+  }
+}
 
 function remember(text) {
   trayUi.remember(text);
@@ -559,9 +625,6 @@ ask.register({
 
 function warmModel() {
   if (stub) { status.set({ model: 'ready' }); return; }
-  // A model-less install before its first model: nothing to start. The download (modelUpdate.js)
-  // calls switchModel() once the model is here.
-  if (modelMissing()) return;
   status.set({ model: 'loading', modelWhy: '' });
   Promise.resolve(pipeline.warm()).then(() => {
     status.set({ model: 'ready' });
@@ -580,12 +643,9 @@ function warmModel() {
  * a dictation begun meanwhile waits for the new server.
  */
 function switchModel() {
-  const first = status.get().model === 'missing';
-  status.set({ model: 'loading', modelWhy: '', modelFetch: null });
+  status.set({ model: 'loading', modelWhy: '' });
   return Promise.resolve(pipeline.switchModel()).then(() => {
     status.set({ model: 'ready' });
-    // The first model of a model-less install: say once that Typd can dictate now.
-    if (first) { const k = keyInfo(); note('Ready — ' + k.verb + ' ' + k.short + ' and talk', 10000); }
   }, (err) => {
     status.set({ model: 'failed', modelWhy: String((err && err.message) || '') });
     throw err;
@@ -596,34 +656,43 @@ function switchModel() {
 
 /**
  * The first-run walkthrough (renderer/home.js: what Typd is, a dictation, a revision, "That was
- * wrong", done; under a minute, skippable) is due once per install: in a packaged build whose
- * settings have never shown it -- a new install, or the first version that has it. Never with
- * --stub or --preview, TYPD_NO_WALKTHROUGH=1, or the CI's window test (TYPD_TEST_CLOSE_HOME); from
- * source only with TYPD_WALKTHROUGH=1. Settings opens it again any time.
+ * wrong", done; under a minute, skippable) is due once, on a fresh install (settings 'walkthrough'
+ * 'due': settings.walkthroughFor), in a packaged build. Never after an update. Never with
+ * --stub or --preview, TYPD_NO_WALKTHROUGH=1, or the CI's window tests (TYPD_TEST_CLOSE_HOME;
+ * TYPD_TEST_LIFE but for its "watch" pass, which checks exactly this rule); from source only with
+ * TYPD_WALKTHROUGH=1. Settings opens it again any time.
  */
 function walkthroughDue() {
-  if (stub || preview || process.env.TYPD_NO_WALKTHROUGH === '1' || process.env.TYPD_TEST_CLOSE_HOME) return false;
+  if (stub || preview || process.env.TYPD_NO_WALKTHROUGH === '1' || process.env.TYPD_TEST_CLOSE_HOME || (process.env.TYPD_TEST_LIFE && process.env.TYPD_TEST_LIFE_HOW !== 'watch')) return false;
   if (!app.isPackaged && process.env.TYPD_WALKTHROUGH !== '1') return false;
-  return settings.get('walkthrough') === '';
+  return settings.get('walkthrough') === 'due';
 }
 
 /**
- * Show it when it is due: a few seconds after launch, one question at a time (it waits while the
- * Mac permission dialog is open). After an app update's quiet relaunch it waits until someone is
- * at the keyboard (appUpdate.whenUserActive). It counts as shown once it opens: closing it early
- * does not bring it back. Its first screen says, in a public build with sharing on, that
+ * Show it when it is due: a few seconds after a fresh install's first launch, one question at a
+ * time (it waits while the Mac permission dialog is open). Never after an app update, and never
+ * on an install that ran Typd before. It counts as shown once it opens: closing it early does not
+ * bring it back. Its first screen says, in a public build with sharing on, that
  * dictations are shared to train the model and that Settings turns it off (renderer/home.js).
  */
 function startWalkthrough(afterUpdate) {
+  // Fresh installs only, never after an update (the user's rule since 0.2.4): settings.js says
+  // 'due' for a fresh install's first launch and 'done' for any install that ran Typd before
+  // (walkthroughFor). TYPD_WALKTHROUGH=1 makes it due anyway, to look at it from source.
+  const now = process.env.TYPD_WALKTHROUGH === '1' ? 'due'
+    : settings.walkthroughFor({ fresh: settings.isFreshInstall(), afterUpdate: Boolean(afterUpdate) });
+  if (now !== settings.get('walkthrough')) {
+    settings.set('walkthrough', now);
+    life.log('walkthrough', now === 'due' ? 'due: a fresh install' : 'never: an existing install' + (afterUpdate ? ' (an update)' : ''));
+  }
   if (!walkthroughDue()) return;
   const show = () => {
     if (!walkthroughDue()) return;
     if (MAC && require('./permissions-mac').isAsking()) { setTimeout(show, 1000); return; }
     settings.set('walkthrough', 'done');
-    home.open('home', { walkthrough: true });
+    home.open('home', { walkthrough: true, by: 'the first-run walkthrough' });
   };
-  if (afterUpdate) appUpdate.whenUserActive(() => setTimeout(show, 1500));
-  else setTimeout(show, 3500);
+  setTimeout(show, 3500);
 }
 
 /* ---------------------------------------------- model choice, asking first */
@@ -635,38 +704,19 @@ function startWalkthrough(afterUpdate) {
  */
 let notedAsk = null;
 function modelChanged() {
-  modelMissing();   // the first model's progress, for the tray's first line and Home
   refreshTray();
   home.changed('model');
   const p = modelUpdate.pending();
   const asking = p && !p.later ? p.version : null;
-  if (asking && asking !== notedAsk) note((p.first ? 'Speech model needed (' : 'New model (') + p.size + '): see the menu', 8000);
+  if (asking && asking !== notedAsk) note('New model (' + p.size + '): see the menu', 8000);
   notedAsk = asking;
-}
-
-/**
- * True while there is no speech model to dictate with (a public installer ships without one, and
- * modelUpdate.js downloads the hardware's pick at the first launch); it then sets the status's
- * 'missing' state with the download's progress. False once a model is loaded, and also while a
- * downloaded first model is only waiting for switchModel() (the status is left as it is).
- */
-let missingLogged = null;
-function modelMissing() {
-  if (stub || require('./pipeline/local').hasModel()) return false;
-  const fetch = modelUpdate.needed();
-  if (!fetch && modelUpdate.following()) return status.get().model === 'missing';   // downloaded: switching to it
-  status.set({ model: 'missing', modelWhy: '', modelFetch: fetch });
-  const said = fetch ? fetch.state + ' ' + fetch.size : 'no download (model updates off)';
-  if (process.env.TYPD_DEBUG && said !== missingLogged) console.log('[typd:model] no speech model yet:', said);
-  missingLogged = said;
-  return true;
 }
 
 /** For Settings: the model choice, Automatic's answer and why, and a download waiting for an answer. */
 async function modelInfo() {
   let d = null;
   try { d = await choice.describe(); } catch { d = null; }
-  return { following: modelUpdate.following(), ...(d || {}), chosen: modelUpdate.chosen(), pending: modelUpdate.pending(), line: modelUpdate.line(), needed: modelUpdate.needed() };
+  return { following: modelUpdate.following(), ...(d || {}), chosen: modelUpdate.chosen(), pending: modelUpdate.pending(), line: modelUpdate.line() };
 }
 
 /* -------------------------------------------------------------- app updates */
@@ -715,10 +765,6 @@ function startAppUpdate() {
   };
   overlay.webContents.once('did-finish-load', () => { loaded = true; decide(); });
   local.onWarm((r) => { if (!warm) { warm = r; decide(); } });
-  // A model-less install whose first model has not arrived yet: no model start will come to wait
-  // for (the helper would time out and put the old version back). The window decides; settle()
-  // keeps an update when the model was not working before it either (pending.modelOk).
-  if (!local.hasModel()) { warm = { ok: false, error: new Error('no speech model yet: it downloads at first launch') }; decide(); }
 }
 
 /**
@@ -733,7 +779,7 @@ function checkMic(openIfBlocked) {
   try { state = systemPreferences.getMediaAccessStatus('microphone'); } catch { /* older Windows */ }
   const blocked = state === 'denied';
   status.set({ mic: blocked ? 'blocked' : 'ok' });
-  if (blocked && openIfBlocked) home.open('settings');
+  if (blocked && openIfBlocked) home.open('settings', { by: 'a blocked microphone' });
 }
 
 /** macOS: which of the switches Typd needs are off, for the tray line and Home's card. */
@@ -743,6 +789,62 @@ function checkMacPermissions() {
     const off = ['microphone', 'accessibility', 'input'].filter((k) => on && on[k] === false);
     status.set({ perms: off });
   }).catch(() => {});
+}
+
+/* ------------------------------------------------------------- watchdogs */
+
+let lastWake = 0;
+
+/**
+ * The main thread, timed: a 5 s timer that fires seconds late means the main thread was stuck or
+ * napping (App Nap coalesces a background app's timers). On a Mac the key's event tap waits on
+ * this thread for every key press, so a stuck main thread is a stuck keyboard. Measured on the
+ * monotonic clock, which stops while the computer sleeps; logged at most every 5 minutes, and not
+ * around sleep and wake.
+ */
+function watchMainThread() {
+  let last = process.hrtime.bigint(), noted = 0;
+  const t = setInterval(() => {
+    const now = process.hrtime.bigint();
+    const late = Number(now - last) / 1e6 - 5000;
+    last = now;
+    if (late > 3000 && Date.now() - lastWake > 60000 && Date.now() - noted > 300000) {
+      noted = Date.now();
+      life.log('main thread late', Math.round(late / 100) / 10 + ' s (a stall, or App Nap)');
+    }
+  }, 5000);
+  if (t.unref) t.unref();
+}
+
+/**
+ * The key layer's health, every 10 s, into the life log when it changes: the key's state, and on a
+ * Mac whether Typd is still trusted for Accessibility and what the event tap's watchdog saw
+ * (hotkeys.health(): macOS switched the tap off for a slow answer or for user input and it was
+ * switched back on; the tap thread stopped answering).
+ */
+function watchKeyLayer() {
+  let state = null, trusted = null, health = null, stuck = 0;
+  const t = setInterval(() => {
+    try {
+      const st = hotkeys ? hotkeys.state().replace(/, \d+ key events heard$/, '') : 'none';
+      if (st !== state) { life.log('key', st); state = st; }
+      if (!MAC) return;
+      const tr = (() => { try { return systemPreferences.isTrustedAccessibilityClient(false); } catch { return null; } })();
+      if (tr !== trusted) { if (trusted !== null || tr === false) life.log('accessibility', tr ? 'trusted' : 'NOT trusted (the key cannot be heard)'); trusted = tr; }
+      const h = hotkeys && hotkeys.health ? hotkeys.health() : null;
+      if (!h) return;
+      if (health) {
+        const more = ['timeouts', 'userInput', 'rearmed'].filter((k) => (h[k] || 0) > (health[k] || 0));
+        if (more.length) life.log('key tap', 'macOS switched it off and it was switched back on: ' + more.map((k) => k + ' ' + h[k]).join(', '));
+        if (h.enabled !== health.enabled) life.log('key tap', h.enabled === 1 ? 'on' : h.enabled === 0 ? 'OFF' : h.enabled === -2 ? 'its port is gone' : 'not running');
+        if (h.running && h.checks === health.checks) { if (++stuck === 3) life.log('key tap', 'its thread has not answered for 30 s (stuck?)'); } else stuck = 0;
+      }
+      health = h;
+    } catch (err) {
+      life.log('key watch failed', life.errorLine(err));
+    }
+  }, 10000);
+  if (t.unref) t.unref();
 }
 
 /* -------------------------------------------------------------------- start */
@@ -769,6 +871,9 @@ app.whenReady().then(() => {
   });
   electronSession.defaultSession.setPermissionCheckHandler((wc, permission) => permission === 'media');
 
+  // Before anything this launch writes (settings.json, a model download, carried files): is this a
+  // fresh install? Only a fresh install gets the first-run walkthrough (startWalkthrough).
+  settings.isFreshInstall();
   firstRunNote = settings.isFirstRun();
 
   overlay = createOverlayWindow({ dev });
@@ -838,10 +943,11 @@ app.whenReady().then(() => {
     status.set({ key: failed ? 'failed' : 'ok', keyWhy: failed ? hotkeys.reason : '' });
   };
 
-  // "That was wrong": a second, separate shortcut, only where sharing exists (hotkeys.js).
+  // "That was wrong": a second, separate shortcut, only where sharing exists (hotkeys.js). The CI's
+  // window checks (TYPD_TEST_LIFE) bind it too, with sharing off: closing the window re-binds it.
   const bindFlag = () => {
     if (flagKey) flagKey.close();
-    flagKey = sharing.get() ? registerFlagHotkey(settings.get('flagHotkey'), hotkeys.name, openFlag) : null;
+    flagKey = sharing.get() || process.env.TYPD_TEST_LIFE ? registerFlagHotkey(settings.get('flagHotkey'), hotkeys.name, openFlag) : null;
   };
 
   hotkeys = bindHotkeys(settings.get('hotkey'));
@@ -906,15 +1012,26 @@ app.whenReady().then(() => {
   // Launching Typd again (Start, Windows search) while it runs opens the window: the tray
   // icon may be hidden by Windows, and "I opened it and nothing happened" must never be the
   // answer.
-  app.on('second-instance', () => home.open('home'));
+  app.on('second-instance', () => home.open('home', { by: 'a second launch' }));
 
   // After sleep or a lock screen the keyboard hook may be gone without a word; put it back.
   // A beat later, so the desktop session is fully back first.
   for (const ev of ['resume', 'unlock-screen']) {
     powerMonitor.on(ev, () => setTimeout(() => { hotkeys.rearm(); checkMic(false); }, 1500));
   }
+  for (const ev of ['suspend', 'resume', 'lock-screen', 'unlock-screen']) {
+    powerMonitor.on(ev, () => { lastWake = Date.now(); life.log('power', ev); });
+  }
+  watchMainThread();
+  watchKeyLayer();
 
   trayUi.build();
+  life.log('ready', 'menu-bar icon ' + (trayUi.tray ? 'made' : 'missing') + '; key ' + (hotkeys ? hotkeys.state() : 'none') +
+    (MAC ? '; Show Typd in the Dock ' + (settings.get('showInDock') ? 'on' : 'off') : '') + (appUpdater && appUpdater.firstStart ? '; the first start after an update' : ''));
+  if (MAC) {
+    app.on('did-become-active', () => life.log('active', 'Typd became the active app'));
+    app.on('did-resign-active', () => life.log('active', 'Typd stopped being the active app'));
+  }
 
   // Sharing asks nothing at launch: public builds share unless turned off in Settings (since
   // 0.2.4), and the walkthrough's first screen says so (sharing.js). There is no consent screen.
@@ -951,7 +1068,7 @@ app.whenReady().then(() => {
   const launched = Date.now();
   app.on('activate', () => {
     ensureOverlay();
-    if (Date.now() - launched > 3000) home.open('home');
+    if (Date.now() - launched > 3000) home.open('home', { by: 'macOS activate (the Dock icon, or opening Typd again)' });
   });
 
   if (preview) {
@@ -1080,6 +1197,13 @@ app.whenReady().then(() => {
   });
 
   if (process.env.TYPD_TEST_CLOSE_HOME) testCloseHome(process.env.TYPD_TEST_CLOSE_HOME);
+  // CI only: the menu-bar path (scripts/mac-tray-close-check.sh, src/main/test-life.js).
+  if (process.env.TYPD_TEST_LIFE) {
+    require('./test-life').start({
+      file: process.env.TYPD_TEST_LIFE, how: ['gui', 'watch'].includes(process.env.TYPD_TEST_LIFE_HOW) ? process.env.TYPD_TEST_LIFE_HOW : 'tray',
+      app, home, trayUi, getOverlay: () => overlay, getHotkeys: () => hotkeys, getSession: () => session
+    });
+  }
 });
 
 /*
@@ -1131,6 +1255,7 @@ function testCloseHome(file) {
 
 app.on('will-quit', () => {
   debugLife('will-quit');
+  life.log('will-quit');
   if (hotkeys) hotkeys.close();
   if (flagKey) flagKey.close();
   stopHook();
@@ -1144,5 +1269,13 @@ app.on('window-all-closed', (e) => e.preventDefault());
 
 // Anything that dies under Typd, for the log: a renderer (the pill, the window) or a helper
 // process Electron runs (GPU, audio, network).
-app.on('render-process-gone', (_e, wc, d) => debugLife('a renderer is gone:', d && d.reason, d && d.exitCode));
-app.on('child-process-gone', (_e, d) => debugLife('a ' + (d && d.type) + ' process is gone:', d && d.reason, d && d.exitCode));
+app.on('render-process-gone', (_e, wc, d) => {
+  const which = overlay && !overlay.isDestroyed() && wc === overlay.webContents ? 'the pill (overlay)'
+    : home.current() && wc === home.current().webContents ? 'the Typd window' : 'another page';
+  debugLife('a renderer is gone:', which, d && d.reason, d && d.exitCode);
+  life.log('renderer gone', which + ': ' + (d && d.reason) + ', exit code ' + (d && d.exitCode));
+});
+app.on('child-process-gone', (_e, d) => {
+  debugLife('a ' + (d && d.type) + ' process is gone:', d && d.reason, d && d.exitCode);
+  life.log('helper process gone', (d && d.type) + (d && (d.serviceName || d.name) ? ' (' + (d.serviceName || d.name) + ')' : '') + ': ' + (d && d.reason) + ', exit code ' + (d && d.exitCode));
+});

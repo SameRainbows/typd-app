@@ -38,6 +38,7 @@ function preview40(text) {
  * @param {() => 'ready'|'none'|null} [deps.canFlag]           null: sharing is not in this build
  * @param {() => string|null} [deps.flagKey]                   its shortcut, shown beside it
  * @param {() => void} [deps.quit]                             quit, saying it was the tray (index.js)
+ * @param {() => void} [deps.diagnostics]                      "Copy diagnostics" (index.js, lifelog.js)
  */
 function createTray(deps) {
   let tray = null;
@@ -95,7 +96,7 @@ function createTray(deps) {
     // "Update now" / "Later". After Later, only "Update now" stays until it asks again.
     const prompt = deps.modelPrompt ? deps.modelPrompt() : null;
     const promptItems = prompt
-      ? [{ label: prompt.first ? `Download the speech model (${prompt.size})` : `New model available (${prompt.size}) — Update now`, click: () => deps.modelNow() },
+      ? [{ label: `New model available (${prompt.size}) — Update now`, click: () => deps.modelNow() },
         ...(prompt.later ? [] : [{ label: 'Later', click: () => deps.modelLater() }])]
       : [];
     // Where sharing exists (sharing.js): flag the last dictation, with its shortcut beside it.
@@ -123,6 +124,8 @@ function createTray(deps) {
       { type: 'separator' },
       { label: "What's new", click: () => deps.open('news') },
       { label: 'Send feedback', click: feedback },
+      // What a tester sends when Typd misbehaves: the life log and a few lines of state, no dictation text.
+      ...(deps.diagnostics ? [{ label: 'Copy diagnostics', click: () => deps.diagnostics() }] : []),
       { type: 'separator' },
       { label: 'Quit Typd', click: () => (deps.quit ? deps.quit() : app.quit()) }
     ]);
