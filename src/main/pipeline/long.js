@@ -16,6 +16,22 @@ const LONG_S = 75, PIECE_MIN_S = 45, PIECE_MAX_S = 70, FRAME_S = 0.02, SEAM_S = 
 // speech runs to the first pause 3-9 s past the cut.
 const LOOKAHEAD_S = SEAM_S + 3;
 
+/*
+ * The piece sizes, as {longS, pieceMinS, pieceMaxS}: over longS a recording is cut, each piece
+ * between pieceMinS and pieceMaxS long, the last one at most longS. LIMITS is what the model was
+ * trained and scored on. Low-memory mode (local.js, 0.2.6) runs a smaller window, so it passes
+ * smaller ones, sized so that no single request can outgrow the window (local.js longLimits()).
+ */
+const LIMITS = Object.freeze({ longS: LONG_S, pieceMinS: PIECE_MIN_S, pieceMaxS: PIECE_MAX_S });
+
+/** Limits for a recording no request may hold more than `maxS` seconds of: the same shape as LIMITS. */
+function limitsFor(maxS) {
+  const longS = Math.max(20, Math.min(LONG_S, Math.floor(maxS)));
+  if (longS >= LONG_S) return LIMITS;
+  const pieceMaxS = longS - 5;
+  return Object.freeze({ longS, pieceMaxS, pieceMinS: Math.round(pieceMaxS * (PIECE_MIN_S / PIECE_MAX_S)) });
+}
+
 /**
  * Cut at the longest pause between 45 and 70 s into each piece, until the rest is short.
  * The quietest 100 ms (the old rule) could fall in the gap between two words. A pause is a run
@@ -36,8 +52,9 @@ const LOOKAHEAD_S = SEAM_S + 3;
  * Feed it the growing buffer; `final` settles the rest once the recording is complete.
  */
 class Splitter {
-  constructor(sr) {
+  constructor(sr, limits = LIMITS) {
     this.sr = sr;
+    this.limits = limits;
     this.f = Math.round(FRAME_S * sr);
     this.e = new Float64Array(0);
     this.n = 0;            // frames measured
@@ -65,8 +82,9 @@ class Splitter {
   feed(samples, len, final = false) {
     this.measure(samples, len);
     const sr = this.sr, out = [];
-    while (len - this.start > LONG_S * sr) {
-      if (!final && len < this.start + (PIECE_MAX_S + LOOKAHEAD_S) * sr) break;
+    const { longS, pieceMaxS } = this.limits;
+    while (len - this.start > longS * sr) {
+      if (!final && len < this.start + (pieceMaxS + LOOKAHEAD_S) * sr) break;
       const cut = this.cut(len);
       this.cuts.push(cut);
       out.push(cut);
@@ -77,8 +95,9 @@ class Splitter {
 
   cut(len) {
     const { f, sr, e } = this;
+    const { pieceMinS, pieceMaxS } = this.limits;
     const start = this.start;
-    const n = Math.min(this.n, Math.floor((start + (PIECE_MAX_S + LOOKAHEAD_S) * sr) / f));
+    const n = Math.min(this.n, Math.floor((start + (pieceMaxS + LOOKAHEAD_S) * sr) / f));
     const sorted = Float64Array.from(e.subarray(0, n)).sort();
     const quiet = Math.max(sorted[Math.floor(n / 2)] / 30, 3 * sorted[Math.floor(n / 10)]);
     const isGap = (j) => {   // frame j ends a run of 5+ quiet frames (100 ms)
@@ -93,7 +112,7 @@ class Splitter {
       return hit < 0 ? fallback : hit;
     };
     const keep = Math.round(KEEP_S * sr);
-    const lo = Math.ceil((start + PIECE_MIN_S * sr) / f), hi = Math.floor((start + PIECE_MAX_S * sr) / f);
+    const lo = Math.ceil((start + pieceMinS * sr) / f), hi = Math.floor((start + pieceMaxS * sr) / f);
     let run = 0, longest = 0, first = lo, quietest = lo;
     for (let j = lo; j < hi; j++) {
       run = e[j] < quiet ? run + 1 : 0;
@@ -111,8 +130,8 @@ class Splitter {
 }
 
 /** The whole recording at once: {pieces, pauses}, pieces as views into `samples`. */
-function splitLong(samples, sr) {
-  const s = new Splitter(sr);
+function splitLong(samples, sr, limits = LIMITS) {
+  const s = new Splitter(sr, limits);
   const cuts = s.feed(samples, samples.length, true);
   const pieces = cuts.map((c) => samples.subarray(c.start, c.end));
   pieces.push(samples.subarray(cuts.length ? cuts[cuts.length - 1].next : 0));
@@ -518,6 +537,6 @@ function joinPieces(a, b, seam) {
 }
 
 module.exports = {
-  LONG_S, PIECE_MIN_S, PIECE_MAX_S, FRAME_S, SEAM_S, KEEP_S, LOOKAHEAD_S,
+  LONG_S, PIECE_MIN_S, PIECE_MAX_S, FRAME_S, SEAM_S, KEEP_S, LOOKAHEAD_S, LIMITS, limitsFor,
   Splitter, splitLong, seamAudio, seamAt, stitch, fallback, readSeam, joinPieces
 };

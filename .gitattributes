@@ -1,0 +1,2 @@
+# llama.cpp patches are applied with git apply to LF sources: keep them byte for byte
+patches/** -text
