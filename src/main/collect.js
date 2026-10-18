@@ -46,6 +46,7 @@ const UPLOAD_TIMEOUT_MS = 120e3;
 const SEND_REVISE_TEXT = false;
 const NOTE_MAX = 200;
 const NAME_RE = /^\d{8}T\d{6}Z-[0-9a-f]{16}$/;
+const RENAME_TRIES = 10;                   // renameRetry: 40 ms, 80 ms ... 400 ms, ~2.2 s in all
 
 /** tester.json, checked; null (and the module stays inert) unless it is complete and sane. */
 function readConfig(file) {
@@ -115,9 +116,35 @@ function encodeWav(samples) {
   return Buffer.concat([h, data]);
 }
 
-async function writeAtomic(file, data) {
-  await fsp.writeFile(file + '.tmp', data);
-  await fsp.rename(file + '.tmp', file);
+/**
+ * Rename, retried: on Windows an antivirus scanning a file just written (or the search indexer)
+ * holds it for a moment, and the rename fails with EPERM, EACCES or EBUSY -- not once, but for
+ * every new file while that scanner is busy with it. Up to ~2 s of retries, then a copy.
+ */
+async function renameRetry(from, to) {
+  for (let i = 0; ; i++) {
+    try {
+      return await fsp.rename(from, to);
+    } catch (err) {
+      if (!['EPERM', 'EACCES', 'EBUSY'].includes(err && err.code)) throw err;
+      if (i < RENAME_TRIES) { await new Promise((r) => setTimeout(r, 40 * (i + 1))); continue; }
+      await fsp.copyFile(from, to);   // the target is complete before the source goes
+      await fsp.unlink(from).catch(() => {});
+      return undefined;
+    }
+  }
+}
+
+async function writeAtomic(file, data, options) {
+  await fsp.writeFile(file + '.tmp', data, options);
+  await renameRetry(file + '.tmp', file);
+}
+
+/** An error as a short line for a log: its message and, for a failed fetch, the cause's code. */
+function why(err) {
+  if (!err) return 'unknown';
+  const cause = err.cause && (err.cause.code || err.cause.message);
+  return String(err.status || err.message || err) + (cause ? ' (' + String(cause).slice(0, 80) + ')' : '');
 }
 
 /** The WAV an item's samples become, in bytes, without encoding it (the daily limit counts it). */
@@ -298,7 +325,7 @@ function createCollector({
     try {
       return await ensureKey();
     } catch (err) {
-      log('no key yet, will retry', err && err.status ? err.status : (err && err.message));
+      log('no key yet, will retry', why(err));
       retry(err && err.retryAfter);
       return null;
     }
@@ -327,7 +354,7 @@ function createCollector({
         res = next ? await send(cfg, next) : await sendFlag(cfg, flag);
       } catch (err) {
         sending = null;
-        log('send failed, will retry', next || flag, err && err.message);   // offline, asleep, timed out
+        log('send failed, will retry', next || flag, why(err));   // offline, asleep, timed out
         return retry();
       }
       try {
@@ -381,7 +408,7 @@ function createCollector({
     clearTimeout(timer);
     timer = null;
     running = work().catch((err) => {
-      log('outbox error', err && err.message);
+      log('outbox error', why(err));
       retry();
     }).finally(() => { busy = false; running = null; });
     return running;
@@ -525,7 +552,7 @@ function createCollector({
     }
     const p = new Promise((resolve) => setImmediate(resolve)).then(() => write(rec, name, created, id)).then(
       (ok) => { if (ok && !failures) schedule(2000); return ok; },   // mid-backoff, the pending retry stands
-      (err) => { log('could not queue', err && err.message); return false; }
+      (err) => { log('could not queue', name, why(err)); return false; }
     ).finally(() => writes.delete(name));
     writes.set(name, p);
     return name;
@@ -651,4 +678,4 @@ function createCollector({
   };
 }
 
-module.exports = { createCollector, readConfig, checkEndpoint, encodeWav, oneLine, stamp, NOTE_MAX };
+module.exports = { createCollector, readConfig, checkEndpoint, encodeWav, oneLine, stamp, writeAtomic, renameRetry, why, NOTE_MAX };

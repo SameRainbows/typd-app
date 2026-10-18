@@ -9,9 +9,10 @@
  * CUDA backend (four "DLLs" of random bytes, packed by the real zip writer with Zstandard).
  *
  *   - a fresh profile on a PC with no NVIDIA GPU: the light model, and the CUDA pack is never fetched
- *   - fake NVIDIA hardware (4 GB): the full model first, then the pack (never before the model is
- *     in place), unthrottled, checked, unpacked, every file checked against cuda.json, then one
- *     backend switch; llama-server would start in the pack's folder with it first on PATH
+ *   - fake NVIDIA hardware (4 GB), a fresh install: the full model, then the pack, unthrottled,
+ *     checked, unpacked, every file checked against cuda.json, and only then the full model's one start,
+ *     with the pack in place (0.2.6: never the full model on the processor while the GPU path is
+ *     pending; bench/light-first.js has the rest); llama-server would start in the pack's folder
  *   - a cut pack download resumes with Range; a corrupt one is fetched again; offline waits quietly
  *   - a metered connection asks for the model first, then for the pack, each with its size
  *   - a pack whose files are not this build's, or one llama-server does not start with: set aside,
@@ -136,7 +137,7 @@ function profile(s, { hw = 'nvidia4', bundledCuda = null, bundledModel = null, o
   const ev = [];   // what happened, in order: model switches, backend switches
   const u = createUpdater({
     keys: s.keys, config: { endpoint: s.endpoint, key: null }, modelsDir, bundledDir, appVersion: '0.2.5',
-    switchModel: async () => { ev.push({ what: 'model', at: Date.now(), current: readJson(path.join(modelsDir, 'current.json')) }); },
+    switchModel: async () => { ev.push({ what: 'model', at: Date.now(), current: readJson(path.join(modelsDir, 'current.json')), cuda: cuda.state() }); },
     switchBackend: async () => { ev.push({ what: 'backend', at: Date.now(), state: cuda.state(), dir: cuda.dir() }); },
     cuda, cudaWanted: () => choice.cuda(), variant: () => choice.variant(),
     rate: 1, idleMs: 0, firstCheckMs: 60e3, firstNeedMs: 50, needBackoffMinMs: 100, needBackoffMaxMs: 400, offlinePollMs: 150,
@@ -226,7 +227,9 @@ const modelReqs = (s) => s.fileRequests().filter((q) => !q.url.includes('/' + PA
     p.u.stop();
   }
 
-  section('fake NVIDIA hardware (4 GB): the model first, then the CUDA pack');
+  // 0.2.6: never the full model on the processor while the GPU path is pending. With no model yet, the
+  // pack comes right after the full model, and the full model's first start is with the pack in place.
+  section('fake NVIDIA hardware (4 GB): the full model, then the CUDA pack, then one start with both');
   {
     publishAll(s);
     s.requests = [];
@@ -236,18 +239,17 @@ const modelReqs = (s) => s.fileRequests().filter((q) => !q.url.includes('/' + PA
     p.u.onChange(() => { const l = p.u.packLine(); if (l && lines[lines.length - 1] !== l) lines.push(l); });
     const t0 = Date.now();
     p.u.start();
-    check('the backend switch comes, after the model\'s', await until(() => p.ev.some((e) => e.what === 'backend'), 20000), p.ev);
+    check('the model switch comes, and the pack is current after it', await until(() => p.ev.some((e) => e.what === 'model') && p.u.packState === 'current', 20000), p.ev);
     s.slow = 0;
     const firstPack = Math.min(...packReqs(s).map((q) => q.at));
     const model = p.ev.find((e) => e.what === 'model');
-    check('the full model (3 files) was fetched and switched to before the first request for the pack',
-      modelReqs(s).length === 3 && modelReqs(s).every((q) => q.url.includes('/full_a/') && q.at < firstPack) && model && model.at <= firstPack && model.current.version === 'full_a',
+    check('the full model (3 files) was fetched before the first request for the pack, and not started before the pack was installed',
+      modelReqs(s).length === 3 && modelReqs(s).every((q) => q.url.includes('/full_a/') && q.at < firstPack) && model && model.at >= firstPack && model.current.version === 'full_a',
       { model: modelReqs(s).map((q) => [q.url, q.at - t0]), firstPack: firstPack - t0, model });
     check('the pack: one request, from the public route, no key', packReqs(s).length === 1 && packReqs(s).every((q) => !q.auth && !q.range), packReqs(s));
     check(`unthrottled (rate 1 B/s would take days): done in ${((Date.now() - t0) / 1000).toFixed(1)} s`, Date.now() - t0 < 20000);
-    const b = p.ev.find((e) => e.what === 'backend');
-    check('at the backend switch the pack was installed: state "installed", llama-server would start in <userData>/cuda/<pack>',
-      b.state === 'installed' && b.dir === path.join(p.packsDir, PACK), b);
+    check('never the full model on the processor: its one start found the pack installed ("installed"), no separate backend switch',
+      p.ev.filter((e) => e.what === 'model').length === 1 && model.cuda === 'installed' && !p.ev.some((e) => e.what === 'backend') && p.cuda.dir() === path.join(p.packsDir, PACK), p.ev);
     check('every file there is cuda.json\'s, byte for byte, with pack.json beside them',
       DESC.files.every((f) => sha(fs.readFileSync(path.join(p.packsDir, PACK, f.name))) === f.sha256) && readJson(path.join(p.packsDir, PACK, 'pack.json')).version === PACK);
     check('the zip and the unpacking folder are gone (only the pack and state.json remain)', fs.readdirSync(p.packsDir).sort().join() === [PACK, 'state.json'].sort().join() || fs.readdirSync(p.packsDir).join() === PACK, fs.readdirSync(p.packsDir));
@@ -257,7 +259,7 @@ const modelReqs = (s) => s.fileRequests().filter((q) => !q.url.includes('/' + PA
     check('Settings: Automatic picks Full, the GPU path is CUDA', (await p.choice.describe()).auto === 'full' && (await p.choice.describe()).cuda === true);
     s.requests = [];
     const r = await p.u.check();
-    check('the next check: nothing more is downloaded, no second switch', r.state === 'current' && s.fileRequests().length === 0 && p.ev.filter((e) => e.what === 'backend').length === 1, r);
+    check('the next check: nothing more is downloaded, no second switch', r.state === 'current' && s.fileRequests().length === 0 && p.ev.length === 1, r);
     p.u.stop();
   }
 
@@ -269,13 +271,15 @@ const modelReqs = (s) => s.fileRequests().filter((q) => !q.url.includes('/' + PA
     s.cutNext[ZIP] = cut;
     const p = profile(s, { hw: 'nvidia4' });
     let r = await p.u.check();
-    check('first check: the model in place; the pack cut short: a retry soon, the processor still in use',
-      r.state === 'retry' && p.u.haveModel() && p.u.packState === 'retrying' && r.next <= 1000 && !p.ev.some((e) => e.what === 'backend'), { r, ps: p.u.packState });
-    check('the tray says the pack paused', /^GPU acceleration · downloading \d+ % of 1 MB \(paused\)$/.test(p.u.packLine() || ''), p.u.packLine());
+    check('first check: the full model here but not started (the pack comes first); the pack cut short: a retry soon',
+      r.state === 'retry' && !p.u.haveModel() && p.u.packState === 'retrying' && r.next <= 1000 && p.ev.length === 0, { r, ps: p.u.packState, ev: p.ev });
+    check('the tray says the pack paused; the first-model line counts the pack in (model + pack, paused)',
+      /^GPU acceleration · downloading \d+ % of 1 MB \(paused\)$/.test(p.u.packLine() || '') && /^Speech model · downloading \d+ % of \d MB \(paused\)$/.test(p.u.line()) && p.u.needed().total === 750000 + PACKZIP.length,
+      { pl: p.u.packLine(), l: p.u.line(), n: p.u.needed() });
     r = await p.u.check();
     const ranges = packReqs(s).map((q) => q.range);
     check(`resumed with Range from ${cut}`, ranges.length === 2 && ranges[0] === null && ranges[1] === `bytes=${cut}-`, ranges);
-    check('then checked, installed and switched to', p.u.packState === 'current' && p.cuda.state() === 'installed' && p.ev.filter((e) => e.what === 'backend').length === 1, { ps: p.u.packState, cs: p.cuda.state() });
+    check('then checked, installed, and the full model started once, with it', p.u.packState === 'current' && p.cuda.state() === 'installed' && p.ev.length === 1 && p.ev[0].what === 'model' && p.ev[0].cuda === 'installed', { ps: p.u.packState, cs: p.cuda.state(), ev: p.ev });
 
     s.requests = [];
     s.corrupt[ZIP] = true;
