@@ -517,9 +517,11 @@
   /* ---------------------------------------------------------- updates */
 
   // Under the version: Check for updates, its answer in words, and Restart now when a new Typd is ready.
+  var scrollToUpdates = false;   // opened by "Check for updates": bring the answer into view once it shows
   function renderUpdates(u) {
     if (!u) return;
     $('updatesBox').hidden = !u.enabled;
+    if (scrollToUpdates && u.enabled) { scrollToUpdates = false; $('updatesBox').scrollIntoView({ block: 'center' }); }
     $('aboutLine').textContent = u.versions || $('aboutLine').textContent;
     $('updatesLine').textContent = u.text || '';
     $('updatesCheck').disabled = Boolean(u.checking);
@@ -1141,7 +1143,7 @@
 
   api.on('home:show', function (p) {
     show(p.section);
-    if (p.updates) { loadUpdates(); $('updatesBox').scrollIntoView({ block: 'center' }); }
+    if (p.updates) { scrollToUpdates = true; loadUpdates(); }
     if (p.capture) startCapture();
     if (p.walkthrough) walk.open(1);
   });
@@ -1193,7 +1195,7 @@
       show(q.get('section') || 'home');
       if (q.get('capture') === '1') startCapture();
       if (q.get('walkthrough') === '1') walk.open(1);
-      if (q.get('updates') === '1') $('updatesBox').scrollIntoView({ block: 'center' });
+      if (q.get('updates') === '1') { scrollToUpdates = true; loadUpdates(); }
       refreshNeeded();
     });
   }
