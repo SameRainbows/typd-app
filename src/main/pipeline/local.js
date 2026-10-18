@@ -400,6 +400,22 @@ function longLimits() {
  * first on PATH as well. Otherwise in llama-server's own folder, so nothing in whatever directory
  * Typd was started from is ever picked up.
  */
+/**
+ * Has this llama.cpp a GPU backend to put layers on? Metal on Apple silicon; on Windows the CUDA pack
+ * (cuda.dir()) or a CUDA backend beside llama-server (tester builds, installs updated from 0.2.4 or
+ * earlier). Otherwise -ngl 99 runs on the processor all the same: the public Windows build without the
+ * pack, an Intel Mac. TYPD_GPU_BACKEND=0/1 overrides it (the bench).
+ */
+function gpuBackend() {
+  if (process.env.TYPD_GPU_BACKEND === '0' || process.env.TYPD_GPU_BACKEND === '1') return process.env.TYPD_GPU_BACKEND === '1';
+  if (process.platform === 'darwin') return process.arch === 'arm64';
+  try {
+    return Boolean(cuda.dir()) || fs.existsSync(path.join(path.dirname(SERVER), 'ggml-cuda.dll'));
+  } catch {
+    return false;
+  }
+}
+
 function spawnOptions(dir = cuda.dir(), base = process.env, serverDir = path.dirname(SERVER)) {
   if (!dir) return { cwd: serverDir, env: base };
   const env = { ...base };
@@ -456,7 +472,7 @@ function serverEnv(base, layers = '0', low = lowMemory.on) {
 function launch(layers) {
   const run = spawnOptions();
   if (run.cwd !== path.dirname(SERVER)) debug('starting llama-server with the CUDA pack in', run.cwd);
-  const child = spawn(SERVER, serverArgs(layers), { windowsHide: true, cwd: run.cwd, env: serverEnv(run.env, layers), stdio: ['ignore', 'ignore', process.env.TYPD_DEBUG ? 'inherit' : 'ignore'] });
+  const child = spawn(SERVER, serverArgs(layers), { windowsHide: true, cwd: run.cwd, env: serverEnv(run.env, gpuBackend() ? layers : '0'), stdio: ['ignore', 'ignore', process.env.TYPD_DEBUG ? 'inherit' : 'ignore'] });
   child.on('exit', (code) => {
     debug('server exited', code);
     if (proc === child) proc = null;
@@ -581,7 +597,7 @@ function warm() {
       enabled: process.env.TYPD_SELFTEST !== '0' && fs.existsSync(FIXTURE)
     });
     if (!r.tested) await nudge('', 30000);   // the first dictation would otherwise pay for the warm-up
-    device = where(r.layers);
+    device = gpuBackend() ? where(r.layers) : 'CPU';
     debug('model', modelId(), 'ready in', Date.now() - t0, 'ms');
   })();
   starting = run
@@ -1370,7 +1386,7 @@ async function transcribe(samples, sampleRate, signal, system = '') {
 
 module.exports = {
   warm, stop, ping, dictate, revise, transcribe, openStream, openLong, dictationBudget, loopCut, contextPrompt, revisePrompt,
-  countTokens, setVocabLog, configure, lowMemoryStale, longLimits, reviseLimit, serverArgs, serverEnv, contextChars,
+  countTokens, setVocabLog, configure, lowMemoryStale, gpuBackend, longLimits, reviseLimit, serverArgs, serverEnv, contextChars,
   /** The server's window, in tokens: 4,096, or 1,280 in low-memory mode. */
   get CONTEXT() { return contextSize(); },
   /** Low-memory mode for the server now running (or about to): {on, why}. */
