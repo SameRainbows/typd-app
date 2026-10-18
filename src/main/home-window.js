@@ -124,7 +124,9 @@ function settingsState() {
     recordings: recordingsInfo(),
     // null where sharing is not in this build; {mode: 'tester', ...} or {mode: 'beta', ...} (sharing.js)
     sharing: sharing.status(),
-    flagKey: flag ? { label: hotkeyLogic.label(flag, process.platform), parts: hotkeyLogic.parts(flag, process.platform) } : null
+    flagKey: flag ? { label: hotkeyLogic.label(flag, process.platform), parts: hotkeyLogic.parts(flag, process.platform) } : null,
+    // Low-memory mode as the model server runs now: {on, why} (local.js), or null before it has started.
+    lowMemoryNow: deps && deps.lowMemoryNow ? deps.lowMemoryNow() : null
   };
 }
 
@@ -290,6 +292,11 @@ function register(d) {
     if (key === 'modelVariant' || key === 'askBeforeModelDownload') {
       if (!settings.set(key, value)) return false;
       if (deps.modelChanged) deps.modelChanged(key);
+      return true;
+    }
+    if (key === 'lowMemory') {
+      if (!settings.set(key, value)) return false;
+      if (deps.lowMemoryChanged) deps.lowMemoryChanged();
       return true;
     }
     if (!['mic', 'micLabel', 'sounds', 'keepRecordings', 'sharePaused'].includes(key)) return false;

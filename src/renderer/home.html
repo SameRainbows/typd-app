@@ -262,6 +262,18 @@
           <label class="switch"><input type="checkbox" id="askBeforeModelDownload" aria-labelledby="askTitle" /><span></span></label>
         </div>
 
+        <div class="row" id="lowMemoryRow" hidden>
+          <div class="label">
+            <h2 id="lowMemoryTitle">Low-memory mode</h2>
+            <p id="lowMemoryHelp">Uses about half the memory, with the same accuracy. Long dictations are written in shorter pieces, and you can revise up to ~250 words at a time.</p>
+          </div>
+          <select id="lowMemory" aria-labelledby="lowMemoryTitle">
+            <option value="auto">Automatic</option>
+            <option value="on">On</option>
+            <option value="off">Off</option>
+          </select>
+        </div>
+
       </div>
 
       <div class="confirm" id="betaConfirm" hidden>

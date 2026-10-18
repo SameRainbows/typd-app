@@ -505,6 +505,7 @@
     var pk = M.pack && M.pack.line ? M.pack.line : '';
     $('modelNowLine').textContent = (M.line || '') + (pk ? ' · ' + pk : '');
     $('askBeforeModelDownload').checked = Boolean(S.settings.askBeforeModelDownload);
+    renderLowMemory();
     var p = M.pending;
     $('modelAsk').hidden = !p;
     if (p) {
@@ -512,6 +513,20 @@
         (p.why === 'metered' ? ' — this connection is metered.' : p.why === 'unknown' ? ' — this connection may be metered.' : '.');
       $('modelLater').hidden = Boolean(p.later);
     }
+  }
+
+  // Low-memory mode (0.2.6): Automatic / On / Off, under the model; Automatic says what it does now.
+  function renderLowMemory() {
+    var row = $('lowMemoryRow');
+    if (!row) return;
+    row.hidden = $('modelRow').hidden;
+    var s = S.settings.lowMemory || 'auto';
+    $('lowMemory').value = s;
+    var now = S.settings.lowMemoryNow;
+    $('lowMemory').options[0].textContent = now ? 'Automatic (' + (now.on ? 'on' : 'off') + ')' : 'Automatic';
+    var help = 'Uses about half the memory, with the same accuracy. Long dictations are written in shorter pieces, and you can revise up to ~250 words at a time.';
+    if (s === 'auto') help += ' Automatic turns it on for the Light model and on computers with less than 8 GB of memory' + (now && now.why ? ' (now: ' + now.why + ').' : '.');
+    $('lowMemoryHelp').textContent = help;
   }
 
   /* ---------------------------------------------------------- updates */
@@ -554,6 +569,17 @@
       S.settings.modelVariant = v;
       toast(v === 'auto' ? 'Typd picks the model for this ' + S.platform.machine : variantName(v) + ' model chosen. Typd switches when it is ready');
       setTimeout(loadModel, 400);
+    });
+  });
+  $('lowMemory').addEventListener('change', function (e) {
+    var v = e.target.value;
+    api.settings.set('lowMemory', v).then(function (ok) {
+      if (!ok) { failSettings("Couldn't change that setting."); renderLowMemory(); return; }
+      S.settings.lowMemory = v;
+      toast('Low-memory mode: ' + (v === 'auto' ? 'automatic' : v) + '. The model restarts in a moment');
+      setTimeout(function () {
+        api.settings.state().then(function (st) { if (st) { S.settings.lowMemoryNow = st.lowMemoryNow; renderLowMemory(); } }).catch(function () {});
+      }, 6000);
     });
   });
   $('askBeforeModelDownload').addEventListener('change', function (e) {

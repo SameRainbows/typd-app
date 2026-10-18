@@ -15,6 +15,8 @@ const brand = require('./brand');
 const { store } = require('./store');
 const { createTray } = require('./tray');
 const pipeline = require('./pipeline');
+// Low-memory mode follows Settings (read at each model server start): src/main/lowMemory.js.
+require('./pipeline/local').configure({ lowMemory: () => settings.get('lowMemory') });
 const inject = require('./inject');
 const learn = require('./learn');
 const dictionary = require('./dictionary');
@@ -633,6 +635,19 @@ ask.register({
 
 /* ------------------------------------------------------------- model, mic */
 
+/*
+ * Low-memory mode (Settings > Model; local.js, lowMemory.js) is decided each time the model server
+ * starts. A change in Settings that changes the answer restarts the server on the new arguments --
+ * the same few seconds of "Getting ready…" as a model switch, never during a dictation.
+ */
+function applyLowMemory() {
+  const local = require('./pipeline/local');
+  if (stub || modelMissing() || !local.lowMemoryStale()) return;
+  if (session || status.get().model === 'loading') { setTimeout(applyLowMemory, 2000); return; }
+  life.log('model', 'low-memory mode ' + (local.lowMemory.on ? 'off' : 'on') + ' from Settings: restarting the model server');
+  switchBackend().catch(() => {});
+}
+
 function warmModel() {
   if (stub) { status.set({ model: 'ready' }); return; }
   // A model-less install before its first model: nothing to start. The download (modelUpdate.js)
@@ -1136,7 +1151,9 @@ app.whenReady().then(() => {
     modelNow: () => modelUpdate.approve(),
     modelLater: () => modelUpdate.later(),
     // Automatic / Full / Light, or the asking switch, changed: read the hardware again and check soon.
-    modelChanged: () => { choice.forget(); modelUpdate.recheck(); }
+    modelChanged: () => { choice.forget(); modelUpdate.recheck(); },
+    lowMemoryNow: () => require('./pipeline/local').lowMemory,
+    lowMemoryChanged: () => applyLowMemory()
   });
 
   settings.onChange((key) => {

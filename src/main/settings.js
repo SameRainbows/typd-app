@@ -33,6 +33,9 @@ const DEFAULTS = {
   modelVariant: 'auto',
   // Ask before every model download. Off: downloads over 300 MB ask first only on a metered connection.
   askBeforeModelDownload: false,
+  // Low-memory mode (0.2.6, lowMemory.js): 'auto' (on for the light model or a computer with less than
+  // 8 GB of memory), 'on' or 'off'. Settings > Model, under the model choice.
+  lowMemory: 'auto',
   // The first-run walkthrough (home window): 'due' on a fresh install until it has been shown once,
   // then 'done'; '' (never decided) becomes one of the two at launch (walkthroughFor). Fresh installs
   // only: an update, or any install that ran Typd before, never sees it (since 0.2.4).
@@ -40,6 +43,7 @@ const DEFAULTS = {
 };
 
 const VARIANTS = ['auto', 'full', 'light'];
+const LOW_MEMORY = ['auto', 'on', 'off'];
 
 /** Two good choices, for anything that wants to suggest one: the default key and a chord. */
 const HOTKEYS = [DEFAULTS.hotkey, process.platform === 'darwin' ? 'Command+Shift+Space' : 'Ctrl+Shift+Space'];
@@ -62,6 +66,7 @@ function read() {
   cache.share = shareFrom(saved);
   if (cache.flagHotkey && !hotkeyLogic.validFlag(cache.flagHotkey, process.platform)) cache.flagHotkey = DEFAULTS.flagHotkey;
   if (!VARIANTS.includes(cache.modelVariant)) cache.modelVariant = DEFAULTS.modelVariant;
+  if (!LOW_MEMORY.includes(cache.lowMemory)) cache.lowMemory = DEFAULTS.lowMemory;
   if (!['', 'due', 'done'].includes(cache.walkthrough)) cache.walkthrough = 'done';
   return cache;
 }
@@ -98,6 +103,7 @@ function set(key, value) {
   }
   if (key === 'share' && !['on', 'off'].includes(value)) return false;
   if (key === 'modelVariant' && !VARIANTS.includes(value)) return false;
+  if (key === 'lowMemory' && !LOW_MEMORY.includes(value)) return false;
   if (key === 'walkthrough' && !['', 'due', 'done'].includes(value)) return false;
   if (key === 'flagHotkey' && value) {
     const v = hotkeyLogic.validFlag(value, process.platform);
