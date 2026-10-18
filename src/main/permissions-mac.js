@@ -289,6 +289,12 @@ async function ask(off) {
     // clearing Typd's own answer in macOS and asking again helps: "Ask macOS Again".
     const offered = off.includes('microphone') && (mic === 'denied' || mic === 'restricted') && app.isPackaged;
     const buttons = [askFirst ? 'Allow Microphone' : 'Open System Settings', ...(offered ? ['Ask macOS Again'] : []), 'Not Now'];
+    // The Mac CI (scripts/mac-mic-check.sh), when it cannot click Typd's own dialog: the answer it names.
+    const test = process.env.TYPD_TEST_DIALOG_ANSWER;
+    if (test && ['open', 'reset', 'later'].includes(test) && (test !== 'reset' || offered)) {
+      lifeLog('permissions', 'test: the dialog answered ' + test + ' (TYPD_TEST_DIALOG_ANSWER; buttons ' + buttons.join(', ') + ')');
+      return test;
+    }
     const { response } = await dialog.showMessageBox({
       type: 'none',
       icon: icon(),
