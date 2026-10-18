@@ -49,7 +49,8 @@ contextBridge.exposeInMainWorld('typd', {
 
   // The microphone failed to open ('unavailable') or delivers digital silence ('silent'),
   // which is what a Windows privacy block or a hardware mute looks like from here.
-  micProblem(kind) { ipcRenderer.send('overlay:mic', kind); },
+  // `why`: the capture error's name (NotAllowedError, NotFoundError, NotReadableError...), for the log.
+  micProblem(kind, why) { ipcRenderer.send('overlay:mic', kind, typeof why === 'string' ? why.slice(0, 40) : ''); },
 
   // The input devices ({deviceId, label}), for the tray's Microphone menu.
   devices(list) { ipcRenderer.send('overlay:devices', Array.isArray(list) ? list : []); },

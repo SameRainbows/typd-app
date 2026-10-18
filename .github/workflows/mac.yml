@@ -1,4 +1,6 @@
-# Build Typd for macOS: the official build, signed with Typd's own certificate.
+# Build Typd for macOS: the official build, signed with Typd's own certificate. (Typd 0.2.8, release
+# branch release-0.2.8: 0.2.7's microphone and icon checks, plus the patched llama.cpp encoder that
+# scripts/fetch-llama-mac.js builds.)
 #
 # Only a maintainer can start it (Actions > macOS > Run workflow, or `gh workflow run mac.yml`).
 # It never runs on a push or a pull request, so code from a fork never runs with its secrets.
@@ -134,6 +136,11 @@ jobs:
           MAC_CODESIGN_P12_PASSWORD: ${{ secrets.MAC_CODESIGN_P12_PASSWORD }}
         run: bash scripts/mac-signing-import.sh
 
+      - name: The macOS icon, made by Apple's iconutil (every size, each at its size)
+        # build.mac.icon is build/icon.icns. electron-builder's own .icns from assets/typd.png had wrong sizes
+        # in its @2x slots and PNGs in the 16/32 px ARGB slots (0.2.6 and earlier): broken small icons in Finder.
+        run: bash scripts/build-mac-icon.sh
+
       - name: Package (signed with Typd's certificate)
         run: |
           # Naming the target makes the arch flags replace build.mac.target's arch list
@@ -170,6 +177,29 @@ jobs:
             test "$(plutil -extract NSSupportsAutomaticTermination raw -o - "$app/Contents/Info.plist")" = false
             test "$(plutil -extract NSSupportsSuddenTermination raw -o - "$app/Contents/Info.plist")" = false
             test "$(plutil -extract LSAppNapIsDisabled raw -o - "$app/Contents/Info.plist")" = true
+            # The microphone (0.2.7): the usage string in the app and in every helper app, the audio-input
+            # entitlement in the app and every helper (scripts/mac-entitlements.plist), and still no
+            # hardened runtime (TCC prompts without it; with it, a missing entitlement is refused silently).
+            mic=$(plutil -extract NSMicrophoneUsageDescription raw -o - "$app/Contents/Info.plist")
+            test -n "$mic"
+            for b in "$app" "$app"/Contents/Frameworks/*.app; do
+              hm=$(plutil -extract NSMicrophoneUsageDescription raw -o - "$b/Contents/Info.plist" 2>/dev/null || true)
+              [ "$hm" = "$mic" ] || { echo "$(basename "$b"): NSMicrophoneUsageDescription missing or different"; exit 1; }
+              codesign -d --entitlements - --xml "$b" 2>/dev/null > "$RUNNER_TEMP/ent.plist"
+              [ "$(plutil -extract com.apple.security.device.audio-input raw -o - "$RUNNER_TEMP/ent.plist" 2>/dev/null)" = true ] || { echo "$(basename "$b"): no com.apple.security.device.audio-input entitlement"; exit 1; }
+              codesign -dv "$b" 2>&1 | grep -q 'flags=0x0(none)' || { echo "$(basename "$b"): unexpected code-signing flags: $(codesign -dv "$b" 2>&1 | grep CodeDirectory)"; exit 1; }
+              echo "  $(basename "$b"): usage string, audio-input entitlement, no hardened runtime"
+            done
+            echo "- $a: microphone usage string + audio-input entitlement in the app and its helpers" >> "$GITHUB_STEP_SUMMARY"
+            # The icon: every size at its size (scripts/check-icns.js), and Apple's iconutil reads back exactly
+            # the ten images of a full iconset, each at its pixel size.
+            node scripts/check-icns.js "$app/Contents/Resources/icon.icns"
+            rm -rf "$RUNNER_TEMP/icon.iconset"
+            iconutil -c iconset "$app/Contents/Resources/icon.icns" -o "$RUNNER_TEMP/icon.iconset"
+            got=$(cd "$RUNNER_TEMP/icon.iconset" && for f in *.png; do echo "$f=$(sips -g pixelWidth "$f" | awk '/pixelWidth/ {print $2}')"; done | LC_ALL=C sort | tr '\n' ' ')
+            want="icon_128x128.png=128 icon_128x128@2x.png=256 icon_16x16.png=16 icon_16x16@2x.png=32 icon_256x256.png=256 icon_256x256@2x.png=512 icon_32x32.png=32 icon_32x32@2x.png=64 icon_512x512.png=512 icon_512x512@2x.png=1024 "
+            echo "iconutil reads back: $got"
+            [ "$got" = "$want" ] || { echo "the icon is not a full iconset at the right sizes"; exit 1; }
             ls -la "$app/Contents/Resources/llama" "$app/Contents/Resources/models/typd-dictate"
             # Model-less: no model.json and no .gguf anywhere in the app.
             test ! -e "$app/Contents/Resources/models/typd-dictate/model.json"
@@ -228,6 +258,17 @@ jobs:
           done
           ls -la dist/update
           node -e "for (const f of require('fs').readdirSync('dist/update').filter((n) => n.endsWith('.zip.json'))) { const r = require('./dist/update/' + f); console.log(f, 'carry', JSON.stringify(r.carry), 'signed', r.signature && r.signature.how, '|', r.signature && r.signature.designated); if (r.carry.length) process.exit(1); }"
+          # The package's app is signed again (the outer bundle only): it must keep the audio-input entitlement.
+          for z in dist/update/*.zip; do
+            d="$RUNNER_TEMP/upd-$(basename "$z" .zip)"; rm -rf "$d"; mkdir -p "$d"; ditto -x -k "$z" "$d"
+            codesign --verify --deep --strict "$d/Typd.app"
+            for b in "$d/Typd.app" "$d"/Typd.app/Contents/Frameworks/*.app; do
+              codesign -d --entitlements - --xml "$b" 2>/dev/null > "$RUNNER_TEMP/ent.plist"
+              [ "$(plutil -extract com.apple.security.device.audio-input raw -o - "$RUNNER_TEMP/ent.plist" 2>/dev/null)" = true ] || { echo "$(basename "$z"): $(basename "$b") lost the audio-input entitlement"; exit 1; }
+            done
+            node scripts/check-icns.js "$d/Typd.app/Contents/Resources/icon.icns"
+            echo "$(basename "$z"): audio-input entitlement in the app and its helpers; icon ok"
+          done
 
       - name: Model choice and network cost on a real Mac (informational)
         # src/main/hardware.js and src/main/netcost.js, the raw answers logged. A runner is neither
@@ -285,6 +326,17 @@ jobs:
           IDLE=0 scripts/mac-close-check.sh open "$PWD/dist/mac-arm64/Typd.app" open-no-switches || fail=1
           test $fail = 0
 
+      - name: The microphone, as a new user's first launch asks for it (arm64)
+        if: contains(env.ARCHS, 'arm64')
+        # scripts/mac-mic-check.sh: on a fresh profile with the microphone never answered, macOS prompts for
+        # it as ai.typd.app (tccd: AUTHREQ_PROMPTING), Typd logs the request, stops waiting on an unanswered
+        # prompt and shows its own dialog (0.2.6 waited forever), and Allow puts Typd in the Microphone list
+        # (a TCC row). A gate.
+        run: |
+          swiftc -O scripts/mac-alert.swift -o "$RUNNER_TEMP/mac-alert"
+          chmod +x scripts/mac-mic-check.sh
+          scripts/mac-mic-check.sh "$PWD/dist/mac-arm64/Typd.app" mic-signed
+
       - name: Let Typd through macOS privacy as its own app (arm64, runner only)
         if: contains(env.ARCHS, 'arm64')
         # The runner's VM lets the privacy (TCC) databases be written: grant ai.typd.app
@@ -299,7 +351,10 @@ jobs:
           SYS="/Library/Application Support/com.apple.TCC/TCC.db"
           USR="$HOME/Library/Application Support/com.apple.TCC/TCC.db"
           for svc in kTCCServiceAccessibility kTCCServiceListenEvent kTCCServicePostEvent; do grant "$SYS" $svc; done
-          grant "$USR" kTCCServiceMicrophone
+          # macOS 27 moved the user's TCC.db under /private/var/containers/Data/ProtectedSystem (writable here: SIP is off).
+          if [ -f "$USR" ]; then grant "$USR" kTCCServiceMicrophone; else
+            sudo find /private/var/containers/Data/ProtectedSystem -name TCC.db -path '*com.apple.TCC*' 2>/dev/null | while IFS= read -r db; do grant "$db" kTCCServiceMicrophone; done
+          fi
           sudo sqlite3 "$SYS" "SELECT service, client, auth_value FROM access WHERE client = 'ai.typd.app';" || true
           csrutil status || true
 
@@ -488,11 +543,20 @@ jobs:
         run: |
           set -e
           unset TYPD_TESTER_CONFIG
+          bash scripts/build-mac-icon.sh
           TYPD_NO_BUNDLED_MODEL=1 npx electron-builder --mac dir --arm64 --publish never
           app=dist/mac-arm64/Typd.app
           codesign --verify --deep --strict "$app"
           plutil -p "$app/Contents/Info.plist" | grep -E 'LSUIElement|Termination|AppNap|CFBundleShortVersionString'
           swiftc -O scripts/mac-ui.swift -o "$RUNNER_TEMP/mac-ui"
+
+      - name: The microphone, as a new user's first launch asks for it, ${{ matrix.os }}
+        # scripts/mac-mic-check.sh (see the build job): macOS prompts for it as ai.typd.app, Typd does not wait
+        # forever on an unanswered prompt, Allow puts Typd in the Microphone list. macOS 27 is the reporter's. A gate.
+        run: |
+          swiftc -O scripts/mac-alert.swift -o "$RUNNER_TEMP/mac-alert"
+          chmod +x scripts/mac-mic-check.sh
+          scripts/mac-mic-check.sh "$PWD/dist/mac-arm64/Typd.app" mic-${{ matrix.os }}
 
       - name: Let Typd through macOS privacy (runner only, best effort)
         continue-on-error: true
@@ -504,7 +568,10 @@ jobs:
           SYS="/Library/Application Support/com.apple.TCC/TCC.db"
           USR="$HOME/Library/Application Support/com.apple.TCC/TCC.db"
           for svc in kTCCServiceAccessibility kTCCServiceListenEvent kTCCServicePostEvent; do grant "$SYS" $svc; done
-          grant "$USR" kTCCServiceMicrophone
+          # macOS 27 moved the user's TCC.db under /private/var/containers/Data/ProtectedSystem (writable here: SIP is off).
+          if [ -f "$USR" ]; then grant "$USR" kTCCServiceMicrophone; else
+            sudo find /private/var/containers/Data/ProtectedSystem -name TCC.db -path '*com.apple.TCC*' 2>/dev/null | while IFS= read -r db; do grant "$db" kTCCServiceMicrophone; done
+          fi
 
       - name: Close checks, ${{ matrix.os }}
         env:

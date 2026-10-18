@@ -192,10 +192,12 @@ function main() {
     skipped = skip.filter((rel) => fs.existsSync(path.join(stage, appName, rel)));
     for (const rel of skipped) fs.rmSync(path.join(stage, appName, rel), { recursive: true, force: true });
     execFileSync('xattr', ['-cr', path.join(stage, appName)]);
-    const { signArgs, designatedRequirement } = require('./after-pack');
+    const { signArgs, designatedRequirement, entitlementArgs } = require('./after-pack');
     const how = signArgs();
     if (how.label === 'ad hoc') console.warn('  WARNING: no TYPD_MAC_SIGN_IDENTITY: signed ad hoc. Installed as an update, it would cost every Mac its privacy switches; publish only CI packages.');
-    execFileSync('codesign', ['--force', ...how.args, path.join(stage, appName)]);
+    // The outer app only (its helpers keep after-pack's signatures); --force would drop the main
+    // executable's entitlements without --entitlements.
+    execFileSync('codesign', ['--force', ...how.args, ...entitlementArgs(), path.join(stage, appName)]);
     execFileSync('codesign', ['--verify', '--deep', '--strict', path.join(stage, appName)]);
     signature = { how: how.label, designated: designatedRequirement(path.join(stage, appName)), installedApp: designatedRequirement(app) };
     if (how.label !== 'ad hoc' && signature.designated !== signature.installedApp) die(`the package's designated requirement (${signature.designated}) is not the app's (${signature.installedApp})`);
