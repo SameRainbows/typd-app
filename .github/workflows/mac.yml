@@ -176,6 +176,7 @@ jobs:
             test "$(plutil -extract NSSupportsAutomaticTermination raw -o - "$app/Contents/Info.plist")" = false
             test "$(plutil -extract NSSupportsSuddenTermination raw -o - "$app/Contents/Info.plist")" = false
             test "$(plutil -extract LSAppNapIsDisabled raw -o - "$app/Contents/Info.plist")" = true
+            # (PlistBuddy, not plutil: plutil reads the dots in an entitlement's name as a key path.)
             # The microphone (0.2.7): the usage string in the app and in every helper app, the audio-input
             # entitlement in the app and every helper (scripts/mac-entitlements.plist), and still no
             # hardened runtime (TCC prompts without it; with it, a missing entitlement is refused silently).
@@ -185,7 +186,7 @@ jobs:
               hm=$(plutil -extract NSMicrophoneUsageDescription raw -o - "$b/Contents/Info.plist" 2>/dev/null || true)
               [ "$hm" = "$mic" ] || { echo "$(basename "$b"): NSMicrophoneUsageDescription missing or different"; exit 1; }
               codesign -d --entitlements - --xml "$b" 2>/dev/null > "$RUNNER_TEMP/ent.plist"
-              [ "$(plutil -extract com.apple.security.device.audio-input raw -o - "$RUNNER_TEMP/ent.plist" 2>/dev/null)" = true ] || { echo "$(basename "$b"): no com.apple.security.device.audio-input entitlement"; exit 1; }
+              [ "$(/usr/libexec/PlistBuddy -c "Print :com.apple.security.device.audio-input" "$RUNNER_TEMP/ent.plist" 2>/dev/null)" = true ] || { echo "$(basename "$b"): no com.apple.security.device.audio-input entitlement"; exit 1; }
               codesign -dv "$b" 2>&1 | grep -q 'flags=0x0(none)' || { echo "$(basename "$b"): unexpected code-signing flags: $(codesign -dv "$b" 2>&1 | grep CodeDirectory)"; exit 1; }
               echo "  $(basename "$b"): usage string, audio-input entitlement, no hardened runtime"
             done
@@ -263,7 +264,7 @@ jobs:
             codesign --verify --deep --strict "$d/Typd.app"
             for b in "$d/Typd.app" "$d"/Typd.app/Contents/Frameworks/*.app; do
               codesign -d --entitlements - --xml "$b" 2>/dev/null > "$RUNNER_TEMP/ent.plist"
-              [ "$(plutil -extract com.apple.security.device.audio-input raw -o - "$RUNNER_TEMP/ent.plist" 2>/dev/null)" = true ] || { echo "$(basename "$z"): $(basename "$b") lost the audio-input entitlement"; exit 1; }
+              [ "$(/usr/libexec/PlistBuddy -c "Print :com.apple.security.device.audio-input" "$RUNNER_TEMP/ent.plist" 2>/dev/null)" = true ] || { echo "$(basename "$z"): $(basename "$b") lost the audio-input entitlement"; exit 1; }
             done
             node scripts/check-icns.js "$d/Typd.app/Contents/Resources/icon.icns"
             echo "$(basename "$z"): audio-input entitlement in the app and its helpers; icon ok"

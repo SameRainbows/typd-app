@@ -127,22 +127,43 @@ async function permissionsSection() {
   {
     // A. The reporter's first launch: macOS's prompt is up and nobody answers it.
     const w = world();
-    w.responses.push({ response: 0, advance: 11000 });   // "Allow Microphone", more than 10 s after the first ask
+    let answer = null;
+    w.askImpl = () => new Promise((res) => { answer = res; });   // answered only when the bench says so
     const pm = fresh(w);
+    let opened = 0;
+    pm.whenUnanswered(() => { opened++; });
     const r = await within(pm.ensure('startup'), 3000);
     check('a prompt nobody answers does not hold the launch check (0.2.6 waited forever)', r.done, r);
-    check('...macOS was asked once at launch', w.asks >= 1, w.asks);
+    check('...macOS was asked once at launch, Typd brought to the front for it', w.asks === 1 && w.focus >= 1, { asks: w.asks, focus: w.focus });
     check('...the request and the missing answer are in the life log', w.life.some((l) => /^microphone: asking macOS/.test(l)) && w.life.some((l) => /^microphone: no answer from macOS after/.test(l)), w.life);
-    const d = w.dialogs[0];
-    check('...Typd\'s own dialog follows, its first button "Allow Microphone"', d && d.buttons[0] === 'Allow Microphone', d && d.buttons);
-    check('...it says why Typd is not in the Microphone list', d && /not in its Microphone list/.test(d.detail), d && d.detail);
-    await sleep(50);
-    check('..."Allow Microphone" asks macOS again (its prompt), it does not open a list Typd is not in', w.asks === 2 && !w.opened.some((u) => /Privacy_Microphone/.test(u)), { asks: w.asks, opened: w.opened });
-    check('...Typd came to the front for macOS\'s prompt', w.focus >= 1, w.focus);
+    check('...no modal dialog of Typd\'s over macOS\'s prompt (a modal holds Typd up, macOS\'s answer included)', w.dialogs.length === 0, w.dialogs.map((d) => d.message));
+    check('...the Typd window opens instead (its card offers Allow / Ask again), and the life log says why', opened === 1 && w.life.some((l) => /still unanswered: no dialog/.test(l)), { opened, life: w.life });
     check('...micState says "asking" while the prompt is up', pm.micState() === 'asking', pm.micState());
     check('...the walkthrough waits on it for at most its own limit', pm.isAsking(60000) === true && pm.isAsking(0) === false);
-    const s = await pm.status();
-    check('...status(): a microphone never answered counts as off (the tray and Home offer "Allow")', s.microphone === false, s);
+    const s0 = await pm.status();
+    check('...status(): a microphone never answered counts as off (the tray and Home offer "Allow")', s0.microphone === false, s0);
+    clockOffset += 11000;
+    pm.request('microphone');   // Home's "Ask again", more than 10 s later
+    await sleep(30);
+    check('..."Ask again" asks macOS again (its prompt), it opens no list Typd is not in', w.asks === 2 && !w.opened.some((u) => /Privacy_Microphone/.test(u)), { asks: w.asks, opened: w.opened });
+    // macOS answers at last: the check runs again by itself and explains the switches still off.
+    w.ax = false;
+    w.mic = 'granted';
+    answer(true);
+    await sleep(900);
+    check('macOS answers later: Typd hears it and runs the check again (the other switches explained)', w.life.some((l) => /macOS answered: allowed/.test(l)) && w.dialogs.length === 1 && /Accessibility/.test(w.dialogs[0].detail) && !/Microphone —/.test(w.dialogs[0].detail), w.dialogs.map((d) => d.detail));
+  }
+  {
+    // A2. Never answered, and no prompt pending (macOS dropped it): the dialog's first button asks macOS.
+    const w = world();
+    w.askImpl = () => Promise.resolve(false);   // returns at once, still not-determined
+    w.responses.push({ response: 0, advance: 11000 });
+    const pm = fresh(w);
+    await within(pm.ensure('startup'), 3000);
+    const d = w.dialogs[0];
+    check('never answered, no prompt left: the dialog\'s first button is "Allow Microphone", and says why Typd is not in the list', d && d.buttons[0] === 'Allow Microphone' && /not in its Microphone list/.test(d.detail), d && { b: d.buttons, detail: d.detail });
+    await sleep(30);
+    check('..."Allow Microphone" asks macOS again, it opens no pane', w.asks === 2 && !w.opened.some((u) => /Privacy_Microphone/.test(u)), { asks: w.asks, opened: w.opened });
   }
   {
     // B. Allow.

@@ -6,6 +6,9 @@
 //   mac-alert texts <process>         that process's static texts and buttons, through Accessibility
 //                                     (macOS's privacy prompt is UserNotificationCenter's alert)
 //   mac-alert press <process> <title> press that button (a curly apostrophe matches a straight one)
+//   mac-alert click <process> <title> a real mouse click on that button's centre (HID level), as a
+//                                     person clicks: Typd's own dialogs (Electron's NSAlert in
+//                                     runModal) ignored AXPress in CI
 //
 // Exit 0; "AX not trusted" when this runner may not use Accessibility (the check then says so).
 
@@ -67,6 +70,33 @@ case "press" where args.count > 3:
         }
     }
     if !done { print("no button \(args[3])") }
+case "click" where args.count > 3:
+    if !AXIsProcessTrusted() { print("AX not trusted"); break }
+    let want = args[3].replacingOccurrences(of: "\u{2019}", with: "'")
+    var at: CGPoint? = nil
+    for a in apps(args[2]) where at == nil {
+        walk(AXUIElementCreateApplication(a.processIdentifier), 0) { e, role, title, _ in
+            guard at == nil, role == "AXButton", title.replacingOccurrences(of: "\u{2019}", with: "'") == want else { return }
+            var pv: CFTypeRef?
+            var sv: CFTypeRef?
+            var p = CGPoint.zero
+            var z = CGSize.zero
+            if AXUIElementCopyAttributeValue(e, kAXPositionAttribute as CFString, &pv) == .success, let pv = pv,
+               AXUIElementCopyAttributeValue(e, kAXSizeAttribute as CFString, &sv) == .success, let sv = sv {
+                AXValueGetValue(pv as! AXValue, .cgPoint, &p)
+                AXValueGetValue(sv as! AXValue, .cgSize, &z)
+                at = CGPoint(x: p.x + z.width / 2, y: p.y + z.height / 2)
+            }
+        }
+    }
+    guard let c = at else { print("no button \(args[3])"); break }
+    let src = CGEventSource(stateID: .hidSystemState)
+    CGEvent(mouseEventSource: src, mouseType: .mouseMoved, mouseCursorPosition: c, mouseButton: .left)?.post(tap: .cghidEventTap)
+    usleep(200_000)
+    CGEvent(mouseEventSource: src, mouseType: .leftMouseDown, mouseCursorPosition: c, mouseButton: .left)?.post(tap: .cghidEventTap)
+    usleep(90_000)
+    CGEvent(mouseEventSource: src, mouseType: .leftMouseUp, mouseCursorPosition: c, mouseButton: .left)?.post(tap: .cghidEventTap)
+    print("clicked \(args[3]) at \(Int(c.x)),\(Int(c.y))")
 default:
-    print("usage: mac-alert windows | texts <process> | press <process> <button>")
+    print("usage: mac-alert windows | texts <process> | press <process> <button> | click <process> <button>")
 }

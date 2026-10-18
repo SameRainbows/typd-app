@@ -58,6 +58,8 @@ let automationDenied = false;
 let micHooked = false;
 let micAsking = null;       // macOS's microphone prompt in flight: { promise, at }
 const micListeners = [];
+let onUnanswered = null;    // index.js: open the Typd window (its card offers Allow / Ask again)
+let recheckOnAnswer = false; // a check left macOS's prompt alone: run it again when macOS answers
 
 /** inject-mac.js, through inject.js; required late because it requires this file back. */
 const inject = () => require('./inject');
@@ -156,6 +158,10 @@ function requestMic(why, { wait = MIC_WAIT_MS, again = false } = {}) {
       .finally(() => {
         if (micAsking === entry) micAsking = null;
         micChanged();
+        if (recheckOnAnswer && micStatus() !== 'not-determined') {
+          recheckOnAnswer = false;
+          setTimeout(() => ensure('the microphone answer'), 300);
+        }
       });
     micAsking = entry;
     micChanged();
@@ -176,6 +182,9 @@ function requestMic(why, { wait = MIC_WAIT_MS, again = false } = {}) {
 }
 
 function onMicChange(fn) { micListeners.push(fn); }
+
+/** index.js: what to do when macOS's microphone prompt stays unanswered (open the Typd window). */
+function whenUnanswered(fn) { onUnanswered = fn; }
 
 /** True, false, or null when it cannot be told. `prompt` also puts Typd in the list. */
 function axTrusted(prompt) {
@@ -376,9 +385,20 @@ function showable() {
 
 async function check(reason) {
   // The microphone first, through macOS's own prompt: the first time, that is all it takes. Its
-  // answer is waited for, but not forever (requestMic): with the prompt unanswered, the other
-  // switches are still explained, and the dialog's button asks macOS again.
-  if (micStatus() === 'not-determined') await requestMic('the ' + reason + ' check');
+  // answer is waited for, but not forever (requestMic). Still unanswered after that, Typd puts no
+  // dialog of its own over macOS's prompt -- a modal dialog would also hold Typd itself up until it
+  // is closed, macOS's answer included (seen in CI: the main thread 22 s late). Instead the Typd
+  // window opens on its card (Allow microphone / Ask again; the walkthrough's box on a fresh
+  // install), and this check runs again the moment macOS answers.
+  if (micStatus() === 'not-determined') {
+    const s = await requestMic('the ' + reason + ' check');
+    if (s === 'asking' && micAsking) {
+      lifeLog('microphone', 'macOS’s prompt still unanswered: no dialog of Typd’s over it; the Typd window offers to ask again');
+      recheckOnAnswer = true;   // whichever request macOS answers (requestMic), the check runs again
+      if (onUnanswered) { try { onUnanswered(); } catch { /* the window is optional */ } }
+      return false;
+    }
+  }
 
   const off = await missing();
   if (!off.length) {
@@ -498,4 +518,4 @@ async function status() {
 // prompt is answered -- but a prompt nobody answers (or nobody can see) must not hold it back for long.
 function isAsking(limit = MIC_WAIT_MS) { return dialogOpen || Boolean(micAsking && Date.now() - micAsking.at < limit); }
 
-module.exports = { ensure, status, openPane, isAsking, request, requestMic, resetMic, micState, onMicChange };
+module.exports = { ensure, status, openPane, isAsking, request, requestMic, resetMic, micState, onMicChange, whenUnanswered };
