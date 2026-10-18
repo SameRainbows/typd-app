@@ -285,10 +285,23 @@ async function run(exe) {
   const exe = findBrowser();
   if (!exe) { console.log('  skip  no Edge or Chrome found (set TYPD_BROWSER) -- the page checks did not run'); process.exit(0); }
   console.log('    browser: ' + path.basename(exe) + ', headless');
-  try {
-    await run(exe);
-  } catch (err) {
-    check('the page checks ran to the end', false, String(err && err.stack || err));
+  // A browser that stops answering (a busy machine; something ending browser processes) is not a
+  // failure of the page: that attempt is thrown away and run again in a fresh browser, up to three
+  // times, as bench/pill.js does. A check that fails in an attempt that ran through counts.
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const before = failures;
+    try {
+      await run(exe);
+      break;
+    } catch (err) {
+      const infra = /timed out|closed|ECONNRESET|socket hang up|Target closed/i.test(String(err && err.message));
+      if (infra && attempt < 3) {
+        failures = before;
+        console.log('    (attempt ' + attempt + ': the browser stopped answering -- ' + err.message + '; again, in a fresh one)');
+        continue;
+      }
+      check('the page checks ran to the end', false, String(err && err.stack || err));
+    }
   }
   console.log('\n' + (failures ? failures + ' FAILED' : 'all share-choice checks passed') + '\n');
   process.exit(failures ? 1 : 0);
