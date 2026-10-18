@@ -8,6 +8,7 @@ const { spawn } = require('child_process');
 const { activeModel, versionOf } = require('../modelUpdate');
 const long = require('./long');
 const vocab = require('./vocab');
+const lowMemoryRule = require('../lowMemory');
 
 /**
  * The single dictation model: audio in, finished writing out, on this machine.
@@ -160,14 +161,19 @@ const REVISE_SYSTEM = 'Revise the highlighted text by following the spoken instr
 
 // Screen context costs prompt time on every dictation; the tail nearest the caret
 // carries the vocabulary that matters, and the model was trained on <=1500 chars.
-const MAX_CONTEXT = 1500;
+// Low-memory mode keeps the last 600: names and identifiers near the caret, ~150-200 tokens
+// of a 1,280-token window (a names list of that size is what the models use: dictation-research
+// reports/icl_example_cache.md).
+const MAX_CONTEXT = 1500, LOW_MAX_CONTEXT = 600;
+const contextChars = () => (lowMemory.on ? LOW_MAX_CONTEXT : MAX_CONTEXT);
 
 function contextPrompt(block) {
   if (!SPEC.context || !block) return '';
-  if (block.length <= MAX_CONTEXT + 200) return block;
+  const max = contextChars();
+  if (block.length <= max + 200) return block;
   // Keep the app and title lines; trim the visible text from the front.
   return block.replace(/(<visible_text[^>]*>\n)([\s\S]*)(\n<\/visible_text>)/, (m, open, text, close) =>
-    open + '…' + text.slice(text.length - MAX_CONTEXT) + close);
+    open + '…' + text.slice(text.length - max) + close);
 }
 
 function revisePrompt(span) {
@@ -176,6 +182,7 @@ function revisePrompt(span) {
 const PORT = Number(process.env.TYPD_LLAMA_PORT || 8737);
 
 let proc = null;
+let device = null;        // 'GPU' | 'CPU': where the running server's self-test passed (null: not known)
 let starting = null;
 let startError = null;
 let stopping = null;      // a switch is taking the old server down; warm() waits for it
@@ -329,7 +336,62 @@ const modelId = () => VERSION || path.basename(MODEL);
  * 2026-10-05), 2,048 -> 8,192 +376 MiB on the 1.7B (results/revise_long_check.log), ~61 KiB a
  * token. Flash attention (on by default with CUDA and Metal) keeps the compute buffer flat.
  */
-const CONTEXT = 4096;
+const CONTEXT_FULL = 4096;
+
+/*
+ * Low-memory mode (0.2.6; src/main/lowMemory.js decides, Settings > Low-memory mode). The "free
+ * levers" of dictation-research reports/sub_half_gb_plan.md, measured on three held-out sets with no
+ * quality change on the light model (+0.01 content WER, n.s.):
+ *   -c 1280        the window (1,152 tokens, which llama.cpp pads to a multiple of 256 anyway);
+ *   -ctk q8_0 -ctv q4_0 -fa on
+ *                  the KV cache at 8 bits for K and 4 for V: 46,592 bytes a token instead of 60,928, so
+ *                  57 MiB for the window instead of 238 MiB at 4,096. A quantized V needs flash attention,
+ *                  hence -fa on. K must stay at q8_0: q4_0 there breaks decoding (+9.7 WER, empty outputs);
+ *   --no-repack    one copy of the decoder weights on the CPU instead of two (the repacked copy for the
+ *                  CPU's matrix kernels is ~205 MiB for the light model; identical output).
+ * With the window that small, one request must never need more than it holds: long dictations are cut
+ * into smaller pieces (longLimits()), the screen context is trimmed to LOW_MAX_CONTEXT, and a revision
+ * whose selection does not fit is refused with the usual message (revise(), maxReviseChars()).
+ * The encoder's conv front end one chunk at a time (MTMD_QWEN3A_CONV_GROUP=1) is on in low-memory mode and
+ * on the processor: see serverEnv(). Measured, the light model on the CPU: bench/low-memory.js, CHANGELOG 0.2.7.
+ */
+const LOW_CONTEXT = 1280;
+const LOW_ARGS = ['-fa', 'on', '-ctk', 'q8_0', '-ctv', 'q4_0', '--no-repack'];
+
+// Decided at each server start (warm()): {on, why}. configure() hands in the setting.
+let lowMemory = { on: false, why: 'not decided yet' };
+let lowMemorySetting = () => 'auto';
+/** index.js: where the Settings choice ('auto' | 'on' | 'off') is read, at each server start. */
+function configure({ lowMemory: setting } = {}) {
+  if (typeof setting === 'function') lowMemorySetting = setting;
+}
+function decideLowMemory() {
+  let setting = 'auto';
+  try { setting = lowMemorySetting(); } catch { setting = 'auto'; }
+  let modelBytes = 0;
+  try { modelBytes = fs.statSync(MODEL).size; } catch { modelBytes = 0; }
+  return lowMemoryRule.decide({ setting, modelBytes, totalMem: require('os').totalmem() });
+}
+const contextSize = () => (lowMemory.on ? LOW_CONTEXT : CONTEXT_FULL);
+/** Would a restart now change low-memory mode (the setting changed)? */
+function lowMemoryStale() {
+  return Boolean(proc) && decideLowMemory().on !== lowMemory.on;
+}
+
+/*
+ * How long a recording one request may hold, and so the long-dictation pieces (long.js). A request holds
+ * the chat template and the language tag (~40 tokens), the screen context (contextChars() plus ~200 for
+ * the app and title lines, at 3 characters a token at worst), 13 audio tokens a second (Qwen3-ASR: 100
+ * frames make 13), and room for the answer: dictationBudget(), 96 + 8 a second. Full mode: the 4,096
+ * window fits 160 s that way, more than the 75 s the model was trained on, so long.js's own limits hold.
+ * Low-memory mode, 1,280 tokens: 41 s, so pieces of 23-36 s, the last at most 41 s.
+ */
+const AUDIO_TOKENS_PER_S = 13, TEMPLATE_TOKENS = 40;
+function longLimits() {
+  const system = Math.ceil((contextChars() + 200) / 3);
+  const room = contextSize() - TEMPLATE_TOKENS - 96 - 16 - system;
+  return long.limitsFor(room / (AUDIO_TOKENS_PER_S + 8));
+}
 
 /**
  * Where llama-server runs, and with which PATH. With the CUDA pack installed (cuda.dir()), in its
@@ -338,6 +400,22 @@ const CONTEXT = 4096;
  * first on PATH as well. Otherwise in llama-server's own folder, so nothing in whatever directory
  * Typd was started from is ever picked up.
  */
+/**
+ * Has this llama.cpp a GPU backend to put layers on? Metal on Apple silicon; on Windows the CUDA pack
+ * (cuda.dir()) or a CUDA backend beside llama-server (tester builds, installs updated from 0.2.4 or
+ * earlier). Otherwise -ngl 99 runs on the processor all the same: the public Windows build without the
+ * pack, an Intel Mac. TYPD_GPU_BACKEND=0/1 overrides it (the bench).
+ */
+function gpuBackend() {
+  if (process.env.TYPD_GPU_BACKEND === '0' || process.env.TYPD_GPU_BACKEND === '1') return process.env.TYPD_GPU_BACKEND === '1';
+  if (process.platform === 'darwin') return process.arch === 'arm64';
+  try {
+    return Boolean(cuda.dir()) || fs.existsSync(path.join(path.dirname(SERVER), 'ggml-cuda.dll'));
+  } catch {
+    return false;
+  }
+}
+
 function spawnOptions(dir = cuda.dir(), base = process.env, serverDir = path.dirname(SERVER)) {
   if (!dir) return { cwd: serverDir, env: base };
   const env = { ...base };
@@ -346,23 +424,55 @@ function spawnOptions(dir = cuda.dir(), base = process.env, serverDir = path.dir
   return { cwd: dir, env };
 }
 
-function launch(layers) {
-  const run = spawnOptions();
-  if (run.cwd !== path.dirname(SERVER)) debug('starting llama-server with the CUDA pack in', run.cwd);
-  const child = spawn(SERVER, [
+/**
+ * llama-server's arguments for `layers` on the GPU: the model, the port, the window and cache, and the
+ * revise adapter. Low-memory mode (`low`) swaps the window and the KV types and adds --no-repack.
+ */
+function serverArgs(layers, low = lowMemory.on) {
+  return [
     '-m', MODEL, '--mmproj', MMPROJ,
     '--host', '127.0.0.1', '--port', String(PORT),
     '-ngl', String(layers),
     // Low memory with no measurable quality change (2026-10-05): 8-bit KV cache and smaller
-    // micro-batches. The window is CONTEXT, above.
-    '-c', String(CONTEXT), '-ctk', 'q8_0', '-ctv', 'q8_0', '-ub', '256', '-np', '1',
+    // micro-batches. The window is CONTEXT_FULL, above; low-memory mode's is LOW_CONTEXT.
+    ...(low ? ['-c', String(LOW_CONTEXT), ...LOW_ARGS] : ['-c', String(CONTEXT_FULL), '-ctk', 'q8_0', '-ctv', 'q8_0']),
+    '-ub', '256', '-np', '1',
     '--cache-ram', '0',                           // no host prompt cache: every dictation is new audio
     // The built-in warm-up reserves ~550 MB for a 30 s audio window that a dictation never
     // needs at once; the self-test (or the silent request) warms it instead (1.76 -> 1.35 GB).
     '--no-warmup',
     '--no-webui',
+    // The eval tools and the bench share the machine: TYPD_LLAMA_THREADS caps the server's threads.
+    ...(/^\d+$/.test(process.env.TYPD_LLAMA_THREADS || '') ? ['-t', process.env.TYPD_LLAMA_THREADS, '-tb', process.env.TYPD_LLAMA_THREADS] : []),
     ...(adapter ? ['--lora', adapter.file, '--lora-init-without-apply'] : [])
-  ], { windowsHide: true, cwd: run.cwd, env: run.env, stdio: ['ignore', 'ignore', process.env.TYPD_DEBUG ? 'inherit' : 'ignore'] });
+  ];
+}
+
+/*
+ * The audio encoder's conv front end one 100-frame chunk at a time (Typd's llama.cpp patch,
+ * patches/llama.cpp/, built by scripts/build-mtmd.js): its compute buffer 554 -> 21 MiB on the light model
+ * (148 -> 21 MiB of VRAM for the 1.7B's encoder on CUDA). On the processor the output is identical (the same
+ * float operations, chunk by chunk). On CUDA it is not: smaller batches take other kernels, the encoder's
+ * numbers move in the last bits, and 15 of 40 AASR clips of the full model came out worded a little
+ * differently (dictation-research results/small/conv_gpu_encoder_check.log, 2026-10-18). So the full model
+ * on the GPU keeps the stock graph, as before; the patch runs in low-memory mode (where every lever is
+ * measured as one) and whenever the server runs on the processor (layers '0'). A llama.cpp without the
+ * patch ignores the variable. TYPD_CONV_GROUP overrides it (0: the stock graph; N: groups of N).
+ */
+function serverEnv(base, layers = '0', low = lowMemory.on) {
+  const g = process.env.TYPD_CONV_GROUP;
+  const env = { ...base };
+  delete env.MTMD_QWEN3A_CONV_GROUP;
+  if (g === '0') return env;
+  if (g && /^\d+$/.test(g)) env.MTMD_QWEN3A_CONV_GROUP = g;
+  else if (low || String(layers) === '0') env.MTMD_QWEN3A_CONV_GROUP = '1';
+  return env;
+}
+
+function launch(layers) {
+  const run = spawnOptions();
+  if (run.cwd !== path.dirname(SERVER)) debug('starting llama-server with the CUDA pack in', run.cwd);
+  const child = spawn(SERVER, serverArgs(layers), { windowsHide: true, cwd: run.cwd, env: serverEnv(run.env, gpuBackend() ? layers : '0'), stdio: ['ignore', 'ignore', process.env.TYPD_DEBUG ? 'inherit' : 'ignore'] });
   child.on('exit', (code) => {
     debug('server exited', code);
     if (proc === child) proc = null;
@@ -459,8 +569,12 @@ function warm() {
     const lora = LORA && fs.existsSync(LORA) ? LORA : null;
     if (LORA && !lora) debug('revise adapter missing at', LORA, '- revise runs on the base model');
 
+    lowMemory = decideLowMemory();
+    debug('low-memory mode', lowMemory.on ? 'ON' : 'off', '(' + lowMemory.why + ')');
+
     // A server left behind by a crashed run would hold the port; reuse it
     // rather than fail, since it is serving the same files.
+    device = null;
     if (await health()) {
       if (lora) adapter = await loadedAdapter(lora);
       debug('reusing server on', PORT, '(left by an earlier run; not self-tested)' + (adapter ? ' with the revise adapter' : ''));
@@ -483,6 +597,7 @@ function warm() {
       enabled: process.env.TYPD_SELFTEST !== '0' && fs.existsSync(FIXTURE)
     });
     if (!r.tested) await nudge('', 30000);   // the first dictation would otherwise pay for the warm-up
+    device = gpuBackend() ? where(r.layers) : 'CPU';
     debug('model', modelId(), 'ready in', Date.now() - t0, 'ms');
   })();
   starting = run
@@ -558,7 +673,8 @@ function toWav(samples, sampleRate) {
  */
 async function* dictate(samples, sampleRate, signal, system = '', maxTokens = 1024, opts = {}) {
   const sr = sampleRate || 16000;
-  if (samples.length / sr <= long.LONG_S) {
+  await warm();   // the window, and so the piece sizes, are the running server's
+  if (samples.length / sr <= longLimits().longS) {
     yield* decodeOne(samples, sr, signal, system, maxTokens);
     return;
   }
@@ -570,7 +686,10 @@ async function* decodeOne(samples, sr, signal, system, maxTokens) {
   const parts = [toWav(samples, sr).toString('base64')];
   const info = {};
   let text = '';
-  for await (const t of dictateParts(parts, signal, system, maxTokens, false, { info })) {
+  // The first word comes after the encoder and the prompt: on a slow processor a 40-70 s piece takes a
+  // while, so the watchdog waits 30 s plus half a second per second of audio before calling it stuck.
+  const firstWordMs = 30000 + Math.round(500 * (samples.length / sr));
+  for await (const t of dictateParts(parts, signal, system, maxTokens, false, { info, firstWordMs })) {
     text = t;
     yield t;
   }
@@ -588,8 +707,8 @@ const seamKey = (c) => 'seam:' + c.seamFrom + ':' + c.from + ':' + c.to + ':' + 
  * written here, after anything still in flight (one request on the server at a time). Seam i is
  * written before piece i + 1, as the pieces arrive.
  */
-async function* dictateLong(samples, sr, signal, system, cache, hooks) {
-  const { pieces, cuts } = long.splitLong(samples, sr);
+async function* dictateLong(samples, sr, signal, system, cache, hooks, limits = longLimits()) {
+  const { pieces, cuts } = long.splitLong(samples, sr, limits);
   let waited = false;
   // Yields partial text while it writes; its last value is the whole text.
   async function* textOf(key, kind, index, audio) {
@@ -657,7 +776,10 @@ function openLong(signal, system) {
   let buf = new Float32Array(SR * 90);
   let len = 0;
   let closed = false;
-  const splitter = new long.Splitter(SR);
+  // The pieces must be the ones dictateLong() cuts at the end: the same limits (the server's window
+  // does not change during a session; a switch waits until no dictation is in progress).
+  const limits = longLimits();
+  const splitter = new long.Splitter(SR, limits);
   const jobs = new Map();
   const timings = [];
   let chain = Promise.resolve();
@@ -697,7 +819,7 @@ function openLong(signal, system) {
       }
       buf.set(samples, len);
       len += samples.length;
-      if (len <= long.LONG_S * SR) return;
+      if (len <= limits.longS * SR) return;
       for (const c of splitter.feed(buf, len)) {
         const i = splitter.cuts.length - 1;
         debug('early: cut', i, 'settled at', (len / SR).toFixed(1), 's; piece', (c.start / SR).toFixed(1), '-', (c.end / SR).toFixed(1), 's');
@@ -727,7 +849,7 @@ function openLong(signal, system) {
         idle: () => chain,
         timings
       };
-      yield* dictateLong(samples, SR, sig, sys, cache, null);
+      yield* dictateLong(samples, SR, sig, sys, cache, null, limits);
     },
 
     /** Every request's timing so far -- for the bench and the replay. */
@@ -1146,7 +1268,8 @@ function openStream(signal, system) {
      * the pieces already sent are its prefix, so only the rest is new.
      */
     async* finish(samples, sampleRate, sig, sys, maxTokens = 1024) {
-      if (!parts.length || sampleRate !== SR || samples.length < start) {
+      // All the pieces go in one request: past what one request may hold, the long path instead.
+      if (!parts.length || sampleRate !== SR || samples.length < start || samples.length / SR > longLimits().longS) {
         yield* dictate(samples, sampleRate, sig, sys, maxTokens);
         return;
       }
@@ -1194,10 +1317,10 @@ async function* revise(samples, sampleRate, signal, span, info = {}) {
   const spanTokens = await countTokens(span);
   // The prompt: the template and instruction (~13 audio tokens a second, 20 s at most) and the span.
   const prompt = spanTokens + Math.ceil(13 * (samples.length / sr)) + 96;
-  const room = CONTEXT - prompt - 16;
+  const room = contextSize() - prompt - 16;
   if (room < spanTokens + 64) {
     info.tooLong = true;
-    debug('revise: span of', spanTokens, 'tokens does not fit the', CONTEXT, 'window');
+    debug('revise: span of', spanTokens, 'tokens does not fit the', contextSize(), 'window');
     return;
   }
   const budget = Math.min(room, Math.max(1024, Math.round(spanTokens * 1.5) + 256));
@@ -1208,6 +1331,20 @@ async function* revise(samples, sampleRate, signal, span, info = {}) {
     // ~20 ms a prompt token on a slow CPU, over the usual 30 s.
     firstWordMs: 30000 + 20 * prompt
   });
+}
+
+/**
+ * The longest selection revise() can take, in characters, and in words for the message that says so:
+ * what fits the window twice (the selection in the prompt, its rewrite in the answer) beside a 20 s
+ * instruction (~260 audio tokens) and the template. 4,096 tokens: the 6,000 characters / ~1,000 words of
+ * 0.2.3 (pipeline/index.js, which also checks it). Low-memory mode's 1,280: ~1,500 characters / ~250
+ * words (English prose runs ~4 characters a token; Turkish and code fewer, which revise() refuses by
+ * their real token count).
+ */
+function reviseLimit() {
+  if (!lowMemory.on) return { chars: 6000, words: 1000 };
+  const tokens = Math.floor((contextSize() - 96 - 16 - 13 * 20 - 64) / 2);
+  return { chars: Math.floor(tokens * 3.5 / 100) * 100, words: Math.floor(tokens * 0.6 / 50) * 50 };
 }
 
 /**
@@ -1249,7 +1386,11 @@ async function transcribe(samples, sampleRate, signal, system = '') {
 
 module.exports = {
   warm, stop, ping, dictate, revise, transcribe, openStream, openLong, dictationBudget, loopCut, contextPrompt, revisePrompt,
-  countTokens, CONTEXT, setVocabLog,
+  countTokens, setVocabLog, configure, lowMemoryStale, gpuBackend, longLimits, reviseLimit, serverArgs, serverEnv, contextChars,
+  /** The server's window, in tokens: 4,096, or 1,280 in low-memory mode. */
+  get CONTEXT() { return contextSize(); },
+  /** Low-memory mode for the server now running (or about to): {on, why}. */
+  get lowMemory() { return { ...lowMemory }; },
   // long.js's, here too for the eval tools that load local.js
   splitLong: long.splitLong, readSeam: long.readSeam, joinPieces: long.joinPieces, stitch: long.stitch,
   canRevise: () => Boolean(SPEC.revise),
@@ -1272,6 +1413,10 @@ module.exports = {
    * and the update checks' version counts name.
    */
   modelVersion: () => versionOf(MODEL_DIR, { version: VERSION, modelsDir: USER_MODELS }),
+  /** Where the running server runs: 'GPU', 'CPU', or null (not started by this run, or not up yet). */
+  get device() { return device; },
+  /** The running llama-server's process id (the bench measures its memory), or null. */
+  get SERVER_PID() { return proc ? proc.pid : null; },
   /** The revise adapter the running server has loaded (a path), or null. */
   get REVISE_ADAPTER() { return adapter ? adapter.file : null; },
   BUNDLED_DIR, PORT, FIXTURE

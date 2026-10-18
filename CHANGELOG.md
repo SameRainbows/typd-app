@@ -1,6 +1,16 @@
 # What's new
 
-## 0.2.5 · October 2026
+## 0.2.8 · October 2026
+
+- **Sharing is your choice.** A new install asks on its first screen whether to share your dictations (audio and text) to help train Typd's model, with nothing pre-selected, and shares nothing until you choose **Share**. A recent install that was never asked sees the same short question once; choosing **Don't share** there also deletes anything it had already shared. You can change it anytime in Settings.
+- **Copied dictations count too.** When sharing is on, a dictation Typd could not paste and left on the clipboard ("Copied — press Ctrl+V") is shared like any other.
+- **Low-memory mode.** On computers without a strong GPU, Typd's model now uses about 0.8 GB of memory instead of 1.4 GB, with the same accuracy. Long dictations are written in shorter pieces, and in this mode you can revise up to about 250 words at a time. It is on automatically with the Light model or on a computer with less than 8 GB of memory; **Settings → Low-memory mode** turns it on or off.
+- **Steadier on slow processors.** A long dictation on a slow computer is given more time to start writing before Typd calls it stuck.
+
+- **The ✕ and ✓ on the recording pill work again.** On some Windows PCs a click went straight through the pill. The buttons now take every click, on Windows and on a Mac, and the pill still never takes the focus from the app you are typing in. Typd also no longer watches every mouse move on the computer while the pill is up, so the pointer stays smooth while Typd is busy.
+- **Dictate sooner on a new PC with an NVIDIA GPU.** If the full model would take more than a few minutes to download, Typd first fetches the smaller Light model so you can dictate right away, then gets the full model in the background and switches to it the next time you are not dictating. Home says which model you are using and how far the full one is.
+- **No more slow dictation while the GPU libraries download.** On a PC with an NVIDIA GPU, Typd no longer runs the full model on the processor while the GPU libraries download (which made it lag): it starts the full model together with them, and until both are ready it uses the Light model or waits.
+- **Sharing is sturdier and explains itself.** A file briefly locked by an antivirus no longer stops a dictation from being shared, and **Copy diagnostics** now says whether sharing is on, what was shared and, if nothing was, why. Typd also keeps a short timing line for each dictation there (how long the text took, on which model and device), never the words.
 
 - **A much smaller download.** The installer no longer carries the speech model. On its first start Typd downloads the one that suits your computer (about 0.6 GB, or 1.6 GB on a PC with a strong NVIDIA GPU), checks it, and from then on works offline. The tray, Home and the walkthrough show how far it is, and on a metered connection Typd asks first.
 - **GPU acceleration when your PC can use it (Windows).** On a PC with an NVIDIA GPU of 4 GB or more, Typd downloads NVIDIA's GPU libraries (about 340 MB) after the model and switches to them by itself as soon as you are not dictating. Until then, and on every other PC, Typd runs on the processor, so you can dictate right away. A PC that updates from an earlier Typd keeps the libraries it has and downloads nothing.

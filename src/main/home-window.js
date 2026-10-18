@@ -124,7 +124,9 @@ function settingsState() {
     recordings: recordingsInfo(),
     // null where sharing is not in this build; {mode: 'tester', ...} or {mode: 'beta', ...} (sharing.js)
     sharing: sharing.status(),
-    flagKey: flag ? { label: hotkeyLogic.label(flag, process.platform), parts: hotkeyLogic.parts(flag, process.platform) } : null
+    flagKey: flag ? { label: hotkeyLogic.label(flag, process.platform), parts: hotkeyLogic.parts(flag, process.platform) } : null,
+    // Low-memory mode as the model server runs now: {on, why} (local.js), or null before it has started.
+    lowMemoryNow: deps && deps.lowMemoryNow ? deps.lowMemoryNow() : null
   };
 }
 
@@ -292,6 +294,11 @@ function register(d) {
       if (deps.modelChanged) deps.modelChanged(key);
       return true;
     }
+    if (key === 'lowMemory') {
+      if (!settings.set(key, value)) return false;
+      if (deps.lowMemoryChanged) deps.lowMemoryChanged();
+      return true;
+    }
     if (!['mic', 'micLabel', 'sounds', 'keepRecordings', 'sharePaused'].includes(key)) return false;
     return settings.set(key, value);
   });
@@ -312,8 +319,9 @@ function register(d) {
   handle('walkthrough:practice', (on) => { practicing = on === true; return true; });
   handle('walkthrough:done', () => settings.set('walkthrough', 'done'));
 
-  // Sharing (public builds; on by default). The switch takes effect at once, either way: off
-  // deletes what still waits in the outbox. Deleting empties the outbox and deletes what the
+  // Sharing (public builds; asked since 0.2.7): Settings' switch and the walkthrough's first screen.
+  // Either way at once (sharing.answer, via index.js chooseSharing): off deletes what still waits in
+  // the outbox. Deleting empties the outbox and deletes what the
   // server holds for this install.
   handle('sharing:set', async (on) => {
     if (typeof on !== 'boolean' || !sharing.get()) return null;

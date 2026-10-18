@@ -140,9 +140,11 @@ const MAX_CLOUD_SPAN = 8000;
 // The local model's: what fits its 4,096-token window with the instruction and the rewrite
 // (local.js CONTEXT). 3,000 characters / ~450 words in a 2,048-token window until 0.2.3; the
 // user's revisions are mostly whole dictations of 500-700 characters. Past ~1,000 words the model
-// is unreliable anyway (echoes, a few words; results/revise_long_check.log, 2026-10-17).
+// is unreliable anyway (results/revise_long_check.log, 2026-10-17). In low-memory mode (0.2.6) the
+// window is 1,280 tokens: ~1,400 characters / ~250 words (local.reviseLimit()).
 const MAX_LOCAL_SPAN = 6000;
-const TOO_MUCH_LOCAL = 'Too much selected — up to ~1,000 words';
+const tooMuchLocal = (words = 1000) => `Too much selected — up to ~${words.toLocaleString('en-US')} words`;
+const TOO_MUCH_LOCAL = tooMuchLocal(1000);
 
 /*
  * Guard log: every refused revision, one JSON line in <userData>/revise-guards.jsonl -- which guard,
@@ -266,7 +268,9 @@ async function* run(opts = {}) {
     // ~6,000 characters is the most that fits with a spoken instruction and room for the
     // rewrite. Say so instead of failing; local.revise also refuses a span whose tokens do not
     // fit (Turkish or code runs more tokens per character than English prose).
-    if (spanTruncated || span.length > MAX_LOCAL_SPAN) throw new Error(TOO_MUCH_LOCAL);
+    await local.warm();   // the window is the running server's (low-memory mode: 1,280 tokens)
+    const limit = local.reviseLimit ? local.reviseLimit() : { chars: MAX_LOCAL_SPAN, words: 1000 };
+    if (spanTruncated || span.length > Math.min(MAX_LOCAL_SPAN, limit.chars)) throw new Error(tooMuchLocal(limit.words));
     const { lead, tail, core } = peel(span);
     yield { type: 'expect', chars: core.length };
 
@@ -280,7 +284,7 @@ async function* run(opts = {}) {
       yield { type: 'partial', text };
     }
     if (signal && signal.aborted) return;
-    if (info.tooLong) throw new Error(TOO_MUCH_LOCAL);
+    if (info.tooLong) throw new Error(tooMuchLocal(limit.words));
 
     const revised = unwrap(text).trim();
     // Which revise adapter this request ran with (its file name), or false: a shared item records it.

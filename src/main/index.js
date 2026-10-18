@@ -5,7 +5,7 @@ const {
   session: electronSession
 } = require('electron');
 
-const { createOverlayWindow, positionOverlay, showOverlay } = require('./overlay-window');
+const { createOverlayWindow, positionOverlay, showOverlay, releaseClicks } = require('./overlay-window');
 const { registerHotkeys, registerFlagHotkey, stopHook } = require('./hotkeys');
 const hotkeyLogic = require('./hotkey-logic');
 const settings = require('./settings');
@@ -15,10 +15,12 @@ const brand = require('./brand');
 const { store } = require('./store');
 const { createTray } = require('./tray');
 const pipeline = require('./pipeline');
+// Low-memory mode follows Settings (read at each model server start): src/main/lowMemory.js.
+require('./pipeline/local').configure({ lowMemory: () => settings.get('lowMemory') });
 const inject = require('./inject');
 const learn = require('./learn');
 const dictionary = require('./dictionary');
-const sharing = require('./sharing');   // public builds: on unless turned off in Settings; tester builds: their key
+const sharing = require('./sharing');   // public builds: asked (walkthrough or the small screen), Settings; tester builds: their key
 const ask = require('./ask-window');    // the "That was wrong" window
 const modelUpdate = require('./modelUpdate');   // every packaged build (no key: the public routes) and the developer's machines
 const appUpdate = require('./appUpdate');       // packaged builds: a newer signed Typd, installed while you are away
@@ -83,7 +85,7 @@ function keepRecording(current, text) {
       mode: current.mode,
       output: text,
       seconds: Math.round((pcm.length / audio.sampleRate) * 100) / 100,
-      ms: current.endedAt ? Date.now() - current.endedAt : null,   // stop -> text ready
+      ms: current.endedAt ? (current.textAt || Date.now()) - current.endedAt : null,   // stop -> text ready
       model: path.basename(require('./pipeline/local').MODEL),
       app: current.target ? current.target.process : null,
       context: current.contextBlock || null,
@@ -94,6 +96,37 @@ function keepRecording(current, text) {
     fs.writeFileSync(path.join(dir, stamp + '.json'), JSON.stringify(meta, null, 1));
   } catch (err) {
     if (process.env.TYPD_DEBUG) console.log('[typd:keep]', err);
+  }
+}
+
+/**
+ * One line per dictation in the life log (lifelog.dictationLine): how long the key's release took
+ * to become text and the text to become a paste, on which model and which device. Counts only:
+ * never the text, the app or the context.
+ */
+function logDictation(current, chars, result, pastedAt) {
+  try {
+    const local = stub ? null : require('./pipeline/local');
+    let model = 'stub';
+    if (local) { try { model = local.modelVersion(); } catch { model = 'unknown'; } }
+    let device = null, lowMemory = null;
+    // local.device ('GPU' | 'CPU' | null) and local.lowMemory ({on}) arrive with 0.2.6's local.js;
+    // read so that a local.js without them logs "device unknown".
+    if (local) { try { device = local.device || null; lowMemory = local.lowMemory || null; } catch { /* older local.js */ } }
+    const audio = current.audio;
+    life.log('dictation', life.dictationLine({
+      mode: current.mode,
+      audioSeconds: audio && audio.samples ? audio.samples.length / (audio.sampleRate || 16000) : null,
+      chars,
+      releaseToTextMs: current.endedAt && current.textAt ? current.textAt - current.endedAt : null,
+      textToPasteMs: current.textAt ? pastedAt - current.textAt : null,
+      outcome: result && result.ok ? 'pasted' : 'copied',
+      model,
+      device,
+      lowMemory: lowMemory ? Boolean(lowMemory.on) : null
+    }));
+  } catch (err) {
+    if (process.env.TYPD_DEBUG) console.log('[typd:life]', err);
   }
 }
 
@@ -231,11 +264,13 @@ function ensureOverlay() {
   return overlay;
 }
 
-/** Restore full click-through. Anything else leaves a dead rectangle on screen. */
+/**
+ * Restore full click-through. Anything else leaves a dead rectangle on screen. Through the click
+ * gate (overlay-window.js), and never with `forward`: that installs a global mouse hook on this
+ * thread, the 0.2.5 dead-buttons bug.
+ */
 function passThrough() {
-  if (overlay && !overlay.isDestroyed()) {
-    overlay.setIgnoreMouseEvents(true, { forward: true });
-  }
+  releaseClicks(overlay);
 }
 
 /* ------------------------------------------------------------------ session */
@@ -396,6 +431,7 @@ async function endSession() {
       if (event.type === 'done') {
         // Whether the revise adapter ran on this request (pipeline/index.js): a shared item records it.
         current.reviseAdapter = event.reviseAdapter || false;
+        current.textAt = Date.now();   // the text is ready (logDictation: release-to-text, text-to-paste)
         // A revision replaces the selection by pasting over it, which only
         // works while the selection is still there. Clicking away during the
         // several seconds this takes turns the replacement into an insertion
@@ -421,13 +457,22 @@ async function endSession() {
           }
         }
 
-        keepRecording(current, event.text);
-        remember(event.text);
+        // The paste first: the WAV encode and write (Keep recordings is on by default) and the
+        // tray menu rebuild used to run between the text being ready and Ctrl+V. The files wait a
+        // tick more, so the pill's "done" does not wait on them either.
         const result = await inject.paste(event.text);
+        const pastedAt = Date.now(), text = event.text;
+        remember(text);
+        setImmediate(() => { keepRecording(current, text); logDictation(current, text.length, result, pastedAt); });
         if (session !== current) return;
 
         if (!result.ok) {
           keepHistory(current, event.text, 'copied');
+          // The life log: a paste that fell back to the clipboard (never the text).
+          life.log('dictation', 'not pasted, ' + (result.copied ? 'copied instead' : 'not copied') + ': ' + result.reason);
+          // Copied instead ("Copied — press Ctrl+V"): the text is good and in the person's hands, so it
+          // is shared like a pasted one when sharing is on (marked pasted: false; sharing.js).
+          if (result.copied) sharing.add(current, event.text, { pasted: false });
           send('session:error', {
             message: result.copied
               ? 'Copied — press ' + (MAC ? '⌘V' : 'Ctrl+V') + ' to paste'
@@ -467,6 +512,7 @@ async function endSession() {
     }
   } catch (err) {
     if (err && err.message === 'aborted') return;
+    life.log('dictation failed', life.errorLine(err));   // nothing was pasted, so nothing is shared
     send('session:error', { message: String(err && err.message ? err.message : err) });
   }
 
@@ -565,6 +611,7 @@ function diagnosticsText() {
     'menu-bar/tray icon: ' + (trayUi.tray && !trayUi.tray.isDestroyed() ? 'yes' : 'no') + ', windows: ' + BrowserWindow.getAllWindows().length +
       ', Typd window ' + (home.isOpen() ? 'open' : 'closed') + ', pill ' + (overlay && !overlay.isDestroyed() ? 'alive' : 'gone'),
     'model file: ' + safe(() => require('path').basename(require('./pipeline/local').MODEL)),
+    'sharing: ' + safe(() => sharing.diagnostics()),
     'minidumps: ' + (dumps.length ? dumps.length + ', newest ' + dumps.slice(0, 3).map((d) => d.name + ' ' + d.at).join('; ') : 'none'),
     '--- life log, last 200 lines',
     ...life.tail(200)
@@ -615,23 +662,62 @@ function openFlag() {
   ask.open('flag');
 }
 
-/** Settings switched sharing on or off. */
+/**
+ * Sharing switched on or off: Settings, the walkthrough's first screen, or the small screen
+ * (sharing.answer: Don't share on an install that shared under 0.2.6's default deletes it too).
+ */
 async function chooseSharing(share) {
   const s = sharing.get();
   if (!s) return { ok: false };
-  const r = await s.choose(share ? 'on' : 'off');
+  const r = await s.answer(share ? 'on' : 'off');
   home.changed('sharing');
   return r;
 }
 
+/**
+ * "Help make Typd better?" (ask-window.js 'share'): once, at the first launch of 0.2.7 on an install
+ * first started from 2026-10-18 15:00 UTC on that was never asked (settings 'shareAsk' 'due':
+ * settings.js shareRule). Not the walkthrough: a fresh install is asked on its first screen. It
+ * counts as shown once it opens; closed without an answer, sharing stays off ('ask') and Settings
+ * has the switch. After an app update's quiet relaunch it waits until someone is at the keyboard.
+ */
+function startShareAsk(afterUpdate) {
+  const due = () => !stub && !preview && settings.get('shareAsk') === 'due' && settings.get('share') === 'ask' &&
+    Boolean(sharing.get()) && sharing.get().mode === 'beta' && settings.get('walkthrough') !== 'due';
+  if (!due()) return;
+  const show = () => {
+    if (!due()) return;
+    if (MAC && require('./permissions-mac').isAsking()) { setTimeout(show, 1000); return; }
+    settings.set('shareAsk', 'done');
+    life.log('sharing', 'asked: the small screen (an install from after the cutoff, never asked)');
+    ask.open('share');
+  };
+  if (afterUpdate) appUpdate.whenUserActive(() => setTimeout(show, 1500));
+  else setTimeout(show, 3500);
+}
+
 ask.register({
   sharing: () => sharing.get(),
+  answer: (share) => chooseSharing(share),
   flagged: (r) => {
     if (r.state === 'flagged') note(r.how === 'shared' ? 'Shared to fix it — thank you' : 'Flagged — thank you');
   }
 });
 
 /* ------------------------------------------------------------- model, mic */
+
+/*
+ * Low-memory mode (Settings > Model; local.js, lowMemory.js) is decided each time the model server
+ * starts. A change in Settings that changes the answer restarts the server on the new arguments --
+ * the same few seconds of "Getting ready…" as a model switch, never during a dictation.
+ */
+function applyLowMemory() {
+  const local = require('./pipeline/local');
+  if (stub || modelMissing() || !local.lowMemoryStale()) return;
+  if (session || status.get().model === 'loading') { setTimeout(applyLowMemory, 2000); return; }
+  life.log('model', 'low-memory mode ' + (local.lowMemory.on ? 'off' : 'on') + ' from Settings: restarting the model server');
+  switchBackend().catch(() => {});
+}
 
 function warmModel() {
   if (stub) { status.set({ model: 'ready' }); return; }
@@ -808,6 +894,7 @@ function startWalkthrough(afterUpdate) {
 let notedAsk = null;
 function modelChanged() {
   modelMissing();   // the first model's progress, for the tray's first line and Home
+  status.set({ interim: modelUpdate.interim() });   // light first: Home says the light model stands in, and how far the full one is
   refreshTray();
   home.changed('model');
   const p = modelUpdate.pending();
@@ -1031,7 +1118,9 @@ app.whenReady().then(() => {
       // hardware takes the GPU path; until then, and on any other PC, llama.cpp runs on the processor.
       cuda: local.cuda,
       cudaWanted: () => choice.cuda(),
-      switchBackend
+      switchBackend,
+      // Automatic (not a pin): on a slow link the light model stands in while the full one downloads.
+      automatic: () => choice.automatic()
     });
   }
   warmModel();
@@ -1136,7 +1225,9 @@ app.whenReady().then(() => {
     modelNow: () => modelUpdate.approve(),
     modelLater: () => modelUpdate.later(),
     // Automatic / Full / Light, or the asking switch, changed: read the hardware again and check soon.
-    modelChanged: () => { choice.forget(); modelUpdate.recheck(); }
+    modelChanged: () => { choice.forget(); modelUpdate.recheck(); },
+    lowMemoryNow: () => require('./pipeline/local').lowMemory,
+    lowMemoryChanged: () => applyLowMemory()
   });
 
   settings.onChange((key) => {
@@ -1169,12 +1260,13 @@ app.whenReady().then(() => {
     app.on('did-resign-active', () => life.log('active', 'Typd stopped being the active app'));
   }
 
-  // Sharing asks nothing at launch: public builds share unless turned off in Settings (since
-  // 0.2.4), and the walkthrough's first screen says so (sharing.js). There is no consent screen.
-
   // The walkthrough: once, in the Typd window, on the first launch of an installed Typd (after the
   // Mac permission dialog), and never into an app update's quiet relaunch.
   startWalkthrough(Boolean(appUpdater && appUpdater.firstStart));
+
+  // Sharing (0.2.7): a fresh install is asked on the walkthrough's first screen; an install first
+  // started after the cutoff that was never asked, in one small screen, once (startShareAsk).
+  startShareAsk(Boolean(appUpdater && appUpdater.firstStart));
 
   // First run: start at login is on by default, so make it so -- the installed app's own
   // login entry, or the Startup shortcut when run from source.
@@ -1241,14 +1333,8 @@ app.whenReady().then(() => {
     }
   }
 
-  // The overlay is click-through by default and opts back in only while the
-  // cursor is over one of its two controls, so the rest of the pill never
-  // swallows a click meant for the window underneath.
-  ipcMain.on('overlay:interactive', (_e, on) => {
-    if (overlay && !overlay.isDestroyed()) {
-      overlay.setIgnoreMouseEvents(!on, { forward: true });
-    }
-  });
+  // The overlay is click-through by default and takes clicks only while the cursor is over one
+  // of its two live controls: overlay-window.js's click gate, fed by the page (overlay:hit).
 
   // The input devices, from the overlay (it already holds microphone permission), for the
   // tray's Microphone menu. Sent at load and whenever a device comes or goes.
