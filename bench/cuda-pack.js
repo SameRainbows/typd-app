@@ -479,7 +479,7 @@ const modelReqs = (s) => s.fileRequests().filter((q) => !q.url.includes('/' + PA
     check('index.js hands the updater the CUDA pack, the hardware\'s GPU path and a backend switch',
       /cuda: local\.cuda,\s*cudaWanted: \(\) => choice\.cuda\(\),\s*switchBackend/.test(idx) && /function switchBackend\(\)/.test(idx));
     check('local.js: every launch reads where to start (spawnOptions), every warm start prepares the CUDA files first',
-      /const run = spawnOptions\(\);/.test(loc) && /cwd: run\.cwd, env: run\.env/.test(loc) && /await cuda\.prepare\(\);/.test(loc));
+      /const run = spawnOptions\(\);/.test(loc) && /cwd: run\.cwd, env: (?:serverEnv\()?run\.env/.test(loc) && /await cuda\.prepare\(\);/.test(loc));
     check('the tray shows the pack\'s line and asks "Download GPU acceleration"', /deps\.packLine \? deps\.packLine\(\)/.test(tray) && /Download GPU acceleration/.test(tray));
     check('the pack comes after the model, only once there is one', /const p = haveModel\(\) \? await followPack\(m, tag\) : null;/.test(mu));
     check('the pack is never throttled (download(..., true))', /await download\(e\.version, f, zipFile, packProgress, true\);/.test(mu));
