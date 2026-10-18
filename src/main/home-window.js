@@ -482,6 +482,11 @@ function isOpen() {
   return Boolean(win && !win.isDestroyed());
 }
 
+/** The window itself while it exists, else null (the CI's test hook, test-life.js, reads its place). */
+function current() {
+  return win && !win.isDestroyed() ? win : null;
+}
+
 function isFocused() {
   return Boolean(win && !win.isDestroyed() && win.isFocused());
 }
@@ -491,4 +496,4 @@ function changed(what) {
   send('home:changed', { what });
 }
 
-module.exports = { register, open, close, isOpen, isFocused, isPracticing, heard, changed, setLoginItem, loginItem, syncDock };
+module.exports = { register, open, close, isOpen, current, isFocused, isPracticing, heard, changed, setLoginItem, loginItem, syncDock };

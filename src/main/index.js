@@ -589,7 +589,7 @@ function switchModel() {
  * source only with TYPD_WALKTHROUGH=1. Settings opens it again any time.
  */
 function walkthroughDue() {
-  if (stub || preview || process.env.TYPD_NO_WALKTHROUGH === '1' || process.env.TYPD_TEST_CLOSE_HOME) return false;
+  if (stub || preview || process.env.TYPD_NO_WALKTHROUGH === '1' || process.env.TYPD_TEST_CLOSE_HOME || process.env.TYPD_TEST_LIFE) return false;
   if (!app.isPackaged && process.env.TYPD_WALKTHROUGH !== '1') return false;
   return settings.get('walkthrough') === '';
 }
@@ -1044,6 +1044,13 @@ app.whenReady().then(() => {
   });
 
   if (process.env.TYPD_TEST_CLOSE_HOME) testCloseHome(process.env.TYPD_TEST_CLOSE_HOME);
+  // CI only: the menu-bar path (scripts/mac-tray-close-check.sh, src/main/test-life.js).
+  if (process.env.TYPD_TEST_LIFE) {
+    require('./test-life').start({
+      file: process.env.TYPD_TEST_LIFE, how: process.env.TYPD_TEST_LIFE_HOW === 'gui' ? 'gui' : 'tray',
+      app, home, trayUi, getOverlay: () => overlay, getHotkeys: () => hotkeys, getSession: () => session
+    });
+  }
 });
 
 /*
