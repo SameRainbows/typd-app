@@ -1,6 +1,6 @@
 {
   "name": "typd",
-  "version": "0.2.5",
+  "version": "0.2.7",
   "private": true,
   "description": "Voice dictation you can talk back to.",
   "license": "GPL-3.0-only",
@@ -9,7 +9,7 @@
     "start": "electron .",
     "dev": "electron . --dev",
     "stub": "electron . --stub",
-    "bench": "node bench/wiring.js && node bench/hotkeys.js && node bench/home.js && node bench/revise.js && node bench/formatting.js && node bench/revise-guards.js && node bench/long.js && node bench/vocab.js && node bench/learn.js && node bench/updates.js && node bench/model-choice.js && node bench/first-launch.js && node bench/lifelog.js && node bench/lora.js --no-model && node bench/sharing.js && node bench/backfill.js && node bench/first-run.js && node bench/cuda-pack.js && node bench/update-cadence.js && node bench/versions.js && node bench/app-update.js && node bench/public-build.js",
+    "bench": "node bench/wiring.js && node bench/hotkeys.js && node bench/home.js && node bench/revise.js && node bench/formatting.js && node bench/revise-guards.js && node bench/long.js && node bench/vocab.js && node bench/learn.js && node bench/updates.js && node bench/model-choice.js && node bench/first-launch.js && node bench/lifelog.js && node bench/lora.js --no-model && node bench/sharing.js && node bench/backfill.js && node bench/first-run.js && node bench/cuda-pack.js && node bench/light-first.js && node bench/update-cadence.js && node bench/versions.js && node bench/app-update.js && node bench/public-build.js && node bench/pill.js && node bench/mac-mic.js && node bench/share-e2e.js",
     "bench:revise": "node bench/revise.js",
     "bench:guards": "node bench/revise-guards.js",
     "bench:long": "node bench/long.js",
@@ -17,6 +17,7 @@
     "bench:format": "node bench/formatting.js",
     "bench:selection": "node bench/selection.js 90 --copy",
     "bench:wiring": "node bench/wiring.js",
+    "bench:pill": "node bench/pill.js",
     "bench:learn": "node bench/learn.js",
     "bench:hotkeys": "node bench/hotkeys.js",
     "bench:home": "node bench/home.js",
@@ -26,8 +27,10 @@
     "package:update:win": "node scripts/app-update-package.js win",
     "bench:lora": "node bench/lora.js",
     "bench:sharing": "node bench/sharing.js",
+    "bench:share-e2e": "node bench/share-e2e.js",
     "bench:first-run": "node bench/first-run.js",
     "bench:cuda-pack": "node bench/cuda-pack.js",
+    "bench:light-first": "node bench/light-first.js",
     "bench:update-cadence": "node bench/update-cadence.js",
     "cuda-pack": "node scripts/cuda-pack.js",
     "bench:versions": "node bench/versions.js",
@@ -168,7 +171,7 @@
           "to": "llama"
         }
       ],
-      "icon": "assets/typd.png"
+      "icon": "build/icon.icns"
     },
     "icon": "assets/typd.png"
   },

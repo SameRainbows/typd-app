@@ -14,10 +14,12 @@ const facts = {
   model: 'loading',     // 'loading' | 'ready' | 'failed' | 'missing' (no model yet: a model-less install)
   modelWhy: '',
   modelFetch: null,     // with 'missing': the first model's download (modelUpdate.needed()), or null if none runs
+  interim: null,        // light first: the light model stands in while the full one comes (modelUpdate.interim()), or null
   key: 'ok',            // 'ok' | 'failed'
   keyWhy: '',
   mic: 'ok',            // 'ok' | 'blocked'
   perms: [],            // macOS: switches that are off ('microphone', 'accessibility', 'input')
+  micUnasked: false,    // macOS: the microphone was never answered (not in macOS's list yet): "Allow", not a pane
   live: false           // a dictation is recording or being written
 };
 
@@ -60,6 +62,12 @@ function describe() {
     tooltip: 'Typd — ' + (state === 'ready' ? 'ready · ' + k.label : line.replace(/ — .*$/, ''))
   });
 
+  if (facts.perms.length && facts.perms[0] === 'microphone' && facts.micUnasked) {
+    const others = facts.perms.slice(1).map((p) => PERM_WORDS[p] || p);
+    return mk('permissions', 'Typd needs the microphone — Allow…',
+      'Typd needs the microphone: allow it in macOS’s dialog' + (others.length ? ', then turn on ' + others.join(' and ') : '') + '.',
+      { id: 'permissions', label: 'Allow Microphone' }, 'dim');
+  }
   if (facts.perms.length) {
     const first = PERM_WORDS[facts.perms[0]] || facts.perms[0];
     return mk('permissions', 'Typd needs ' + first + ' — Fix…',
@@ -88,8 +96,36 @@ function describe() {
   if (facts.live) {
     return mk('live', 'Listening — ' + k.verb + ' ' + k.label + ' to finish', 'Listening.', null, 'live');
   }
-  return mk('ready', 'Ready — ' + k.verb + ' ' + k.label + ' to dictate',
-    'Ready. ' + k.verb.charAt(0).toUpperCase() + k.verb.slice(1) + ' {key} in any app and talk.', null, 'ready');
+  const talk = k.verb.charAt(0).toUpperCase() + k.verb.slice(1) + ' {key} in any app and talk.';
+  if (facts.interim) return mk('ready', 'Ready — ' + k.verb + ' ' + k.label + ' to dictate', interimCard(facts.interim) + ' ' + talk, null, 'ready');
+  return mk('ready', 'Ready — ' + k.verb + ' ' + k.label + ' to dictate', 'Ready. ' + talk, null, 'ready');
+}
+
+/**
+ * Light first (modelUpdate.interim()): Typd dictates with the light model while the full one -- and, on
+ * the GPU path, GPU acceleration before it -- downloads. Home's card says so, with how far it is.
+ */
+function interimCard(f) {
+  const pct = f.pct != null ? ' (' + f.pct + ' %)' : '';
+  const size = f.size ? ' (' + f.size + ')' : '';
+  if (f.phase === 'pack') {
+    switch (f.state) {
+      case 'downloading': return 'Ready: using the light model while GPU acceleration downloads' + pct + '; then the full model.';
+      case 'retrying': return 'Ready: using the light model. GPU acceleration paused' + (f.pct != null ? ' at ' + f.pct + ' %' : '') + ' and goes on by itself; then the full model.';
+      case 'ready': return 'Ready: using the light model. GPU acceleration switches on when you’re not dictating; then the full model.';
+      case 'ask': return 'Ready: using the light model. GPU acceleration' + size + ' waits for your OK; then the full model.';
+      case 'space': return 'Ready: using the light model. GPU acceleration needs more disk space; then the full model.';
+      default: break;
+    }
+  }
+  switch (f.state) {
+    case 'downloading': return 'Ready: using the light model while the full one downloads' + pct + '.';
+    case 'retrying': return 'Ready: using the light model. The full one paused' + (f.pct != null ? ' at ' + f.pct + ' %' : '') + ' and goes on by itself.';
+    case 'ready': return 'Ready: using the light model. Typd switches to the full one when you’re not dictating.';
+    case 'ask': return 'Ready: using the light model. The full one' + size + ' waits for your OK.';
+    case 'space': return 'Ready: using the light model. The full one needs more disk space.';
+    default: return 'Ready: using the light model until the full one is downloaded.';
+  }
 }
 
 /**
@@ -106,7 +142,9 @@ function missing(mk) {
   switch (f.state) {
     case 'downloading':
       return mk('download', 'Downloading the speech model — ' + f.pct + ' %',
-        'Typd is downloading its speech model: ' + f.pct + ' % of ' + f.size + '. After that it works offline.', null, 'dim');
+        f.lightFirst
+          ? 'Typd is downloading its light speech model first, so you can dictate sooner: ' + f.pct + ' % of ' + f.size + '. The full one follows.'
+          : 'Typd is downloading its speech model: ' + f.pct + ' % of ' + f.size + '. After that it works offline.', null, 'dim');
     case 'retrying':
       return mk('download', 'Downloading the speech model — ' + f.pct + ' %, paused',
         'The download paused at ' + f.pct + ' % of ' + f.size + '. Typd tries again by itself.', null, 'dim');

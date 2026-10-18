@@ -5,7 +5,7 @@ const {
   session: electronSession
 } = require('electron');
 
-const { createOverlayWindow, positionOverlay, showOverlay } = require('./overlay-window');
+const { createOverlayWindow, positionOverlay, showOverlay, releaseClicks } = require('./overlay-window');
 const { registerHotkeys, registerFlagHotkey, stopHook } = require('./hotkeys');
 const hotkeyLogic = require('./hotkey-logic');
 const settings = require('./settings');
@@ -83,7 +83,7 @@ function keepRecording(current, text) {
       mode: current.mode,
       output: text,
       seconds: Math.round((pcm.length / audio.sampleRate) * 100) / 100,
-      ms: current.endedAt ? Date.now() - current.endedAt : null,   // stop -> text ready
+      ms: current.endedAt ? (current.textAt || Date.now()) - current.endedAt : null,   // stop -> text ready
       model: path.basename(require('./pipeline/local').MODEL),
       app: current.target ? current.target.process : null,
       context: current.contextBlock || null,
@@ -94,6 +94,37 @@ function keepRecording(current, text) {
     fs.writeFileSync(path.join(dir, stamp + '.json'), JSON.stringify(meta, null, 1));
   } catch (err) {
     if (process.env.TYPD_DEBUG) console.log('[typd:keep]', err);
+  }
+}
+
+/**
+ * One line per dictation in the life log (lifelog.dictationLine): how long the key's release took
+ * to become text and the text to become a paste, on which model and which device. Counts only:
+ * never the text, the app or the context.
+ */
+function logDictation(current, chars, result, pastedAt) {
+  try {
+    const local = stub ? null : require('./pipeline/local');
+    let model = 'stub';
+    if (local) { try { model = local.modelVersion(); } catch { model = 'unknown'; } }
+    let device = null, lowMemory = null;
+    // local.device ('GPU' | 'CPU' | null) and local.lowMemory ({on}) arrive with 0.2.6's local.js;
+    // read so that a local.js without them logs "device unknown".
+    if (local) { try { device = local.device || null; lowMemory = local.lowMemory || null; } catch { /* older local.js */ } }
+    const audio = current.audio;
+    life.log('dictation', life.dictationLine({
+      mode: current.mode,
+      audioSeconds: audio && audio.samples ? audio.samples.length / (audio.sampleRate || 16000) : null,
+      chars,
+      releaseToTextMs: current.endedAt && current.textAt ? current.textAt - current.endedAt : null,
+      textToPasteMs: current.textAt ? pastedAt - current.textAt : null,
+      outcome: result && result.ok ? 'pasted' : 'copied',
+      model,
+      device,
+      lowMemory: lowMemory ? Boolean(lowMemory.on) : null
+    }));
+  } catch (err) {
+    if (process.env.TYPD_DEBUG) console.log('[typd:life]', err);
   }
 }
 
@@ -231,11 +262,13 @@ function ensureOverlay() {
   return overlay;
 }
 
-/** Restore full click-through. Anything else leaves a dead rectangle on screen. */
+/**
+ * Restore full click-through. Anything else leaves a dead rectangle on screen. Through the click
+ * gate (overlay-window.js), and never with `forward`: that installs a global mouse hook on this
+ * thread, the 0.2.5 dead-buttons bug.
+ */
 function passThrough() {
-  if (overlay && !overlay.isDestroyed()) {
-    overlay.setIgnoreMouseEvents(true, { forward: true });
-  }
+  releaseClicks(overlay);
 }
 
 /* ------------------------------------------------------------------ session */
@@ -247,6 +280,23 @@ function appLabel(focus) {
 }
 
 function beginSession() {
+  // macOS: a microphone macOS was never asked about (no answer yet, so Typd is not in Privacy & Security ›
+  // Microphone). The key asks for it -- macOS's own prompt, brought to the front -- also while the first
+  // speech model is still downloading. The dictation is not held back by the status: what the capture
+  // gets decides (overlay:mic), so a stream that works records whatever the status says.
+  if (MAC && !session) {
+    const pm = require('./permissions-mac');
+    const mic = pm.micState();
+    if (mic === 'not-determined' || mic === 'asking') {
+      pm.requestMic('the key', { again: true }).then(checkMacPermissions);
+      if (modelMissing()) {
+        const fetch = status.get().modelFetch;
+        note('Allow the microphone in macOS’s dialog. ' + (fetch && fetch.state === 'downloading'
+          ? 'The speech model is downloading (' + fetch.pct + ' %).' : 'The speech model is not here yet.'), 8000);
+        return;
+      }
+    }
+  }
   // No speech model yet (a public install's first launch: modelUpdate.js is downloading it). The key
   // says how far that is, in the pill, and nothing is recorded: no error, no dialog.
   if (!session && modelMissing()) {
@@ -396,6 +446,7 @@ async function endSession() {
       if (event.type === 'done') {
         // Whether the revise adapter ran on this request (pipeline/index.js): a shared item records it.
         current.reviseAdapter = event.reviseAdapter || false;
+        current.textAt = Date.now();   // the text is ready (logDictation: release-to-text, text-to-paste)
         // A revision replaces the selection by pasting over it, which only
         // works while the selection is still there. Clicking away during the
         // several seconds this takes turns the replacement into an insertion
@@ -421,13 +472,20 @@ async function endSession() {
           }
         }
 
-        keepRecording(current, event.text);
-        remember(event.text);
+        // The paste first: the WAV encode and write (Keep recordings is on by default) and the
+        // tray menu rebuild used to run between the text being ready and Ctrl+V. The files wait a
+        // tick more, so the pill's "done" does not wait on them either.
         const result = await inject.paste(event.text);
+        const pastedAt = Date.now(), text = event.text;
+        remember(text);
+        setImmediate(() => { keepRecording(current, text); logDictation(current, text.length, result, pastedAt); });
         if (session !== current) return;
 
         if (!result.ok) {
           keepHistory(current, event.text, 'copied');
+          // The life log: a paste that fell back to the clipboard (never the text). Sharing follows a
+          // pasted dictation only, so a PC whose every paste fails shares nothing -- this says why.
+          life.log('dictation', 'not pasted, ' + (result.copied ? 'copied instead' : 'not copied') + ': ' + result.reason);
           send('session:error', {
             message: result.copied
               ? 'Copied — press ' + (MAC ? '⌘V' : 'Ctrl+V') + ' to paste'
@@ -467,6 +525,7 @@ async function endSession() {
     }
   } catch (err) {
     if (err && err.message === 'aborted') return;
+    life.log('dictation failed', life.errorLine(err));   // nothing was pasted, so nothing is shared
     send('session:error', { message: String(err && err.message ? err.message : err) });
   }
 
@@ -511,10 +570,14 @@ function statusAction(id) {
   if (id === 'retry') { if (modelMissing()) { modelUpdate.recheck(0); return null; } return warmModel(); }
   if (id === 'model-now') return modelUpdate.approve().catch(() => {});
   if (id === 'privacy') {
-    if (MAC) return require('./permissions-mac').openPane('microphone');
+    if (MAC) return require('./permissions-mac').request('microphone');   // never answered: macOS's prompt; else the pane
     return require('electron').shell.openExternal('ms-settings:privacy-microphone').catch(() => {});
   }
-  if (id === 'permissions') return home.open('home', { by: 'the menu bar status line' });
+  if (id === 'permissions') {
+    // The microphone never answered: macOS's own prompt straight from the menu (Typd is not in its list yet).
+    if (MAC && status.get().perms[0] === 'microphone' && require('./permissions-mac').micState() !== 'denied') require('./permissions-mac').request('microphone');
+    return home.open('home', { by: 'the menu bar status line' });
+  }
 }
 
 const trayUi = createTray({
@@ -565,6 +628,7 @@ function diagnosticsText() {
     'menu-bar/tray icon: ' + (trayUi.tray && !trayUi.tray.isDestroyed() ? 'yes' : 'no') + ', windows: ' + BrowserWindow.getAllWindows().length +
       ', Typd window ' + (home.isOpen() ? 'open' : 'closed') + ', pill ' + (overlay && !overlay.isDestroyed() ? 'alive' : 'gone'),
     'model file: ' + safe(() => require('path').basename(require('./pipeline/local').MODEL)),
+    'sharing: ' + safe(() => sharing.diagnostics()),
     'minidumps: ' + (dumps.length ? dumps.length + ', newest ' + dumps.slice(0, 3).map((d) => d.name + ' ' + d.at).join('; ') : 'none'),
     '--- life log, last 200 lines',
     ...life.tail(200)
@@ -791,7 +855,9 @@ function startWalkthrough(afterUpdate) {
   if (!walkthroughDue()) return;
   const show = () => {
     if (!walkthroughDue()) return;
-    if (MAC && require('./permissions-mac').isAsking()) { setTimeout(show, 1000); return; }
+    // Not over macOS's microphone prompt (the walkthrough has its own Allow button for one that is
+    // missed): at most 15 s after it went up; never over Typd's own permission dialog.
+    if (MAC && (require('./permissions-mac').isAsking(15000) || require('./mac/app-location').isOffering())) { setTimeout(show, 1000); return; }
     settings.set('walkthrough', 'done');
     home.open('home', { walkthrough: true, by: 'the first-run walkthrough' });
   };
@@ -808,6 +874,7 @@ function startWalkthrough(afterUpdate) {
 let notedAsk = null;
 function modelChanged() {
   modelMissing();   // the first model's progress, for the tray's first line and Home
+  status.set({ interim: modelUpdate.interim() });   // light first: Home says the light model stands in, and how far the full one is
   refreshTray();
   home.changed('model');
   const p = modelUpdate.pending();
@@ -913,9 +980,11 @@ function checkMic(openIfBlocked) {
 /** macOS: which of the switches Typd needs are off, for the tray line and Home's card. */
 function checkMacPermissions() {
   if (!MAC) return;
-  require('./permissions-mac').status().then((on) => {
+  const pm = require('./permissions-mac');
+  pm.status().then((on) => {
     const off = ['microphone', 'accessibility', 'input'].filter((k) => on && on[k] === false);
-    status.set({ perms: off });
+    const mic = pm.micState();
+    status.set({ perms: off, micUnasked: mic === 'not-determined' || mic === 'asking' });
   }).catch(() => {});
 }
 
@@ -1031,7 +1100,9 @@ app.whenReady().then(() => {
       // hardware takes the GPU path; until then, and on any other PC, llama.cpp runs on the processor.
       cuda: local.cuda,
       cudaWanted: () => choice.cuda(),
-      switchBackend
+      switchBackend,
+      // Automatic (not a pin): on a slow link the light model stands in while the full one downloads.
+      automatic: () => choice.automatic()
     });
   }
   warmModel();
@@ -1135,6 +1206,8 @@ app.whenReady().then(() => {
     restartForUpdate,
     modelNow: () => modelUpdate.approve(),
     modelLater: () => modelUpdate.later(),
+    // macOS: the microphone's state moved (macOS's prompt answered, or asked): the tray and Home follow.
+    permsChanged: checkMacPermissions,
     // Automatic / Full / Light, or the asking switch, changed: read the hardware again and check soon.
     modelChanged: () => { choice.forget(); modelUpdate.recheck(); }
   });
@@ -1190,8 +1263,18 @@ app.whenReady().then(() => {
   if (MAC) {
     // After a quiet update relaunch the dialog waits until someone is at the keyboard (a new
     // ad-hoc build is a new app to macOS, so its switches may need turning on again).
-    const askPermissions = () => require('./permissions-mac').ensure('startup').then(checkMacPermissions);
-    if (appUpdater && appUpdater.firstStart) { checkMacPermissions(); appUpdate.whenUserActive(askPermissions); } else askPermissions();
+    // Before any permission is asked: Typd's LaunchServices entries tidied (a copy of Typd that is gone
+    // must not hold its permissions: mac/app-location.js), and a Typd running from Downloads, the
+    // Desktop, a disk image or a translocated copy offers to move to Applications first.
+    const location = require('./mac/app-location');
+    // The LaunchServices scan (lsregister -dump) only while the microphone is not on: then a stale entry
+    // for a copy of Typd that is gone may be what keeps macOS from asking.
+    const micOn = () => { try { return systemPreferences.getMediaAccessStatus('microphone') === 'granted'; } catch { return true; } };
+    const askPermissions = () => location.tidy(settings, { scan: !micOn() }).catch(() => {})
+      .then(() => require('./permissions-mac').ensure('startup')).then(checkMacPermissions);
+    if (appUpdater && appUpdater.firstStart) { checkMacPermissions(); appUpdate.whenUserActive(askPermissions); } else {
+      location.offerMove().then((leaving) => { if (!leaving) askPermissions(); }, () => askPermissions());
+    }
     require('./mac/login-item').sync(settings.get('startAtLogin'));
     setInterval(checkMacPermissions, 15000);
   }
@@ -1241,14 +1324,8 @@ app.whenReady().then(() => {
     }
   }
 
-  // The overlay is click-through by default and opts back in only while the
-  // cursor is over one of its two controls, so the rest of the pill never
-  // swallows a click meant for the window underneath.
-  ipcMain.on('overlay:interactive', (_e, on) => {
-    if (overlay && !overlay.isDestroyed()) {
-      overlay.setIgnoreMouseEvents(!on, { forward: true });
-    }
-  });
+  // The overlay is click-through by default and takes clicks only while the cursor is over one
+  // of its two live controls: overlay-window.js's click gate, fed by the page (overlay:hit).
 
   // The input devices, from the overlay (it already holds microphone permission), for the
   // tray's Microphone menu. Sent at load and whenever a device comes or goes.
@@ -1306,7 +1383,11 @@ app.whenReady().then(() => {
 
   // A dead microphone ends the session at once with the reason, instead of after the
   // user has finished talking ("No audio captured").
-  ipcMain.on('overlay:mic', (_e, kind) => {
+  // What failed is decided by the capture itself -- an error opening the stream ('unavailable'), or
+  // nothing but exact zeros ('silent') -- never by the privacy status alone. On a Mac the status then
+  // says why: a microphone macOS was never asked about (or whose prompt is still up) gets macOS's
+  // prompt again, at once, and a pill that says so; macOS hands a refused app exact zeros.
+  ipcMain.on('overlay:mic', (_e, kind, why) => {
     if (!session || session.endedAt) return;
     hotkeys.settle();
     session.controller.abort();
@@ -1314,11 +1395,22 @@ app.whenReady().then(() => {
     status.set({ live: false });
     passThrough();
     checkMic(false);
-    const blocked = status.get().mic === 'blocked';
-    send('session:error', {
-      message: blocked ? 'Mic blocked by ' + (MAC ? 'macOS' : 'Windows') + ' privacy'
-        : kind === 'silent' ? 'Mic silent — check mute or privacy' : 'No microphone — check Settings'
-    });
+    const mic = MAC ? require('./permissions-mac').micState() : null;
+    life.log('microphone', 'capture ' + (kind === 'silent' ? 'gave only silence' : 'did not open') + (why ? ' (' + String(why).slice(0, 40) + ')' : '') +
+      (MAC ? '; macOS status ' + mic : '; privacy ' + status.get().mic));
+    let message;
+    if (MAC && (mic === 'not-determined' || mic === 'asking')) {
+      require('./permissions-mac').requestMic('a dictation found no microphone', { again: true }).then(checkMacPermissions);
+      message = 'Allow the microphone in macOS’s dialog';
+    } else if (MAC && (mic === 'denied' || mic === 'restricted')) {
+      message = 'Microphone off for Typd in macOS — Fix…';
+      require('./permissions-mac').ensure('microphone');
+    } else {
+      const blocked = status.get().mic === 'blocked';
+      message = blocked ? 'Mic blocked by ' + (MAC ? 'macOS' : 'Windows') + ' privacy'
+        : kind === 'silent' ? 'Mic silent — check mute or privacy' : 'No microphone — check Settings';
+    }
+    send('session:error', { message });
   });
 
   ipcMain.on('overlay:cancel', () => {
