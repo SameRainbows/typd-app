@@ -133,6 +133,8 @@ else
   rm -rf "$UD" "$DL" "$AP"
   ditto "$APP" "$DL"
   : > "$TLOG"
+  # macOS's prompt for Typd: tccd says so (its alert's text differs between macOS versions).
+  prompted() { for _ in $(seq 1 "$1"); do grep -aqE 'AUTHREQ_PROMPTING: .*service=kTCCServiceMicrophone, subject=Sub:\{ai\.typd\.app\}' "$TLOG" && return 0; sleep 1; done; return 1; }
   openapp "$DL" "$OUT.dl"
   if waitfor 'Move Typd to your Applications folder' 20 Typd; then say "5. from ~/Downloads: Typd offers the move to Applications first"; else bad "5. no move offer from a Typd in ~/Downloads"; fi
   if grep -aq 'AUTHREQ_PROMPTING: .*service=kTCCServiceMicrophone' "$TLOG"; then bad "5. macOS was asked for the microphone while the move offer was up"; else say "5. ...and macOS was not asked anything before it"; fi
@@ -142,48 +144,50 @@ else
     # A real click on Typd's own NSAlert did not land on this runner: start the Downloads copy again
     # past the offer (as "Not Now" would), so the rest of the sequence still runs.
     say "5. (the click on Not Now did not land here; starting the Downloads copy again past the offer)"
-    pkill -f "$DL/Contents/MacOS/Typd" 2>/dev/null; sleep 3
+    pkill -9 -f "$DL/Contents/MacOS/Typd" 2>/dev/null; sleep 3
     openapp "$DL" "$OUT.dl2" --env TYPD_NO_MOVE_OFFER=1
   fi
-  if waitfor 'access your microphone|would like to access the microphone' 45 UserNotificationCenter; then "$ALERT" press UserNotificationCenter "Don't Allow" | sed 's/^/  /'; else bad "5. no microphone prompt after Not Now"; fi
-  sleep 3
-  l=$(life 'macOS answered: not allowed'); [ -n "$l" ] && say "5. the Downloads copy: ${l#*] }" || bad "5. Don't Allow not heard"
-  pkill -f "$DL/Contents/MacOS/Typd" 2>/dev/null; sleep 3
+  if prompted 45; then sleep 1; "$ALERT" press UserNotificationCenter "Don't Allow" | sed 's/^/  /'; else bad "5. no microphone prompt after Not Now"; fi
+  ok=0
+  for _ in $(seq 1 10); do [ -n "$(life 'macOS answered: not allowed')" ] && { ok=1; break; }; sleep 1; done
+  [ $ok = 1 ] && say "5. the Downloads copy: $(life 'macOS answered: not allowed' | sed 's/^.*\] //')" || bad "5. Don't Allow not heard"
+  pkill -9 -f "$DL/Contents/MacOS/Typd" 2>/dev/null; sleep 3
   rm -rf "$DL"
   ditto "$APP" "$AP"
   say "5. LaunchServices now holds Typd at: $(to 60 "$LSREG" -dump 2>/dev/null | grep -aE '^(path|identifier):' | grep -aB1 'ai\.typd\.app$' | grep -a '^path' | sed -E 's/^path: +//; s/ \(0x[0-9a-f]+\)$//' | sort -u | tr '\n' ' ')"
   killall UserNotificationCenter 2>/dev/null; sleep 1
   : > "$TLOG"
   openapp "$AP" "$OUT.ap"
-  if waitfor 'Ask macOS Again' 40 Typd; then say "5. /Applications copy: the dialog offers Ask macOS Again"; else bad "5. no Ask macOS Again in the /Applications copy's dialog"; "$ALERT" texts Typd | head -8; fi
+  if waitfor 'Ask macOS Again' 40 Typd; then say "5. /Applications copy: macOS says denied, and the dialog offers Ask macOS Again"; else bad "5. no Ask macOS Again in the /Applications copy's dialog"; "$ALERT" texts Typd | head -8; fi
+  : > "$TLOG"
   c=$("$ALERT" click Typd "Ask macOS Again"); echo "  $c"
   if ! echo "$c" | grep -q 'it is gone'; then
     # The same fallback: the dialog answers "Ask macOS Again" by itself (TYPD_TEST_DIALOG_ANSWER=reset);
-    # what follows -- LaunchServices, tccutil reset, macOS's prompt -- is the real thing either way.
+    # what follows -- LaunchServices, tccutil reset, Typd starting again, macOS's prompt -- is the real thing.
     say "5. (the click did not land here; starting the /Applications copy again with TYPD_TEST_DIALOG_ANSWER=reset)"
-    pkill -f "$AP/Contents/MacOS/Typd" 2>/dev/null; sleep 3
+    pkill -9 -f "$AP/Contents/MacOS/Typd" 2>/dev/null; sleep 3
     killall UserNotificationCenter 2>/dev/null; sleep 1
     : > "$TLOG"
     openapp "$AP" "$OUT.ap2" --env TYPD_TEST_DIALOG_ANSWER=reset
-    sleep 4
+    sleep 12
     l=$(life 'test: the dialog answered reset'); [ -n "$l" ] && say "5. ${l#*] }" || bad "5. the dialog did not answer reset"
   fi
+  # Ask macOS Again: Typd's own answer cleared, then Typd starts again (the running app keeps macOS's old
+  # answer) and the new Typd is asked about afresh.
   ok=0
-  for _ in $(seq 1 25); do
-    if grep -aqE 'AUTHREQ_PROMPTING: .*service=kTCCServiceMicrophone, subject=Sub:\{ai\.typd\.app\}' "$TLOG"; then ok=1; break; fi
-    sleep 1
-  done
+  for _ in $(seq 1 30); do [ -n "$(life 'started again after the reset')" ] && { ok=1; break; }; sleep 1; done
   [ -n "$(life 'tccutil reset Microphone ai.typd.app: done')" ] && say "5. Ask macOS Again reset Typd's own answer (tccutil)" || bad "5. no tccutil reset after Ask macOS Again"
-  [ $ok = 1 ] && say "5. Ask macOS Again: macOS prompts again" || bad "5. no new prompt after Ask macOS Again"
-  grep -a 'location: unregistered\|tccutil reset' "$LIFE" | tail -3 | sed 's/^.*\] /  life: /'
+  [ $ok = 1 ] && say "5. Typd started again: $(life 'started again after the reset' | sed 's/^.*\] //')" || bad "5. Typd did not start again after the reset"
+  if prompted 30; then say "5. Ask macOS Again: macOS prompts again, for ai.typd.app"; else bad "5. no new prompt after Ask macOS Again"; fi
   [ -n "$(life 'unregistered a copy of Typd that is gone')" ] && say "5. the gone ~/Downloads copy was unregistered from LaunchServices" || say "5. (no gone copy left in LaunchServices to unregister)"
+  sleep 1
   "$ALERT" press UserNotificationCenter Allow | sed 's/^/  /'
   ok=0
   for _ in $(seq 1 15); do [ -n "$(life 'macOS answered: allowed')" ] && { ok=1; break; }; sleep 1; done
   [ $ok = 1 ] && say "5. Allow heard: $(life 'macOS answered: allowed' | sed 's/^.*\] //')" || bad "5. Allow not heard after Ask macOS Again"
   r=$(rows | tr '\n' ' ')
   echo "$r" | grep -q 'kTCCServiceMicrophone 2' && say "5. TCC: allowed (Typd in the Microphone list)" || bad "5. no allowed TCC row after Ask macOS Again ($r)"
-  pkill -f "$AP/Contents/MacOS/Typd" 2>/dev/null; sleep 2
+  pkill -9 -f "$AP/Contents/MacOS/Typd" 2>/dev/null; sleep 2
   rm -rf "$AP"
   # Leave LaunchServices as the next steps expect: the build folder's Typd, not the copies made here.
   to 30 "$LSREG" -u "$AP" >/dev/null 2>&1; to 30 "$LSREG" -u "$DL" >/dev/null 2>&1; to 30 "$LSREG" -f "$APP" >/dev/null 2>&1

@@ -1289,6 +1289,8 @@ app.whenReady().then(() => {
     // must not hold its permissions: mac/app-location.js), and a Typd running from Downloads, the
     // Desktop, a disk image or a translocated copy offers to move to Applications first.
     const location = require('./mac/app-location');
+    location.quitWith(quit);
+    require('./permissions-mac').quitWith(quit);
     // macOS's microphone prompt unanswered after a check's wait: the Typd window, on its card (or the
     // walkthrough's box), not a modal dialog over macOS's prompt (permissions-mac.js).
     require('./permissions-mac').whenUnanswered(() => home.open('home', { by: 'an unanswered macOS microphone prompt' }));
