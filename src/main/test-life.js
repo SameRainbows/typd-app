@@ -12,11 +12,13 @@
  * late a 1 s timer fires (App Nap coalesces a background app's timers).
  *
  * TYPD_TEST_LIFE_HOW says who opens and closes the window:
- *   tray  Typd itself, 6 s after launch, through the menu-bar menu's own "Open Typd" item (the
+ *   tray  Typd itself, 12 s after launch, through the menu-bar menu's own "Open Typd" item (the
  *         function a click on it runs), then 3 s after the window shows, win.close() -- the path
  *         of the red X;
  *   gui   the script, with real mouse clicks: the menu-bar icon, "Open Typd" in its menu, the
  *         red X (it reads where they are from <file>). Typd only reports.
+ *   watch nobody: Typd only reports, and its first-run walkthrough follows the normal rule (an
+ *         existing install or an update must open no window by itself; a fresh install does).
  */
 
 const fs = require('fs');
@@ -28,7 +30,7 @@ function start({ file, how, app, home, trayUi, getOverlay, getHotkeys, getSessio
   const heard = () => (hot() ? hot().keysHeard : 0);
   let phase = 'starting', openedAt = 0, closedAt = 0, atOpen = null, atClose = null;
   let openedBy = '', closeEvent = '', last = 0, late = 0, lateRecent = 0, lateRecentAt = 0;
-  let active = 0, resigned = 0;
+  let active = 0, resigned = 0, dockShown = false;
   const homeWin = () => home.current();
 
   if (process.platform === 'darwin') {
@@ -61,6 +63,7 @@ function start({ file, how, app, home, trayUi, getOverlay, getHotkeys, getSessio
     last = now;
     const tray = trayUi.tray;
     const w = homeWin();
+    if (app.dock && app.dock.isVisible()) dockShown = true;
     const h = hot();
     let tapLine = 'none';
     try { tapLine = h && h.health ? JSON.stringify(h.health()) : 'not reported'; } catch (err) { tapLine = 'error ' + err.message; }
@@ -77,7 +80,7 @@ function start({ file, how, app, home, trayUi, getOverlay, getHotkeys, getSessio
       'hotkey: ' + (h ? h.state() : 'none'),
       'keys heard: ' + heard() + ' total, ' + (atOpen === null ? '-' : atOpen) + ' before the window opened, ' +
         (atClose === null ? '-' : atClose) + ' when it closed, ' + (atClose === null ? '-' : heard() - atClose) + ' since it closed',
-      'dock: ' + (app.dock ? (app.dock.isVisible() ? 'shown' : 'hidden') : 'none'),
+      'dock: ' + (app.dock ? (app.dock.isVisible() ? 'shown' : 'hidden') + (dockShown ? ' (was shown)' : ' (never shown)') : 'none'),
       'activation: became active ' + active + ', resigned ' + resigned,
       'overlay: ' + (getOverlay() && !getOverlay().isDestroyed() ? 'alive' : 'gone') + ', windows: ' + BrowserWindow.getAllWindows().length,
       'dictation: ' + (getSession() ? getSession().mode + ', open' : 'none open'),
@@ -106,8 +109,8 @@ function start({ file, how, app, home, trayUi, getOverlay, getHotkeys, getSessio
           home.close();
         }, 3000);
       }, 250);
-    }, 6000);
-  } else {
+    }, 12000);
+  } else if (how === 'gui') {
     openedBy = 'the script (mouse clicks)';
   }
 }

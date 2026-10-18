@@ -204,7 +204,7 @@ check('walkthrough: the line, word for word, on step 1 only, in a public build w
   hJs.includes("var SHARE_LINE = '" + LINE + "';") && /var note = step === 1 && publicSharing\(\) \? SHARE_LINE : '';/.test(hJs) &&
   /return Boolean\(sh && sh\.mode === 'beta' && sh\.state === 'on'\);/.test(hJs) && /id="walkNote" hidden/.test(hHtml));
 check('TYPD_NO_SHARE=1 turns sharing off for the run (CI launches)', /if \(process\.env\.TYPD_NO_SHARE === '1'\) return main;/.test(shSrc));
-for (const f of ['scripts/mac-close-check.sh', 'scripts/mac-launch-loop.sh', '.github/workflows/mac.yml']) {
+for (const f of ['scripts/mac-close-check.sh', 'scripts/mac-launch-loop.sh', 'scripts/mac-tray-close-check.sh', 'scripts/mac-first-launch-check.sh', '.github/workflows/mac.yml']) {
   const t = read(f);
   const launches = (t.match(/open "\$APP" --env|"\$APP\/Contents\/MacOS\/Typd" > app\.log|"\$BIN" > "\$LOG"|launchctl setenv TYPD_DEBUG/g) || []).length;
   const noShare = (t.match(/TYPD_NO_SHARE/g) || []).length;
@@ -240,6 +240,17 @@ check('every uiohook listener is guarded', /onDown = guard\(/.test(hk) && /onUp 
   (hk.match(/uIOhook\.on\('/g) || []).length === 4);
 check('the CI test hook runs only with TYPD_TEST_CLOSE_HOME',
   (main.match(/testCloseHome\(/g) || []).length === 2 && /if \(process\.env\.TYPD_TEST_CLOSE_HOME\) testCloseHome\(/.test(main));
+check('the Dock icon follows the setting only: never shown or hidden as the window opens or closes (0.2.4)',
+  !/syncDock\(\)/.test((hMain.match(/function open\([\s\S]*?\n\}/) || [''])[0]) && !/syncDock/.test(closedHandler) &&
+  /const want = Boolean\(settings\.get\('showInDock'\)\);/.test(hMain));
+const plist = JSON.parse(read('package.json')).build.mac.extendInfo;
+check('Info.plist: a menu-bar app macOS never ends or naps on its own (no automatic or sudden termination, no App Nap)',
+  plist.LSUIElement === true && plist.NSSupportsAutomaticTermination === false && plist.NSSupportsSuddenTermination === false && plist.LSAppNapIsDisabled === true);
+check('the life log hears every way Typd can end: quit asked, will-quit, quit, exit, a renderer or helper gone, uncaught errors',
+  /app\.on\('before-quit'[\s\S]{0,300}life\.log\('quit asked'/.test(main) && /life\.log\('will-quit'\)/.test(main) && /app\.on\('quit', \(_e, code\) => life\.ended/.test(main) &&
+  /process\.on\('exit'[^\n]*life\.ended/.test(main) && /life\.log\('renderer gone'/.test(main) && /life\.log\('helper process gone'/.test(main) &&
+  /uncaughtExceptionMonitor/.test(main) && /process\.on\('unhandledRejection'/.test(main));
+check('a second copy of Typd never touches the life log (it would report the first as lost)', /if \(!primary\) \{\s*quit\('[^']*'\);\s*\} else \{[\s\S]{0,300}life\.init\(/.test(main));
 check('"Show Typd in the Dock": macOS, off by default, wired to the window',
   /showInDock: false/.test(read('src/main/settings.js')) && /key === 'showInDock'/.test(hMain) &&
   hHtml.includes('id="showInDock"') && /'showInDock'\]\.forEach/.test(hJs));

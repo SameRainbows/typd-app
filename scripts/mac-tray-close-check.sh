@@ -52,7 +52,9 @@ before() { field 'keys heard' | sed -n 's/.*total, \([0-9-]*\) before the window
 since() { field 'keys heard' | sed -n 's/.*, \([0-9-]*\) since it closed$/\1/p'; }
 num() { case "${1:-}" in ''|*[!0-9]*) echo 0 ;; *) echo "$1" ;; esac; }
 marker_fresh() { [ -s "$MARK" ] && [ $(( $(now) - $(stat -f %m "$MARK") )) -le 5 ]; }
-ax() { osascript -e "tell application \"System Events\" to tell (first application process whose unix id is $pid) to $1" 2>&1; }
+in15() { perl -e 'alarm shift @ARGV; exec @ARGV' 15 "$@"; }   # macOS has no timeout(1); System Events can hang
+ax() { in15 osascript -e "tell application \"System Events\" to tell (first application process whose unix id is $pid) to $1" 2>&1; }
+placed() { case "$(field tray)" in [0-9-]*,[0-9-]*,[1-9]*,[1-9]*) return 0 ;; esac; return 1; }   # on screen, with a size
 watch_line() {
   local p n
   p=$(ps -o %cpu=,pri=,nice=,stat= -p "$pid" 2>/dev/null | tr -s ' ')
@@ -91,14 +93,13 @@ open "$APP" --env TYPD_DEBUG=1 --env "TYPD_TEST_LIFE=$MARK" --env "TYPD_TEST_LIF
 for i in $(seq 1 40); do pid=$(pgrep -nf "$BIN" || echo 0); [ "$pid" -gt 0 ] && break; sleep 0.5; done
 echo "[$MODE] Typd pid $pid, $HOW"
 
-# Up, with its menu-bar icon somewhere on screen.
-for i in $(seq 1 60); do case "$(field tray)" in [0-9-]*,*) break ;; esac; alive || break; sleep 1; done
+# Up, with its menu-bar icon placed on screen (its first bounds can have no height yet).
+for i in $(seq 1 60); do placed && break; alive || break; sleep 1; done
 show "marker at start"
-case "$(field tray)" in [0-9-]*,*) ;; *) bad "no menu-bar icon after a minute ($(field tray))" ;; esac
+placed || bad "no menu-bar icon on screen after a minute ($(field tray))"
 grep -qx "pid: $pid" "$MARK" 2>/dev/null || bad "the marker is not this Typd's (pid $pid)"
 
-# Keys before the window: are synthetic keys heard at all on this runner?
-sleep 4
+# Keys before the window (tray: Typd opens it 12 s after launch): are synthetic keys heard here?
 f19 12 250
 sleep 1
 
@@ -176,7 +177,7 @@ if [ -n "$died" ] || ! alive; then
 else
   echo "[$MODE] Typd (pid $pid) is running $(( $(now) - closed_at )) s after its window closed"
   marker_fresh || bad "Typd runs but its marker stopped (main thread stuck?)"
-  case "$(field tray)" in [0-9-]*,*) ;; *) bad "the menu-bar icon is gone: $(field tray)" ;; esac
+  placed || bad "the menu-bar icon is gone: $(field tray)"
   ax 'count menu bar items of menu bar 2' | sed "s/^/[$MODE] menu-bar items Accessibility sees: /" || true
   if [ "$(num "$(before)")" -gt 0 ]; then
     [ "$(num "$(since)")" -gt "${at_end:-0}" ] || bad "$IDLE s after the close the key layer no longer hears keys ($(since) since the close)"

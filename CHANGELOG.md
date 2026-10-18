@@ -2,7 +2,10 @@
 
 ## 0.2.4 · October 2026
 
-- **Sharing is on to help improve Typd.** Your dictations are shared to train the model, so it gets better for everyone. The first screen of the walkthrough says so, and **Share dictations** in Settings turns it off at once. If you turned sharing off before, it stays off. What is shared has not changed: **What's shared** in Settings lists it. Dictating itself still runs on your computer and works offline.
+- **Closing the Typd window on a Mac keeps Typd running.** The red button closes only the window; Typd, its menu-bar icon and its key stay. Typd no longer appears in the Dock while its window is open (turn on **Show Typd in the Dock** in Settings if you want it there).
+- **Copy diagnostics** in the menu-bar menu copies Typd's own log, never anything you dictated, so you can send it when something goes wrong.
+- **The walkthrough is for new installs only.** Updating Typd never shows it; **Show the walkthrough** in Settings still opens it.
+- **Sharing is on to help improve Typd.** Your dictations are shared to train the model, so it gets better for everyone. A new install's walkthrough says so on its first screen, and **Share dictations** in Settings turns it off at once. If you turned sharing off before, it stays off. What is shared has not changed: **What's shared** in Settings lists it. Dictating itself still runs on your computer and works offline.
 - **No more first-run question about sharing.** The consent window is gone; Settings has the switch, **What's shared** and **Delete what I've shared**.
 - **Sharing stays light.** At most 50 dictations (or 20 MB of audio) a day are shared, and Typd waits quietly when the server is busy or full instead of trying again and again.
 

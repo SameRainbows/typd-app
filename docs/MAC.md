@@ -69,8 +69,15 @@ with **–**, then add it again with **+**.
 
 Typd lives in the **menu bar** at the top right of the screen, with no Dock icon. Click its icon to
 see whether it is ready and which key to press, switch microphones, change the key, open the Typd
-window (Home, History, Dictionary, Settings), or quit. While the Typd window is open, Typd also
-shows in the Dock and in ⌘Tab.
+window (Home, History, Dictionary, Settings), or quit. Closing the Typd window (the red button)
+only closes the window: Typd, its menu-bar icon and its key keep running. Typd stays out of the
+Dock and ⌘Tab even while its window is open, unless **Show Typd in the Dock** is on in Settings.
+
+If Typd misbehaves, choose **Copy diagnostics** in its menu-bar menu and paste the result into a
+message to the developer. It holds Typd's own log (when it started, opened or closed its window,
+quit or crashed, and whether its key was working), never anything you dictated. After a crash,
+the files in `~/Library/Logs/DiagnosticReports` whose names start with `Typd` help too; Typd's own
+crash dumps stay on your Mac in `~/Library/Application Support/typd/Crashpad`.
 
 Press the Typd key once and talk. Press it again and the text appears where your cursor is. To
 change some text, highlight it, press the key, say what to change ("make this shorter"), and press
