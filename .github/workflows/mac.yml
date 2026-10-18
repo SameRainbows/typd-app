@@ -32,7 +32,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, macos-15, macos-26, xcode-27]
+        os: [macos-15, xcode-27]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     env:
@@ -124,101 +124,133 @@ jobs:
           python3 "$RUNNER_TEMP/icns.py" "$RUNNER_TEMP/typd.icns"
           shasum -a 256 "$RUNNER_TEMP/typd.icns"
 
-      - name: Typd's signing certificate, in a keychain of its own (for the re-signed variants)
-        env:
-          MAC_CODESIGN_P12: ${{ secrets.MAC_CODESIGN_P12 }}
-          MAC_CODESIGN_P12_PASSWORD: ${{ secrets.MAC_CODESIGN_P12_PASSWORD }}
-        run: |
-          bash scripts/mac-signing-import.sh
-
-      - name: Variants of the same app, re-signed
+      - name: Dependencies and the dictation model (for a real dictation attempt)
         run: |
           set -e
-          V="$RUNNER_TEMP/variants"; mkdir -p "$V"
-          ent() {   # ent <file> <keys...>
-            f="$1"; shift
-            { echo '<?xml version="1.0" encoding="UTF-8"?>'
-              echo '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">'
-              echo '<plist version="1.0"><dict>'
-              for k in "$@"; do echo "<key>$k</key><true/>"; done
-              echo '</dict></plist>'; } > "$f"
-            plutil -lint "$f"
-          }
-          ELECTRON="com.apple.security.cs.allow-jit com.apple.security.cs.allow-unsigned-executable-memory com.apple.security.cs.disable-library-validation com.apple.security.automation.apple-events"
-          ent "$V/mic.plist" com.apple.security.device.audio-input
-          ent "$V/rt-mic.plist" $ELECTRON com.apple.security.device.audio-input
-          ent "$V/rt-nomic.plist" $ELECTRON
-          ID="$TYPD_MAC_SIGN_IDENTITY"; KC="$TYPD_MAC_SIGN_KEYCHAIN"
-          mk() {   # mk <name> <codesign args...>
-            name=$1; shift
-            ditto "$RUNNER_TEMP/shipped/Typd.app" "$V/$name/Typd.app"
-            codesign --force --deep "$@" "$V/$name/Typd.app"
-            codesign --verify --deep --strict "$V/$name/Typd.app"
-            echo "$name: $(codesign -dv "$V/$name/Typd.app" 2>&1 | grep -E '^CodeDirectory' ) | $(codesign -d -r- "$V/$name/Typd.app" 2>&1 | grep designated | cut -c1-90)"
-          }
-          mk adhoc --sign -
-          mk cert-mic --sign "$ID" --keychain "$KC" --timestamp=none --entitlements "$V/mic.plist"
-          mk runtime-mic --sign "$ID" --keychain "$KC" --timestamp=none --options runtime --entitlements "$V/rt-mic.plist"
-          mk runtime-nomic --sign "$ID" --keychain "$KC" --timestamp=none --options runtime --entitlements "$V/rt-nomic.plist"
+          npm ci
+          node scripts/fetch-model.js --accept-license | tail -3
 
-      - name: Ask for the microphone, fresh TCC state each time (tccd's own log)
+      - name: Round 2 -- the prompt itself (its text, a screenshot), the key during it, quit and relaunch, Allow, System Settings first
+        env:
+          TYPD_MODEL_DIR: ${{ github.workspace }}/models/typd-dictate
         run: |
           set +e +o pipefail
-          cat > "$RUNNER_TEMP/wins.swift" <<'EOF'
+          cat > "$RUNNER_TEMP/ax.swift" <<'EOF2'
+          import Cocoa
+          import ApplicationServices
+          // ax <process name> [press <button title>]: the process's windows, texts and buttons, through Accessibility.
+          let args = CommandLine.arguments
+          print("  AX trusted: \(AXIsProcessTrusted())")
+          func attr(_ e: AXUIElement, _ n: String) -> String {
+            var v: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(e, n as CFString, &v) == .success, let x = v else { return "" }
+            return (x as? String) ?? ""
+          }
+          var pressed = false
+          func walk(_ e: AXUIElement, _ d: Int) {
+            let role = attr(e, kAXRoleAttribute), title = attr(e, kAXTitleAttribute), value = attr(e, kAXValueAttribute), desc = attr(e, kAXDescriptionAttribute)
+            if !(title.isEmpty && value.isEmpty && desc.isEmpty) || role == "AXWindow" || role == "AXButton" {
+              print("  " + String(repeating: "  ", count: d) + "\(role) title=\"\(title)\" value=\"\(value)\" desc=\"\(desc)\"")
+            }
+            if args.count >= 4, args[2] == "press", role == "AXButton", title.replacingOccurrences(of: "\u{2019}", with: "'") == args[3], !pressed {
+              let r = AXUIElementPerformAction(e, kAXPressAction as CFString); pressed = true; print("  pressed \"\(title)\": \(r.rawValue)")
+            }
+            var k: CFTypeRef?
+            if d < 10, AXUIElementCopyAttributeValue(e, kAXChildrenAttribute as CFString, &k) == .success, let kids = k as? [AXUIElement] { for c in kids { walk(c, d + 1) } }
+          }
+          let apps = NSWorkspace.shared.runningApplications.filter { $0.localizedName == args[1] || $0.bundleIdentifier == args[1] || ($0.executableURL?.lastPathComponent ?? "") == args[1] }
+          if apps.isEmpty { print("  no process \(args[1])") }
+          for a in apps { print("  process \(a.localizedName ?? "?") pid \(a.processIdentifier)"); walk(AXUIElementCreateApplication(a.processIdentifier), 0) }
+          EOF2
+          swiftc -O "$RUNNER_TEMP/ax.swift" -o "$RUNNER_TEMP/ax" 2>&1 | tail -3
+          cat > "$RUNNER_TEMP/wins.swift" <<'EOF2'
           import CoreGraphics
           import Foundation
+          let skip = ["Window Server", "Dock", "Control Center", "SystemUIServer", "Wallpaper", "Notification Center", "Spotlight", "TextInputMenuAgent"]
           let list = (CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]]) ?? []
           for w in list {
             let owner = w[kCGWindowOwnerName as String] as? String ?? "?"
             let layer = w[kCGWindowLayer as String] as? Int ?? 0
             let b = w[kCGWindowBounds as String] as? [String: Any] ?? [:]
-            if layer >= 0 && owner != "Window Server" && owner != "Dock" { print("  window: \(owner) layer \(layer) \(b["Width"] ?? 0)x\(b["Height"] ?? 0) at \(b["X"] ?? 0),\(b["Y"] ?? 0)") }
+            if layer >= 0 && layer < 25 && !skip.contains(owner) { print("  window (front first): \(owner) layer \(layer) \(b["Width"] ?? 0)x\(b["Height"] ?? 0) at \(b["X"] ?? 0),\(b["Y"] ?? 0)") }
           }
-          EOF
+          EOF2
           swiftc -O "$RUNNER_TEMP/wins.swift" -o "$RUNNER_TEMP/wins" 2>&1 | tail -3
-          NEWDB=$(sudo find /private/var/containers/Data/ProtectedSystem -name 'TCC.db' -path '*com.apple.TCC*' 2>/dev/null | head -n 1)
-          dbs() {
-            for db in "$HOME/Library/Application Support/com.apple.TCC/TCC.db" "$NEWDB" "/Library/Application Support/com.apple.TCC/TCC.db"; do
-              [ -n "$db" ] || continue
+          swiftc -O scripts/mac-ui.swift -o "$RUNNER_TEMP/mac-ui" 2>&1 | tail -3
+          NEWDB=$(sudo find /private/var/containers/Data/ProtectedSystem -name 'TCC.db' -path '*com.apple.TCC*' 2>/dev/null)
+          rows() {
+            for db in "$HOME/Library/Application Support/com.apple.TCC/TCC.db" $NEWDB; do
+              sudo test -f "$db" || continue
               r=$(sudo sqlite3 "$db" "SELECT service||' auth_value='||auth_value||' reason='||auth_reason FROM access WHERE client LIKE 'ai.typd%';" 2>&1 | tr '\n' ';')
-              echo "  TCC.db $(echo "$db" | sed 's#.*/ProtectedSystem/#<ProtectedSystem>/#'): ${r:-no rows for ai.typd.app}"
+              echo "  user TCC.db $(echo "$db" | sed 's#.*/ProtectedSystem/\(........\).*#<ProtectedSystem>/\1#'): ${r:-no rows for ai.typd.app}"
             done
           }
-          try() {   # try <label> <app folder>
-            label=$1; src=$2
-            echo "=================== $label"
-            pkill -f /Applications/Typd.app/Contents/MacOS/Typd 2>/dev/null; sleep 1
-            rm -rf /Applications/Typd.app; ditto "$src" /Applications/Typd.app
-            /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f /Applications/Typd.app || true
-            echo "  $(codesign -dv /Applications/Typd.app 2>&1 | grep -E '^CodeDirectory')"
-            tccutil reset Microphone ai.typd.app 2>&1 | sed 's/^/  /'
-            tccutil reset All ai.typd.app >/dev/null 2>&1 || true
-            rm -rf "$HOME/Library/Application Support/typd"
-            dbs
-            sudo log stream --level debug --style compact --predicate 'subsystem == "com.apple.TCC" OR process == "tccd"' > "$RUNNER_TEMP/tcc-$label.log" 2>&1 &
-            lp=$!
-            sleep 2
-            out="$RUNNER_TEMP/typd-$label.out"
-            open /Applications/Typd.app --env TYPD_DEBUG=1 --env TYPD_NO_MODEL_UPDATE=1 --env TYPD_NO_APP_UPDATE=1 --env TYPD_NO_WALKTHROUGH=1 --env TYPD_NO_SHARE=1 --stdout "$out" --stderr "$out.err"
-            sleep "$WAIT"
-            echo "  -- on-screen windows while Typd waits"; "$RUNNER_TEMP/wins" | grep -viE 'menubar|Control Center|SystemUIServer|Notification Center|Wallpaper' | head -20
-            pgrep -fl /Applications/Typd.app/Contents/MacOS/Typd | head -2 | sed 's/^/  running: /'
-            pkill -f /Applications/Typd.app/Contents/MacOS/Typd 2>/dev/null; sleep 3
-            sudo kill $lp 2>/dev/null; sleep 1
-            echo "  -- tccd about the microphone and Typd"
-            grep -iE 'kTCCServiceMicrophone|AUTHREQ_(PROMPTING|RESULT)|disallow|Refusing|prompt' "$RUNNER_TEMP/tcc-$label.log" | grep -viE 'kTCCServiceListenEvent|kTCCServicePostEvent' | cut -c1-420 | head -40
-            echo "  -- tccd about Accessibility (the key's event tap asks too)"
-            grep -iE 'kTCCServiceAccessibility' "$RUNNER_TEMP/tcc-$label.log" | grep -iE 'AUTHREQ_(PROMPTING|RESULT)|prompt' | cut -c1-300 | head -6
-            echo "  -- Typd's own lines"
-            grep -hE '^\[typd:(permissions|life|hotkey)\]' "$out" "$out.err" 2>/dev/null | head -20
-            dbs
+          shot() {   # shot <name>: a screenshot, printed as base64 JPEG between markers
+            screencapture -x "$RUNNER_TEMP/$1.png" 2>&1 | head -2
+            sips -s format jpeg -s formatOptions 50 --resampleWidth 1000 "$RUNNER_TEMP/$1.png" --out "$RUNNER_TEMP/$1.jpg" >/dev/null 2>&1
+            echo "SHOT-BEGIN $1"; base64 -i "$RUNNER_TEMP/$1.jpg" | fold -w 900; echo "SHOT-END $1"
           }
-          try shipped "$RUNNER_TEMP/shipped/Typd.app"
-          try adhoc "$RUNNER_TEMP/variants/adhoc/Typd.app"
-          try cert-mic "$RUNNER_TEMP/variants/cert-mic/Typd.app"
-          try runtime-nomic "$RUNNER_TEMP/variants/runtime-nomic/Typd.app"
-          try runtime-mic "$RUNNER_TEMP/variants/runtime-mic/Typd.app"
-          try shipped-again "$RUNNER_TEMP/shipped/Typd.app"
+          look() { echo "  -- $1"; "$RUNNER_TEMP/wins" | head -12; "$RUNNER_TEMP/ax" UserNotificationCenter | head -30; }
+          mics() { echo "  -- tccd lines about the microphone ($1)"; grep -iE 'Microphone' "$RUNNER_TEMP/tcc2.log" | cut -c1-360 | tail -n "${2:-25}"; }
+          fresh() {
+            pkill -f /Applications/Typd.app/Contents/MacOS/Typd; sleep 2
+            killall UserNotificationCenter 2>/dev/null; sleep 1
+            tccutil reset Microphone ai.typd.app >/dev/null 2>&1; tccutil reset All ai.typd.app >/dev/null 2>&1
+            rm -rf "$HOME/Library/Application Support/typd"
+          }
+          launch() {   # launch <out> [walk]: as Finder starts it; the walkthrough on with "walk"
+            set -- "$1" "${2:-}"
+            extra="--env TYPD_NO_WALKTHROUGH=1"; [ "$2" = walk ] && extra=""
+            # shellcheck disable=SC2086
+            open /Applications/Typd.app --env TYPD_DEBUG=1 --env TYPD_NO_MODEL_UPDATE=1 --env TYPD_NO_APP_UPDATE=1 --env TYPD_NO_SHARE=1 --env "TYPD_MODEL_DIR=$TYPD_MODEL_DIR" $extra --stdout "$1" --stderr "$1.err"
+          }
+          rm -rf /Applications/Typd.app; ditto "$RUNNER_TEMP/shipped/Typd.app" /Applications/Typd.app
+          sudo log stream --level debug --style compact --predicate 'subsystem == "com.apple.TCC" OR process == "tccd"' > "$RUNNER_TEMP/tcc2.log" 2>&1 &
+          lp=$!
+          echo "=================== A. a fresh install's first launch, walkthrough ON (as a user starts it)"
+          fresh
+          # Accessibility, Input Monitoring and posting keys on (as after Typd's own dialog), the microphone untouched
+          now=$(date +%s)
+          for svc in kTCCServiceAccessibility kTCCServiceListenEvent kTCCServicePostEvent; do
+            sudo sqlite3 "/Library/Application Support/com.apple.TCC/TCC.db" "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version, flags, last_modified) VALUES ('$svc', 'ai.typd.app', 0, 2, 4, 1, 0, $now);" && echo "  granted $svc (system TCC.db)"
+          done
+          rows; sleep 2
+          launch "$RUNNER_TEMP/a.out" walk
+          sleep 9; look "9 s after launch"
+          shot a-first-launch
+          mics "first launch"
+          echo "  -- Typd's own lines"; grep -hE '^\[typd:(permissions|life|home)\]' "$RUNNER_TEMP/a.out" | head -15
+          echo "=================== A2. the key (Right Command, twice) while macOS's prompt is unanswered"
+          "$RUNNER_TEMP/mac-ui" keys 54; sleep 3; "$RUNNER_TEMP/mac-ui" keys 54; sleep 4
+          grep -hE '^\[typd:(life|session|permissions)\]|No microphone|No audio|Mic ' "$RUNNER_TEMP/a.out" "$RUNNER_TEMP/a.out.err" | tail -8
+          tail -5 "$HOME/Library/Application Support/typd/logs/life.log" 2>/dev/null
+          echo "=================== B. quit Typd with the prompt unanswered: is anything recorded? does the prompt go away?"
+          pkill -f /Applications/Typd.app/Contents/MacOS/Typd; sleep 4
+          look "4 s after quitting"; rows
+          echo "=================== C. relaunch (no reset): does 0.2.6 ask again?"
+          : > "$RUNNER_TEMP/tcc2.log"
+          launch "$RUNNER_TEMP/c.out"
+          sleep 9; look "9 s after the relaunch"
+          mics "relaunch"
+          echo "=================== D. press Allow in macOS's prompt: Typd in the list?"
+          "$RUNNER_TEMP/ax" UserNotificationCenter press Allow | grep -E 'pressed|trusted|no process'
+          sleep 4; rows; look "after Allow"
+          echo "  -- Typd's own lines after Allow"; grep -hE '^\[typd:permissions\]' "$RUNNER_TEMP/c.out" | head -5
+          echo "=================== E. System Settings' Microphone list open first (a user looking for Typd there), then the first launch"
+          fresh
+          open "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"; sleep 6
+          : > "$RUNNER_TEMP/tcc2.log"
+          launch "$RUNNER_TEMP/e.out" walk
+          sleep 9; look "9 s after launch, System Settings open"
+          shot e-settings-first
+          mics "settings first"
+          echo "=================== F. Don't Allow: Typd in the list, switched off?"
+          "$RUNNER_TEMP/ax" UserNotificationCenter press "Don't Allow" | grep -E 'pressed|no process'
+          sleep 4; rows
+          echo "  -- Typd's own lines after Don't Allow"; grep -hE '^\[typd:permissions\]' "$RUNNER_TEMP/e.out" | head -5
+          pkill -f /Applications/Typd.app/Contents/MacOS/Typd
+          sudo kill $lp
+          killall "System Settings" 2>/dev/null; true
 
       - name: Remove the signing keychain
         if: always()
