@@ -95,7 +95,9 @@
     });
   }
 
+  var lastPerms = [];
   function renderStatus(status, perms) {
+    lastPerms = perms || [];
     var card = $('statusCard');
     card.setAttribute('data-state', status.state);
     withKeys($('statusLine'), status.card, S.hotkey.parts);
@@ -144,10 +146,20 @@
       row.appendChild(el('span', 'tick', isOff ? '○' : '✓'));
       row.appendChild(el('span', 'what', PERMS[k][0] + ' — ' + PERMS[k][1]));
       if (isOff) {
-        var b = el('button', 'btn', 'Open System Settings');
+        // The microphone never answered (macOS has no entry for Typd yet): macOS's own prompt, not the
+        // pane -- the pane's list has no Typd to turn on until macOS has asked (permissions-mac.js).
+        var unasked = k === 'microphone' && (S.mic === 'not-determined' || S.mic === 'asking');
+        var b = el('button', 'btn', unasked ? (S.mic === 'asking' ? 'Ask again' : 'Allow') : 'Open System Settings');
         b.type = 'button';
         b.onclick = function () { api.pane(k); };
         row.appendChild(b);
+        // macOS says "off" but Typd may not even be in its list (no switch to turn on): ask macOS again.
+        if (k === 'microphone' && (S.mic === 'denied' || S.mic === 'restricted') && api.mic && api.mic.reset) {
+          var again = el('button', 'text', 'Not listed? Ask again');
+          again.type = 'button';
+          again.onclick = function () { again.disabled = true; api.mic.reset().then(function (r) { S.mic = (r && r.state) || S.mic; refreshPerms(); }); };
+          row.appendChild(again);
+        }
       } else {
         row.appendChild(el('span', 'dim small', 'On'));
       }
@@ -1047,6 +1059,38 @@
       if (step !== 2 && step !== 3) hint('');
       else if (S.needed) hint(WAIT_HINT);
       renderModel();
+      renderMic();
+    }
+
+    // macOS: the microphone, on every step until macOS has allowed it. S.mic is permissions-mac.js's
+    // micState(): 'granted', 'denied', 'restricted', 'not-determined' (never answered: Typd is not in
+    // macOS's Microphone list yet) or 'asking' (macOS's prompt is up).
+    var hadMic = false;
+    var micNote = '';   // what "Ask macOS again" found, when macOS still says no
+    function renderMic() {
+      var box = $('walkMic'), btn = $('walkMicAllow'), m = S.mic;
+      $('walkMicReset').hidden = !(m === 'denied' || m === 'restricted');
+      if (!S.platform.mac || !m || m === 'unknown') { box.hidden = true; return; }
+      box.classList.remove('done');
+      if (m === 'granted') {
+        box.hidden = !hadMic;
+        if (hadMic) { box.classList.add('done'); $('walkMicText').textContent = '✓ Microphone allowed.'; }
+        return;
+      }
+      hadMic = true;
+      box.hidden = false;
+      btn.hidden = false;
+      btn.disabled = false;
+      if (m === 'asking') {
+        $('walkMicText').textContent = 'macOS is asking: click Allow in its dialog. Can’t see it? Ask again.';
+        btn.textContent = 'Ask again';
+      } else if (m === 'denied' || m === 'restricted') {
+        $('walkMicText').textContent = micNote || 'The microphone is off for Typd. Turn on Typd in System Settings › Privacy & Security › Microphone.';
+        btn.textContent = 'Open System Settings';
+      } else {
+        $('walkMicText').textContent = 'Typd needs your microphone to hear you. macOS asks once.';
+        btn.textContent = 'Allow microphone';
+      }
     }
 
     // No speech model yet: what the download is doing, and the one thing it may need from the
@@ -1100,6 +1144,7 @@
       $('walk').hidden = false;
       go(n || 1);
       api.walkthrough.done();
+      refreshMic();
     }
 
     function close() {
@@ -1112,6 +1157,25 @@
     $('walkModelNow').addEventListener('click', function () {
       $('walkModelNow').disabled = true;
       api.model.now().then(function () { $('walkModelNow').disabled = false; refreshNeeded(); });
+    });
+    $('walkMicAllow').addEventListener('click', function () {
+      if (!api.mic) return;
+      $('walkMicAllow').disabled = true;
+      S.mic = S.mic === 'denied' || S.mic === 'restricted' ? S.mic : 'asking';
+      renderMic();
+      api.mic.request().then(function (state) { S.mic = state || S.mic; renderMic(); refreshPerms(); });
+    });
+    $('walkMicReset').addEventListener('click', function () {
+      if (!api.mic || !api.mic.reset) return;
+      $('walkMicReset').disabled = true;
+      S.mic = 'asking'; micNote = '';
+      renderMic();
+      api.mic.reset().then(function (r) {
+        $('walkMicReset').disabled = false;
+        S.mic = (r && r.state) || S.mic;
+        if (r && r.refusedAtOnce) micNote = 'macOS refuses the microphone to Typd without asking: a rule on this Mac (a management profile, Screen Time), not your answer. Typd’s menu › Copy diagnostics, and send it to the developer.';
+        renderMic(); refreshPerms();
+      });
     });
     $('walkBack').addEventListener('click', function () { go(step - 1); });
     $('walkSkip').addEventListener('click', close);
@@ -1131,6 +1195,7 @@
       open: open,
       close: close,
       model: function () { if (step) renderModel(); },
+      mic: function () { if (step) renderMic(); },
       get step() { return step; },
       /** The key was heard here, outside the box: say where to click. */
       heard: function () {
@@ -1176,6 +1241,21 @@
     renderStatus(p.status, p.perms);
   });
 
+  // macOS: the microphone's state moved (macOS's prompt went up, or was answered).
+  api.on('home:mic', function (p) {
+    if (!S || !p || !p.state) return;
+    S.mic = p.state;
+    walk.mic();
+    refreshPerms();
+  });
+  function refreshMic() {
+    if (!api.mic || !S || !S.platform.mac) return;
+    api.mic.get().then(function (state) { if (!S || !state) return; S.mic = state; walk.mic(); refreshPerms(); });
+  }
+  function refreshPerms() {
+    if (S && S.status) renderStatus(S.status, lastPerms);
+  }
+
   /* -------------------------------------------------------------------- boot */
 
   function boot() {
@@ -1197,6 +1277,7 @@
       if (q.get('walkthrough') === '1') walk.open(1);
       if (q.get('updates') === '1') { scrollToUpdates = true; loadUpdates(); }
       refreshNeeded();
+      refreshMic();
     });
   }
 

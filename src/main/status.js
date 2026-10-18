@@ -19,6 +19,7 @@ const facts = {
   keyWhy: '',
   mic: 'ok',            // 'ok' | 'blocked'
   perms: [],            // macOS: switches that are off ('microphone', 'accessibility', 'input')
+  micUnasked: false,    // macOS: the microphone was never answered (not in macOS's list yet): "Allow", not a pane
   live: false           // a dictation is recording or being written
 };
 
@@ -61,6 +62,12 @@ function describe() {
     tooltip: 'Typd — ' + (state === 'ready' ? 'ready · ' + k.label : line.replace(/ — .*$/, ''))
   });
 
+  if (facts.perms.length && facts.perms[0] === 'microphone' && facts.micUnasked) {
+    const others = facts.perms.slice(1).map((p) => PERM_WORDS[p] || p);
+    return mk('permissions', 'Typd needs the microphone — Allow…',
+      'Typd needs the microphone: allow it in macOS’s dialog' + (others.length ? ', then turn on ' + others.join(' and ') : '') + '.',
+      { id: 'permissions', label: 'Allow Microphone' }, 'dim');
+  }
   if (facts.perms.length) {
     const first = PERM_WORDS[facts.perms[0]] || facts.perms[0];
     return mk('permissions', 'Typd needs ' + first + ' — Fix…',
