@@ -1,0 +1,160 @@
+/* The copy pop-up (src/main/copy-popup.js). The pill's own dark palette and materials
+ * (overlay.css), one size up: a card that says what was not pasted, with Copy and ×, and a
+ * thin bar along its bottom edge that runs down while it stays. Pinned dark like the pill. */
+
+:root, :root[data-scheme="dark"] {
+  --card-bg:    rgba(17, 18, 22, 0.95);
+  --card-line:  rgba(255, 255, 255, 0.145);
+  --edge-top:   rgba(255, 255, 255, 0.16);
+  --edge-bot:   rgba(0, 0, 0, 0.3);
+  --card-shadow:
+    0px 1px 2px 0px rgba(0, 0, 0, 0.45),
+    0px 6px 14px 0px rgba(0, 0, 0, 0.38),
+    0px 10px 22px 2px rgba(0, 0, 0, 0.32);
+
+  --text:   #F4F5F7;
+  --dim:    #B9BDC6;
+  --chip:       rgba(244, 245, 247, 0.12);
+  --chip-hover: rgba(244, 245, 247, 0.2);
+  --commit:     #F4F5F7;
+  --commit-hover: #FFFFFF;
+  --commit-ink: #14161B;
+  --danger:     #E8695C;
+  --bar:        rgba(244, 245, 247, 0.55);
+
+  --font-ui: "Segoe UI Variable Text", "Segoe UI Variable Small", "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
+
+  --ease-spring: cubic-bezier(0.16, 1.02, 0.3, 1);
+  --ease-exit:   cubic-bezier(0.4, 0, 0.9, 0.35);
+  --dur-enter: 220ms;
+  --dur-leave: 180ms;   /* MUST equal FADE_MS in copy-popup.js: the window hides when this is over */
+
+  --hair: 0.25px;
+}
+
+@media (min-resolution: 1.25dppx) { :root { --hair: 0.2px; } }
+@media (min-resolution: 1.5dppx)  { :root { --hair: 0.1667px; } }
+@media (min-resolution: 2dppx)    { :root { --hair: 0.125px; } }
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0; height: 100%; background: transparent; overflow: hidden;
+  font-family: var(--font-ui); user-select: none; cursor: default;
+  -webkit-font-smoothing: antialiased;
+}
+/* Bottom-centred, with room around the card for its shadow. The window is click-through except
+   over the card (main's click gate), so nothing here needs pointer-events off. */
+body {
+  display: flex; flex-direction: column; justify-content: flex-end; align-items: center;
+  padding: 0 34px 28px;
+}
+
+.popup {
+  width: 372px;
+  opacity: 0; transform: translateY(6px) scale(0.98);
+  transition: opacity var(--dur-leave) var(--ease-exit), transform var(--dur-leave) var(--ease-exit);
+}
+.popup[data-visible="true"] {
+  opacity: 1; transform: none;
+  transition: opacity var(--dur-enter) var(--ease-spring), transform var(--dur-enter) var(--ease-spring);
+}
+
+.card {
+  position: relative;
+  display: flex; align-items: center; gap: 8px;
+  min-height: 62px;
+  padding: 10px 10px 12px 15px;
+  border-radius: 16px;
+  background: var(--card-bg);
+  border: var(--hair) solid var(--card-line);
+  box-shadow: var(--card-shadow);
+  overflow: hidden;   /* the bar runs into the rounded corners */
+}
+/* The pill's one-device-pixel ring: lit at the top, shaded at the bottom. */
+.card::before {
+  content: ""; position: absolute; inset: 0; border-radius: inherit;
+  padding: var(--hair);
+  background: linear-gradient(var(--edge-top), transparent 46%, transparent 56%, var(--edge-bot));
+  -webkit-mask: linear-gradient(#000,#000) content-box, linear-gradient(#000,#000);
+  -webkit-mask-composite: xor; mask-composite: exclude;
+  pointer-events: none;
+}
+
+.words { flex: 1 1 auto; min-width: 0; }
+.label {
+  margin: 0 0 2px;
+  font-size: 11.5px; font-weight: 550; letter-spacing: 0.01em; color: var(--dim);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* One or two lines of the dictation, ellipsised. */
+.preview {
+  margin: 0;
+  font-size: 13px; line-height: 1.38; font-weight: 450; color: var(--text);
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2;
+  overflow: hidden; overflow-wrap: anywhere;
+}
+
+button {
+  font: inherit; border: 0; padding: 0; margin: 0; cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+button:focus-visible { outline: 1.5px solid var(--text); outline-offset: 2px; }
+
+.copy {
+  flex: 0 0 auto;
+  display: inline-flex; align-items: center; justify-content: center; gap: 2px;
+  height: 30px; min-width: 64px; padding: 0 14px;
+  border-radius: 15px;
+  background: var(--commit); color: var(--commit-ink);
+  font-size: 12.5px; font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .18);
+  transition: background 140ms ease, transform 160ms var(--ease-spring);
+}
+.copy:hover { background: var(--commit-hover); transform: scale(1.04); }
+.copy:active { transform: scale(.96); }
+.copy .tick {
+  width: 0; height: 18px; margin-left: -4px;
+  fill: none; stroke: var(--commit-ink); stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round;
+  opacity: 0; transition: width 160ms var(--ease-spring), opacity 160ms ease;
+}
+.popup[data-copied="true"] .copy .tick { width: 18px; opacity: 1; }
+
+.close {
+  flex: 0 0 auto; align-self: flex-start;
+  position: relative; width: 22px; height: 22px; border-radius: 50%;
+  background: var(--chip);
+  transition: background 140ms ease;
+}
+.close svg {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: 24px; height: 24px; fill: none; stroke: var(--dim); stroke-width: 1.5; stroke-linecap: round;
+  transition: stroke 130ms ease;
+}
+.close:hover { background: var(--chip-hover); }
+.close:hover svg { stroke: var(--danger); }
+
+/* How long it stays: full when it appears, empty when it goes. Driven from popup.js (a linear
+   transition over what is left, frozen while the pointer is over the card). */
+.bar {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 2px;
+  background: var(--bar);
+  transform-origin: left center;
+  transform: scaleX(1);
+  pointer-events: none;
+}
+.popup[data-paused="true"] .bar { background: var(--text); }
+.popup[data-copied="true"] .bar { opacity: 0; transition: opacity 200ms ease !important; }
+
+/* Read by screen readers, not shown. */
+.sr {
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0;
+  overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap;
+}
+
+/* Reduced motion: no fade, no slide, no smooth bar (popup.js steps it once a second). Still timed. */
+@media (prefers-reduced-motion: reduce) {
+  .popup, .popup[data-visible="true"] { transition: none; transform: none; }
+  .copy, .copy .tick, .close, .close svg { transition: none; }
+  .copy:hover, .copy:active { transform: none; }
+}

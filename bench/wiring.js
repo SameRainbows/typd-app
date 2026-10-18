@@ -184,8 +184,8 @@ check('no old consent screen: no page, no window kind, nothing in main opens one
   !/consent\.html/.test(aMain) && !/ask:consent/.test(aMain + aPre) && !/ask\.open\('consent'\)/.test(main) && !/needsConsent|askConsent/.test(main + read('src/main/home-window.js')));
 check('main queues a dictation only through sharing.add', /sharing\.add\(current, event\.text\)/.test(main) && !/collect\.add\(/.test(main));
 const notPasted = (main.match(/if \(!result\.ok\) \{[\s\S]*?\n {8}\}/) || [''])[0];
-check('a paste that fell back to the clipboard is shared too (pasted: false), only when it was copied',
-  /if \(result\.copied\) sharing\.add\(current, event\.text, \{ pasted: false \}\);/.test(notPasted) && (main.match(/sharing\.add\(/g) || []).length === 2);
+check('a dictation not pasted is shared too (pasted: false), only when it was copied or offered in the copy pop-up',
+  /if \(result\.copied \|\| result\.offered\) sharing\.add\(current, event\.text, \{ pasted: false \}\);/.test(notPasted) && (main.match(/sharing\.add\(/g) || []).length === 2);
 
 // Sharing in public builds, asked since 0.2.7 (settings.js shareRule; bench/first-launch.js runs it).
 section('sharing asked (public builds, 0.2.7)');
@@ -269,7 +269,37 @@ check('"Show Typd in the Dock": macOS, off by default, wired to the window',
 
 /* ------------------------------------------------------------------ timing */
 
+/* -------------------------------------------------------- the copy pop-up */
+
+// The copy pop-up (0.2.10: copy-popup.js, preload/popup.js, renderer/popup.*): the same silent seams.
+section('the copy pop-up');
+const pHtml = read('src/renderer/popup.html'), pJs = read('src/renderer/popup.js'), pPre = read('src/preload/popup.js');
+const pMain = read('src/main/copy-popup.js');
+const pIds = [...new Set([...pJs.matchAll(/getElementById\('([^']+)'\)/g)].map((m) => m[1]))];
+const pMissing = pIds.filter((id) => !pHtml.includes('id="' + id + '"'));
+check('every id popup.js reads is in popup.html (' + pIds.length + ')', !pMissing.length, pMissing.join(', '));
+const pChannels = (pPre.match(/const CHANNELS = \[([^\]]+)\]/) || [, ''])[1];
+const pListens = [...new Set([...pJs.matchAll(/typdPopup\.on\('([^']+)'/g)].map((m) => m[1]))];
+const pSends = [...new Set([...pMain.matchAll(/send\('(popup:[a-z]+)'/g)].map((m) => m[1]))];
+const pNot = [...pListens, ...pSends].filter((c) => !pChannels.includes("'" + c + "'"));
+check('every channel main sends or the page listens to is allowed by preload/popup.js', !pNot.length && pSends.length >= 4, pNot.join(', '));
+const pBack = [...pPre.matchAll(/ipcRenderer\.send\('(popup:[a-z]+)'/g)].map((m) => m[1]);
+check('every message the page sends has a listener in main that checks the sender',
+  pBack.length === 3 && pBack.every((c) => new RegExp("ipcMain\\.on\\('" + c + "'").test(pMain)) && /const from = \(e\) => e\.sender === wc;/.test(pMain));
+check('the window never takes the focus: focusable false, shown inactive, click-through but the card, a panel on a Mac',
+  /focusable: false/.test(pMain) && /win\.showInactive\(\)/.test(pMain) && !/\.show\(\)|\.focus\(\)/.test(pMain) &&
+  /win\.setIgnoreMouseEvents\(true\)/.test(pMain) && /type: 'panel'/.test(pMain) && !/forward: true/.test(pMain));
+check('no key is taken from other apps (no globalShortcut, no Escape) in the pop-up',
+  !/globalShortcut|Escape|keydown/.test(pMain + pJs));
+check('the pop-up page is packaged (src/**) and pinned dark like the pill', /<html[^>]*data-scheme="dark"/.test(pHtml) &&
+  JSON.parse(read('package.json')).build.files.includes('src/**/*'));
+check('index.js: the pill leaves on session:offered, which the overlay preload allows and the page handles',
+  /send\('session:offered'/.test(main) && pre.includes("'session:offered'") && /typd\.on\('session:offered'/.test(js));
+
 section('timing constants that must agree');
+const fadeJs = (pMain.match(/const FADE_MS = (\d+)/) || [])[1];
+const fadeCss = (read('src/renderer/popup.css').match(/--dur-leave:\s*(\d+)ms/) || [])[1];
+check('copy pop-up FADE_MS === --dur-leave', fadeJs && fadeJs === fadeCss, fadeJs + ' vs ' + fadeCss);
 const exitJs = (js.match(/var EXIT_MS = (\d+)/) || [])[1];
 const exitCss = (read('src/renderer/overlay.css').match(/--dur-exit:\s*(\d+)ms/) || [])[1];
 check('EXIT_MS === --dur-exit', exitJs && exitJs === exitCss, exitJs + ' vs ' + exitCss);

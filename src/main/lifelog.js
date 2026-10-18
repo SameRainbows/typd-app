@@ -168,7 +168,8 @@ function dictationLine(o = {}) {
   const num = (v, digits = 0) => (typeof v === 'number' && Number.isFinite(v) && v >= 0
     ? (digits ? (Math.round(v * 10 ** digits) / 10 ** digits).toFixed(digits) : String(Math.round(v))) : '?');
   const mode = ['dictate', 'revise'].includes(o.mode) ? o.mode : 'other';
-  const outcome = ['pasted', 'copied'].includes(o.outcome) ? o.outcome : 'other';
+  // offered: not pasted, there was no text field; the copy pop-up offered it (0.2.10).
+  const outcome = ['pasted', 'copied', 'offered'].includes(o.outcome) ? o.outcome : 'other';
   const model = String(o.model || 'unknown').replace(/[^A-Za-z0-9._+-]/g, '').slice(0, 60) || 'unknown';
   const device = o.device === 'GPU' || o.device === 'CPU' ? o.device : 'device unknown';
   return mode + ', ' + num(o.audioSeconds, 1) + ' s audio, ' + num(o.chars) + ' chars, release to text ' +

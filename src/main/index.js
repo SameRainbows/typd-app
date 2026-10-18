@@ -18,6 +18,8 @@ const pipeline = require('./pipeline');
 // Low-memory mode follows Settings (read at each model server start): src/main/lowMemory.js.
 require('./pipeline/local').configure({ lowMemory: () => settings.get('lowMemory') });
 const inject = require('./inject');
+const pasteTarget = require('./pasteTarget');   // is there a text field to paste into? (0.2.10)
+const { createCopyPopup } = require('./copy-popup');
 const learn = require('./learn');
 const dictionary = require('./dictionary');
 const sharing = require('./sharing');   // public builds: asked (walkthrough or the small screen), Settings; tester builds: their key
@@ -120,7 +122,7 @@ function logDictation(current, chars, result, pastedAt) {
       chars,
       releaseToTextMs: current.endedAt && current.textAt ? current.textAt - current.endedAt : null,
       textToPasteMs: current.textAt ? pastedAt - current.textAt : null,
-      outcome: result && result.ok ? 'pasted' : 'copied',
+      outcome: result && result.ok ? 'pasted' : result && result.offered ? 'offered' : 'copied',
       model,
       device,
       lowMemory: lowMemory ? Boolean(lowMemory.on) : null
@@ -176,6 +178,7 @@ let hotkeys = null;
 let flagKey = null;         // "That was wrong" (registerFlagHotkey); null when sharing is not in this build
 let session = null;
 let firstRunNote = false;   // the pill says "Ready — tap … and talk" once, on the very first launch
+let popup = null;           // the copy pop-up (copy-popup.js), made the first time a dictation is not pasted
 
 /* -------------------------------------------------------------------- quit */
 
@@ -477,24 +480,47 @@ async function endSession() {
         // The paste first: the WAV encode and write (Keep recordings is on by default) and the
         // tray menu rebuild used to run between the text being ready and Ctrl+V. The files wait a
         // tick more, so the pill's "done" does not wait on them either.
-        const result = await inject.paste(event.text);
+        //
+        // Unless there is no text field to paste into (pasteTarget.js, 0.2.10). A dictation only:
+        // the field facts came with the context read at the key press, so this costs nothing --
+        // unless they say "not-editable", when the field is looked at once more now (the user may
+        // have clicked into one while talking). Only a confident "no" skips the paste: then no
+        // keystroke is sent, the clipboard is not touched, and the copy pop-up offers the text.
+        const landed = await pasteTarget.land({
+          text: event.text, mode: current.mode, field: current.target && current.target.field,
+          inject, current: () => session === current
+        });
+        if (!landed) return;
+        const { result, verdict } = landed;
         const pastedAt = Date.now(), text = event.text;
         remember(text);
         setImmediate(() => { keepRecording(current, text); logDictation(current, text.length, result, pastedAt); });
         if (session !== current) return;
 
         if (!result.ok) {
+          // History keeps it as 'copied' either way: Home can copy it later.
           keepHistory(current, event.text, 'copied');
-          // The life log: a paste that fell back to the clipboard (never the text).
-          life.log('dictation', 'not pasted, ' + (result.copied ? 'copied instead' : 'not copied') + ': ' + result.reason);
-          // Copied instead ("Copied — press Ctrl+V"): the text is good and in the person's hands, so it
+          // The life log (never the text): no text field, or a paste that fell back to the clipboard.
+          life.log('dictation', result.offered
+            ? pasteTarget.logLine(verdict)
+            : 'not pasted, ' + (result.copied ? 'copied instead' : 'not copied') + ': ' + result.reason);
+          // Offered in the pop-up, or copied instead: the text is good and in the person's hands, so it
           // is shared like a pasted one when sharing is on (marked pasted: false; sharing.js).
-          if (result.copied) sharing.add(current, event.text, { pasted: false });
-          send('session:error', {
-            message: result.copied
-              ? 'Copied — press ' + (MAC ? '⌘V' : 'Ctrl+V') + ' to paste'
-              : 'Could not paste — ' + result.reason
-          });
+          if (result.copied || result.offered) sharing.add(current, event.text, { pasted: false });
+          if (result.copied || result.offered) {
+            // The copy pop-up carries it from here (copy-popup.js). Not on the clipboard yet when it
+            // was offered (Copy puts it there); already there when the paste failed.
+            if (offerCopy(event.text, result.offered ? 'offer' : 'copied')) {
+              send('session:offered', { failed: !result.offered });
+              break;
+            }
+            // No pop-up (it could not be made): never lose the dictation -- the clipboard and the pill, as before.
+            if (result.offered) await inject.copy(event.text);
+            if (session !== current) return;
+            send('session:error', { message: 'Copied — press ' + (MAC ? '⌘V' : 'Ctrl+V') + ' to paste' });
+            break;
+          }
+          send('session:error', { message: 'Could not paste — ' + result.reason });
           break;
         }
 
@@ -544,6 +570,21 @@ function cancelSession() {
   hotkeys.releaseWork();
   passThrough();
   send('session:cancel', {});
+}
+
+/**
+ * A dictation that was not pasted, offered in the copy pop-up (copy-popup.js): 'offer' when there
+ * was no text field (not on the clipboard until Copy), 'copied' when the paste failed (already
+ * there). False if the pop-up could not be shown; the caller falls back to the clipboard and the pill.
+ */
+function offerCopy(text, kind) {
+  try {
+    if (!popup) popup = createCopyPopup({ copy: (t) => inject.copy(t), log: (line) => life.log('copy pop-up', line), dev });
+    return popup.offer(text, kind);
+  } catch (err) {
+    life.log('copy pop-up', 'failed: ' + life.errorLine(err));
+    return false;
+  }
 }
 
 /** A short note in the pill between sessions -- a learned word, or the first-run hello. */

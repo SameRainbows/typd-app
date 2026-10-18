@@ -1,5 +1,10 @@
 # What's new
 
+## 0.2.10 · October 2026
+
+- **Nothing to paste into? Copy it instead.** When you dictate with no text field selected — on the desktop, in File Explorer or Finder, on a button — Typd no longer pastes into nowhere. A small card appears just above the pill with the start of what you said and a **Copy** button. It stays about six seconds (a thin bar shows how long), waits while your pointer is over it, and never takes the keyboard from the app you are in. Your clipboard is left alone until you click **Copy**, and the dictation is always in Home if you want it later. Browsers, terminals, chat apps, editors and games still get the paste as before: Typd only holds back when it is sure there is no text field.
+- **When a paste fails,** the same card replaces the old "Copied — press Ctrl+V" message: the text is already on your clipboard, and **Copy** puts it there again.
+
 ## 0.2.9 · October 2026
 
 - **One download: the model that suits your computer.** A new install now downloads only the model Typd picks for its hardware — the full model on a PC with a strong NVIDIA GPU or a Mac with 16 GB or more, the Light model otherwise — instead of fetching the Light model first on a slow connection. A PC with an NVIDIA GPU still gets its GPU libraries before the full model starts, so the full model never runs slowly on the processor. An install that was already using the Light model while the full one downloaded simply finishes, and the Light model is removed afterwards.

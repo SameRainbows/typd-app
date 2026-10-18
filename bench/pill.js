@@ -193,7 +193,8 @@ section('3. the per-dictation line in the life log');
     keys.length >= 8 && keys.every((k) => ['mode', 'audioSeconds', 'chars', 'releaseToTextMs', 'textToPasteMs', 'outcome', 'model', 'device', 'lowMemory'].includes(k)) &&
     /^\s+chars,$/m.test(call) && /logDictation\(current, text\.length, result, pastedAt\)/.test(main) && !/text/.test(call), keys);
   check('index.js: the text-ready stamp is taken before the paste, and the recording is written after it',
-    /current\.textAt = Date\.now\(\);[\s\S]{0,1600}const result = await inject\.paste\(event\.text\);\s*const pastedAt = Date\.now\(\)/.test(main) &&
+    // 0.2.10: the paste is inside pasteTarget.land (or skipped when there is no text field: the copy pop-up).
+    /current\.textAt = Date\.now\(\);[\s\S]{0,2600}const landed = await pasteTarget\.land\(\{[\s\S]{0,200}\}\);\s*if \(!landed\) return;\s*const \{ result, verdict \} = landed;\s*const pastedAt = Date\.now\(\)/.test(main) &&
     /setImmediate\(\(\) => \{ keepRecording\(current, text\);/.test(main));
   check('index.js reads local.device / local.lowMemory without needing them (works with the 0.2.5 local.js too)',
     /try \{ device = local\.device \|\| null; lowMemory = local\.lowMemory \|\| null; \} catch/.test(main));

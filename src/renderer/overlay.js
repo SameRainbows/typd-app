@@ -550,6 +550,17 @@
     dismiss(LINGER_DONE_MS);
   });
 
+  // Written, but not pasted (0.2.10): there was no text field, or the paste failed. The copy
+  // pop-up (main, copy-popup.js) now carries the text and what to do, so the pill just leaves:
+  // the done cue when there was simply nowhere to paste, the error cue when the paste failed.
+  window.typd.on('session:offered', function (p) {
+    controlsOff();
+    stopMic(false);
+    window.typdSound.play(p.failed ? 'error' : 'done');
+    setProgress(1);
+    dismiss(LINGER_DONE_MS);
+  });
+
   window.typd.on('session:error', function (p) {
     controlsOff();
     stopMic(false);   // an error can arrive while still listening (a dead mic); never leave it open

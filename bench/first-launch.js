@@ -170,6 +170,19 @@ check('0.2.9 installed over 0.2.8 by the installer (settings and a model kept): 
 r = launch(folder({}), false, '0.2.9');
 check('0.2.9, a fresh install: due', r.fresh === true && r.now === 'due', r);
 
+// 0.2.10 (the copy pop-up): an update from 0.2.9 -- and on a Mac or Windows from 0.2.8 or earlier if 0.2.9
+// was skipped -- never the walkthrough; installed over 0.2.9 by the installer: never; a fresh install: due.
+for (const from of ['0.2.9', '0.2.8', '0.2.6']) {
+  r = launch(folder({ 'typd/settings.json': S028, ...HISTORY, ...MODEL, ...PACK, 'typd/app-update/': '', 'typd/app-update/pending.json': { from, to: '0.2.10' } }), true, '0.2.10');
+  check(`0.2.10: update from ${from} (walkthrough done, a downloaded model, the app update pending): never`, r.fresh === false && r.now === 'done' && r.saved === 'done', r);
+}
+r = launch(folder({ 'typd/settings.json': { ...S028, walkthrough: 'due' }, ...MODEL, 'typd/app-update/': '', 'typd/app-update/pending.json': { from: '0.2.9', to: '0.2.10' } }), true, '0.2.10');
+check('0.2.10: update from a 0.2.9 install that never got to show it: never', r.now === 'done', r);
+r = launch(folder({ 'typd/settings.json': S028, ...MODEL }), false, '0.2.10');
+check('0.2.10 installed over 0.2.9 by the installer (settings and a model kept): never', r.fresh === false && r.now === 'done', r);
+r = launch(folder({}), false, '0.2.10');
+check('0.2.10, a fresh install: due', r.fresh === true && r.now === 'due', r);
+
 {
   // A fresh install's next launches: due until it is shown, then done for good.
   const d = folder({});

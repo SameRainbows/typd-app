@@ -12,6 +12,7 @@ const CHANNELS = [
   'session:expect',
   'session:partial',
   'session:done',
+  'session:offered',
   'session:cancel',
   'session:error',
   'session:note',
