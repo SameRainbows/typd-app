@@ -663,7 +663,10 @@ async function* decodeOne(samples, sr, signal, system, maxTokens) {
   const parts = [toWav(samples, sr).toString('base64')];
   const info = {};
   let text = '';
-  for await (const t of dictateParts(parts, signal, system, maxTokens, false, { info })) {
+  // The first word comes after the encoder and the prompt: on a slow processor a 40-70 s piece takes a
+  // while, so the watchdog waits 30 s plus half a second per second of audio before calling it stuck.
+  const firstWordMs = 30000 + Math.round(500 * (samples.length / sr));
+  for await (const t of dictateParts(parts, signal, system, maxTokens, false, { info, firstWordMs })) {
     text = t;
     yield t;
   }
