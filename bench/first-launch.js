@@ -34,7 +34,7 @@ if (process.argv[2] === '--case') {
         app: {
           getPath: (k) => (k === 'appData' ? c.appData : k === 'userData' ? c.userData : path.join(c.appData, '_' + k)),
           isPackaged: true,
-          getVersion: () => '0.2.4'
+          getVersion: () => c.version || '0.2.4'
         }
       };
     }
@@ -73,9 +73,9 @@ function folder(files) {
   return { appData, userData };
 }
 
-/** One launch of 0.2.4 on that folder. */
-function launch(dirs, afterUpdate) {
-  const out = execFileSync(process.execPath, [__filename, '--case', JSON.stringify({ ...dirs, afterUpdate })], { encoding: 'utf8' });
+/** One launch of 0.2.4 (or `version`) on that folder. */
+function launch(dirs, afterUpdate, version) {
+  const out = execFileSync(process.execPath, [__filename, '--case', JSON.stringify({ ...dirs, afterUpdate, version })], { encoding: 'utf8' });
   return JSON.parse(out);
 }
 
@@ -122,6 +122,19 @@ check('... but an update arriving first ends that: never', r.now === 'done', r);
 
 r = launch(folder({}), true);
 check("an update's first start, even with nothing else here: never", r.now === 'done', r);
+
+// 0.2.5 (the CUDA pack): an update from 0.2.4 -- settings as 0.2.4 wrote them, its model, the app
+// update's pending.json; on Windows the CUDA backend is carried in the app folder, not in userData, so
+// it changes nothing here -- never shows the walkthrough either.
+const S024 = { ...S023, share: 'on', walkthrough: 'done' };
+r = launch(folder({ 'typd/settings.json': S024, ...HISTORY, ...MODEL, 'typd/app-update/': '', 'typd/app-update/pending.json': { from: '0.2.4', to: '0.2.5' } }), true, '0.2.5');
+check('0.2.5: update from 0.2.4 (walkthrough done, a model, the app update pending): never', r.fresh === false && r.now === 'done' && r.saved === 'done', r);
+r = launch(folder({ 'typd/settings.json': { ...S024, walkthrough: 'due' }, ...MODEL, 'typd/app-update/': '', 'typd/app-update/pending.json': { from: '0.2.4', to: '0.2.5' } }), true, '0.2.5');
+check('0.2.5: update from a 0.2.4 install that never got to show it: never', r.now === 'done', r);
+r = launch(folder({ 'typd/settings.json': S024, ...MODEL }), false, '0.2.5');
+check('0.2.5 installed over 0.2.4 by the installer (settings and a model kept): never', r.fresh === false && r.now === 'done', r);
+r = launch(folder({}), false, '0.2.5');
+check('0.2.5, a fresh install: due', r.fresh === true && r.now === 'due', r);
 
 {
   // A fresh install's next launches: due until it is shown, then done for good.
