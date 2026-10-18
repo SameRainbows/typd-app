@@ -70,7 +70,7 @@
     if (section === 'history') loadHistory();
     if (section === 'dictionary') loadWords();
     if (section === 'news') loadNews();
-    if (section === 'settings') loadModel();
+    if (section === 'settings') { loadModel(); loadUpdates(); }
     meterWanted();
     document.querySelector('.main').scrollTop = 0;
   }
@@ -513,6 +513,37 @@
       $('modelLater').hidden = Boolean(p.later);
     }
   }
+
+  /* ---------------------------------------------------------- updates */
+
+  // Under the version: Check for updates, its answer in words, and Restart now when a new Typd is ready.
+  function renderUpdates(u) {
+    if (!u) return;
+    $('updatesBox').hidden = !u.enabled;
+    $('aboutLine').textContent = u.versions || $('aboutLine').textContent;
+    $('updatesLine').textContent = u.text || '';
+    $('updatesCheck').disabled = Boolean(u.checking);
+    $('updatesCheck').textContent = u.checking ? 'Checking…' : 'Check for updates';
+    $('updatesRestart').hidden = !u.canRestart;
+  }
+  function loadUpdates() {
+    if (!api.updates) return;
+    api.updates.get().then(renderUpdates).catch(function () {});
+  }
+  $('updatesCheck').addEventListener('click', function () {
+    $('updatesCheck').disabled = true;
+    $('updatesCheck').textContent = 'Checking…';
+    $('updatesLine').textContent = 'Checking for updates…';
+    api.updates.check().then(renderUpdates).catch(function () { loadUpdates(); });
+  });
+  $('updatesRestart').addEventListener('click', function () {
+    $('updatesRestart').disabled = true;
+    api.updates.restart().then(function (ok) {
+      $('updatesRestart').disabled = false;
+      if (ok) $('updatesLine').textContent = 'Installing… Typd restarts in a moment.';
+      else loadUpdates();
+    });
+  });
 
   $('modelVariant').addEventListener('change', function (e) {
     var v = e.target.value;
@@ -1110,6 +1141,7 @@
 
   api.on('home:show', function (p) {
     show(p.section);
+    if (p.updates) { loadUpdates(); $('updatesBox').scrollIntoView({ block: 'center' }); }
     if (p.capture) startCapture();
     if (p.walkthrough) walk.open(1);
   });
@@ -1128,6 +1160,7 @@
     if (p.what === 'sharing' && S) reloadSettings();
     if (p.what === 'model' && S) refreshNeeded();
     if (p.what === 'model' && S && current === 'settings') loadModel();
+    if ((p.what === 'updates' || p.what === 'model') && S && current === 'settings') loadUpdates();
     if (p.what === 'history' || p.what === 'counts') {
       api.get().then(function (st) { if (st) { S.counts = st.counts; renderCounts(st.counts); } });
       if (current === 'history') loadHistory();
@@ -1160,6 +1193,7 @@
       show(q.get('section') || 'home');
       if (q.get('capture') === '1') startCapture();
       if (q.get('walkthrough') === '1') walk.open(1);
+      if (q.get('updates') === '1') $('updatesBox').scrollIntoView({ block: 'center' });
       refreshNeeded();
     });
   }

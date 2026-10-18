@@ -379,7 +379,7 @@ const modelReqs = (s) => s.fileRequests().filter((q) => !q.url.includes('/' + PA
     publishAll(s, PACKZIP, { withPack: false });
     const t = profile(s, { hw: 'nvidia4', bundledModel: MODELS.full });
     const res = await t.u.check();
-    check('no pack in the manifest: "none", the processor, the next look in 6 hours (not minutes)', t.u.packState === 'none' && res.next === 6 * 3600e3, { ps: t.u.packState, next: res.next });
+    check('no pack in the manifest: "none", the processor, the next look in an hour (not minutes)', t.u.packState === 'none' && res.next >= 0.9 * 3600e3 && res.next <= 1.1 * 3600e3, { ps: t.u.packState, next: res.next });
   }
 
   section('an install updated from 0.2.4: the CUDA backend already beside llama-server');

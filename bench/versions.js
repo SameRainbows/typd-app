@@ -228,7 +228,8 @@ function fakeServer() {
     const fileReqs = srv.requests.filter((r) => r.path.startsWith('/v1/model/file/'));
     check('model file downloads carry none of them', first.state === 'current' && fileReqs.length === 2 && fileReqs.every((r) => !hasStats(r.headers)), { state: first.state, n: fileReqs.length });
     await u.check();
-    const after = srv.requests.filter((r) => r.path === '/v1/model/manifest')[1];
+    // The second check's request (the re-read just before the switch carries no counts).
+    const after = srv.requests.filter((r) => r.path === '/v1/model/manifest' && hasStats(r.headers))[1];
     check('after the switch the next check names the new version (r30_1p7b), same install id',
       after && after.headers['x-typd-model'] === 'r30_1p7b' && after.headers['x-typd-install'] === h['x-typd-install'], after && after.headers);
 
@@ -239,7 +240,7 @@ function fakeServer() {
     srv.requests.length = 0;
     await dev.check();
     const devReqs = srv.requests.filter((r) => r.path === '/v1/model/manifest');
-    check('a source run checks for models with its key and sends no version headers', devReqs.length === 1 && !hasStats(devReqs[0].headers) && /^Bearer /.test(devReqs[0].headers.authorization || ''));
+    check('a source run checks for models with its key and sends no version headers (the check, and the re-read before its switch)', devReqs.length === 2 && devReqs.every((r) => !hasStats(r.headers) && /^Bearer /.test(r.headers.authorization || '')));
     const nostats = createUpdater({ keys: MKEYS, config: { endpoint: srv.endpoint, key: 'rk_test_0123456789abcdef' }, modelsDir: path.join(root, 'm3'), bundledDir: bundled, appVersion: '0.2.0', switchModel: async () => {}, idleMs: 20, rate: 0 });
     srv.requests.length = 0;
     await nostats.check();

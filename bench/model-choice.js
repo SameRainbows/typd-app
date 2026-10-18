@@ -313,10 +313,10 @@ async function updaterTests() {
   check('pending still names it (the tray keeps "Update now"), marked later', u.pending && u.pending.later === true);
   clock += 6 * 3600e3;
   r = await make().check();
-  check('6 h later (a new start, the next check): still waiting, nothing requested, next check when the day is up', r.state === 'later' && fileRequests(s).length === 0 && r.next === 6 * 3600e3, r);
+  check('6 h later (a new start, the next check): still waiting, nothing requested, the next hourly check', r.state === 'later' && fileRequests(s).length === 0 && r.next === 3600e3, r);
   clock += 14 * 3600e3;
   r = await make().check();
-  check('20 h later: the next check is due at the 24 h mark, not 6 h on', r.state === 'later' && r.next === 4 * 3600e3 + 1000, r);
+  check('20 h later: still hourly (the 24 h mark is 4 h away)', r.state === 'later' && r.next === 3600e3, r);
   clock += 4 * 3600e3 + 1000;
   u = make();
   r = await u.check();

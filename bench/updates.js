@@ -370,7 +370,7 @@ async function updaterTests() {
   {
     const u = make();
     let r = await u.check();
-    check('404 manifest -> nothing to do', r.state === 'none' && r.next === 6 * 3600e3, r);
+    check('404 manifest -> nothing to do, the next look in an hour (+-10 %)', r.state === 'none' && (r.next >= 0.9 * 3600e3 && r.next <= 1.1 * 3600e3), r);
     const big = crypto.randomBytes(3 * 1024 * 1024 + 17), proj = crypto.randomBytes(1024 * 1024);
     publish(s, 'v2', { 'typd-v2.gguf': big, 'mmproj-a.gguf': proj });
     busy = true;
@@ -479,7 +479,7 @@ async function updaterTests() {
     s.requests = [];
     let u = make({ statfs: async () => ({ bavail: 100, bsize: 4096 }) });
     let r = await u.check();
-    check('not enough disk: skipped until the next check, nothing downloaded', r.state === 'space' && r.next === 6 * 3600e3 && fileRequests(s).length === 0 && u.line() === 'Model v7 · update needs more disk space', { r, line: u.line() });
+    check('not enough disk: skipped until the next check, nothing downloaded', r.state === 'space' && r.next === 3600e3 && fileRequests(s).length === 0 && u.line() === 'Model v7 · update needs more disk space', { r, line: u.line() });
     u = make();
     s.manifestStatus = 429;
     r = await u.check();
@@ -490,7 +490,7 @@ async function updaterTests() {
     check('file 429 Retry-After: 7200 -> next try in 2 hours, not sooner', r.state === 'retry' && r.next === 7200e3, r);
     s.fileStatus = { status: 429 };
     r = await u.check();
-    check('file 429 without Retry-After -> the next 6-hour check', r.state === 'retry' && r.next === 6 * 3600e3, r);
+    check('file 429 without Retry-After -> the next hourly check', r.state === 'retry' && r.next === 3600e3, r);
     s.fileStatus = null;
     s.manifest = { ...s.manifest, min_app: '9.0.0' };
     r = await u.check();
@@ -741,8 +741,10 @@ async function publicTests(s) {
   u = make({ stats: () => ({ 'X-Typd-App': '0.2.1', 'X-Typd-Model': 'p2', 'X-Typd-OS': 'win32-x64', 'X-Typd-Install': 'a'.repeat(32) }) });
   r = await u.check();
   const manifests = s.requests.filter((q) => q.url === '/v1/model/public/manifest');
-  check('the public manifest check carries them; no file download does; still no Authorization header',
-    r.state === 'current' && manifests.length === 1 && manifests[0].install === 'a'.repeat(32) && fileRequests(s).length === 1 &&
+  // Two manifest reads: the check (with the counts) and, just before the switch, the re-read that makes
+  // sure no newer model went live meanwhile (without them: one check counts once).
+  check('the public manifest check carries them; the re-read before the switch and the file download do not; still no Authorization header',
+    r.state === 'current' && manifests.length === 2 && manifests[0].install === 'a'.repeat(32) && manifests[1].install === null && fileRequests(s).length === 1 &&
     fileRequests(s).every((q) => q.install === null) && s.requests.every((q) => q.auth === null), { r, req: s.requests });
 
   section('with a key, the same server: the keyed routes, as before');

@@ -32,6 +32,7 @@ function preview40(text) {
  * @param {(term: string) => void} deps.forget                 undo a learned word
  * @param {() => string|null} [deps.modelLine]                 model-update line (modelUpdate.js)
  * @param {() => string|null} [deps.packLine]                  the CUDA pack's line (modelUpdate.js), Windows
+ * @param {() => void} [deps.checkUpdates]                     "Check for updates": check now, show the answer in Settings
  * @param {() => {size: string, later: boolean}|null} [deps.modelPrompt]   a model download waiting for "Update now"
  * @param {() => void} [deps.modelNow]                         "Update now"
  * @param {() => void} [deps.modelLater]                       "Later" (asked again after a day)
@@ -125,6 +126,7 @@ function createTray(deps) {
       ...(lastLearned ? [{ label: `Forget learned word “${lastLearned}”`, click: () => deps.forget(lastLearned) }] : []),
       { label: 'Microphone', submenu: micMenu() },
       { label: 'Change shortcut…', click: () => deps.open('settings', { capture: true }) },
+      ...(deps.checkUpdates ? [{ label: 'Check for updates', click: () => deps.checkUpdates() }] : []),
       { type: 'separator' },
       { label: "What's new", click: () => deps.open('news') },
       { label: 'Send feedback', click: feedback },

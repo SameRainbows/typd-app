@@ -7,7 +7,9 @@
  * (`npm start`), with TYPD_NO_APP_UPDATE=1, or from a place it cannot write (a dmg, App
  * Translocation), it never replaces itself.
  *
- *   1. Check. 2 minutes after launch and every 6 hours, GET <endpoint>/v1/app/manifest
+ *   1. Check. 40 s after launch, then every hour give or take 10 % (or at the interval the server asks
+ *      for, within 15 min to 6 h), on wake or unlock when the last check is 15 minutes old
+ *      (checkCadence.js), and on "Check for updates" (checkNow), GET <endpoint>/v1/app/manifest
  *      (typd-collect), with the version counts' headers (versionStats.js: app and model version,
  *      OS, an anonymous install id). The answer is {typd_app_update: 1, key, payload, sig}: `payload` is JSON
  *      text and `sig` its Ed25519 signature by the key named `key`, which must be one of
@@ -24,6 +26,9 @@
  *      both must match the manifest.
  *   5. Wait until the user is away: no dictation or revision, no Typd window open, for IDLE_MS, and
  *      no keyboard or mouse for SYSTEM_IDLE_S; the model server's first start has settled.
+ *      Always the latest: just before applying, the manifest is read again; if it names another version
+ *      now (0.2.5 published while 0.2.4 waited), the staged one is dropped and that one fetched instead.
+ *      "Restart now" (applyNow) skips the wait for the person to step away (never during a dictation).
  *   6. Apply. Write pending.json, write the helper script (app-update/helper-mac.sh or
  *      helper-win.ps1) beside it, start it detached, wait until it says it runs, and quit. The
  *      helper waits for Typd (and anything else running from inside it, llama-server) to exit,
@@ -53,11 +58,12 @@ const path = require('path');
 const crypto = require('crypto');
 const { spawn, execFile } = require('child_process');
 const { once } = require('events');
+const { createCadence, WAKE_DELAY_MS } = require('./checkCadence');
 
 const ENDPOINT = 'https://typd-collect.mehmetdedeler.com';
 const DOWNLOAD_PAGE = 'https://typd.mehmetdedeler.com/download/';
-const FIRST_CHECK_MS = 2 * 60e3;
-const CHECK_EVERY_MS = 6 * 3600e3;
+const FIRST_CHECK_MS = 40e3;             // "check once on launch": after the model updater's first look
+const CHECK_EVERY_MS = 3600e3;            // then hourly, +-10 % (checkCadence.js), or the server's interval
 const BACKOFF_MIN_MS = 60e3;
 const BACKOFF_MAX_MS = 3600e3;
 const RATE = 2 * 1024 * 1024;           // bytes a second: the model downloader's cap (modelUpdate.js)
@@ -304,8 +310,20 @@ function createAppUpdater(o) {
     log = () => {}, online = () => true, statfs = (p) => fsp.statfs(p),
     helperScript = null, startedTimeoutS = STARTED_TIMEOUT_S, verdictTimeoutS = VERDICT_TIMEOUT_S,
     helperStartMs = HELPER_START_MS, resultWaitMs = RESULT_WAIT_MS, warmWaitMs = WARM_WAIT_MS,
-    failVersion = null, reportFile = null, reportExtra = () => ({}), relaunchEnv = null, stats = () => ({})
+    failVersion = null, reportFile = null, reportExtra = () => ({}), relaunchEnv = null, stats = () => ({}),
+    dictating = busy, random = Math.random, now = () => Date.now()
   } = o;
+  const cadence = createCadence({ everyMs, now, random });
+  let phaseWaiters = [];
+  let lastOutcome = null;
+  let hurried = false;             // "Check for updates" found one: download it at full speed
+  let rushed = false;              // "Restart now": install without waiting for the person to step away
+  function notePhase(x) {
+    lastOutcome = { ...x, at: new Date(now()).toISOString() };
+    const w = phaseWaiters;
+    phaseWaiters = [];
+    for (const fn of w) { try { fn(lastOutcome); } catch { /* a listener's problem */ } }
+  }
   const F = {
     state: path.join(dir, 'state.json'),
     pending: path.join(dir, 'pending.json'),
@@ -370,13 +388,13 @@ function createAppUpdater(o) {
 
   async function refused(res, what) {
     await res.body?.cancel().catch(() => {});
-    if (res.status === 429) throw new Retry(what + ': the server is busy (429)', retryAfter(res) || everyMs);
+    if (res.status === 429) throw new Retry(what + ': the server is busy (429)', retryAfter(res) || cadence.every());
     throw new Retry(what + ': HTTP ' + res.status);
   }
 
   let windowAt = 0, windowBytes = 0;
   async function throttle(n) {
-    if (!rate) return;
+    if (!rate || hurried) return;
     const now = Date.now();
     if (now - windowAt > 10e3) { windowAt = now; windowBytes = 0; }
     windowBytes += n;
@@ -473,7 +491,7 @@ function createAppUpdater(o) {
     const need = e.size * SPACE_FACTOR - have;
     if (free < need) {
       log('not enough disk space for', p.version, '- need', Math.round(need / 1e6), 'MB, have', Math.round(free / 1e6));
-      throw Object.assign(new Retry('no space', everyMs), { space: true });
+      throw Object.assign(new Retry('no space', cadence.every()), { space: true });
     }
     if (!exists(zip)) {
       set('downloading');
@@ -541,13 +559,29 @@ function createAppUpdater(o) {
 
   async function waitIdle() {
     const t0 = Date.now();
-    while (!warmSettled() && Date.now() - t0 < warmWaitMs) { await sleep(500); if (stopped) throw new Retry('stopped'); }
+    while (!warmSettled() && Date.now() - t0 < warmWaitMs && !rushed) { await sleep(500); if (stopped) throw new Retry('stopped'); }
     let quietSince = idleNow() ? Date.now() : 0;
     while (!quietSince || Date.now() - quietSince < idleMs) {
+      // "Restart now": only a dictation in progress holds it up.
+      if (rushed && !dictating()) return;
       await sleep(Math.min(1000, Math.max(50, idleMs / 5)));
       if (stopped) throw new Retry('stopped');
       if (!idleNow()) quietSince = 0;
       else if (!quietSince) quietSince = Date.now();
+    }
+  }
+
+  /**
+   * The live manifest's payload now (signature checked), or null when it cannot be read: read again
+   * just before applying, so a version published while the staged one waited is installed instead.
+   */
+  async function livePayload() {
+    try {
+      const res = await fetch(endpoint + '/v1/app/manifest', { signal: AbortSignal.timeout(30e3) });
+      if (!res.ok) { await res.body?.cancel().catch(() => {}); return null; }
+      return verifyManifest(await res.text(), keys).payload;
+    } catch {
+      return null;
     }
   }
 
@@ -568,6 +602,14 @@ function createAppUpdater(o) {
     target = p.version;
     set('ready');
     await waitIdle();
+    const live = await livePayload();
+    if (live && live.version !== p.version) {
+      log('the manifest names', live.version, 'now, not the staged', p.version, '- fetching that one instead');
+      rushed = false;
+      target = null;
+      await tidy(null);
+      throw new Retry(`Typd ${live.version} is live now; fetching it instead of ${p.version}`, 1000);
+    }
     set('applying');
     const pending = {
       version: p.version, from: appVersion, tag, platform, app, newApp: staged, carry: e.carry || [],
@@ -617,15 +659,19 @@ function createAppUpdater(o) {
     if (!online()) throw new Retry('offline');
     let res;
     try {
+      cadence.checked();
       let headers = {};
       try { headers = stats() || {}; } catch { headers = {}; }   // counting must never stop a check
       res = await fetch(endpoint + '/v1/app/manifest', { headers, signal: AbortSignal.timeout(30e3) });
     } catch (err) {
       throw new Retry('manifest: ' + ((err && err.message) || err));
     }
-    if (res.status === 404) { await res.body?.cancel().catch(() => {}); return set('none'); }
+    if (res.status === 404) { await res.body?.cancel().catch(() => {}); cadence.fromResponse(res.headers, null); notePhase({ outcome: 'current' }); return set('none'); }
     if (!res.ok) await refused(res, 'manifest');
     const text = await res.text();
+    let wrapper = null;
+    try { wrapper = JSON.parse(text); } catch { wrapper = null; }
+    cadence.fromResponse(res.headers, wrapper);   // the server's interval, if it asks for one
     let p;
     try {
       p = verifyManifest(text, keys).payload;
@@ -647,19 +693,21 @@ function createAppUpdater(o) {
     if (c === 0 || (c < 0 && !p.downgrade)) {
       target = null;
       await tidy(null);
+      notePhase({ outcome: 'current' });
       return set(state === 'updated' ? 'updated' : 'current');
     }
-    if (!e) { log('no', platform, 'package in', p.version); return set('none'); }
+    if (!e) { log('no', platform, 'package in', p.version); notePhase({ outcome: 'current' }); return set('none'); }
     target = p.version;
-    if (p.min_version && cmp(appVersion, p.min_version) < 0) { log(p.version, 'needs Typd', p.min_version, 'or newer to update itself'); return set('reinstall'); }
-    if (s.bad && s.bad.tag === tag) return set('failed');
+    if (p.min_version && cmp(appVersion, p.min_version) < 0) { log(p.version, 'needs Typd', p.min_version, 'or newer to update itself'); notePhase({ outcome: 'manual', version: p.version }); return set('reinstall'); }
+    if (s.bad && s.bad.tag === tag) { notePhase({ outcome: 'failed', version: p.version }); return set('failed'); }
     if (s.bad) await patchState((x) => { delete x.bad; });
-    if (problem) { log('cannot update in place:', problem); return set('manual'); }
+    if (problem) { log('cannot update in place:', problem); notePhase({ outcome: 'manual', version: p.version }); return set('manual'); }
     for (const [rel, want] of Object.entries(e.requires || {})) {
       const have = await treeHash(path.join(app, ...rel.split('/'))).catch(() => null);
-      if (have !== want) { log(p.version, 'needs another', rel, 'than this install has; reinstall'); return set('reinstall'); }
+      if (have !== want) { log(p.version, 'needs another', rel, 'than this install has; reinstall'); notePhase({ outcome: 'manual', version: p.version }); return set('reinstall'); }
     }
     await tidy(p.version);
+    notePhase({ outcome: 'downloading', version: p.version });
     const staged = await stage(p, e, tag);
     return apply(p, e, tag, staged);
   }
@@ -671,21 +719,23 @@ function createAppUpdater(o) {
       try {
         const r = await checkOnce();
         failures = 0;
-        return { ...r, next: everyMs };
+        if (r && r.state === 'refused') notePhase({ outcome: 'error', why: r.why });
+        return { ...r, next: cadence.next() };
       } catch (err) {
-        if (err instanceof Refused) { log('update refused:', err.message); return { ...set('failed'), next: everyMs }; }
+        notePhase({ outcome: !online() || /offline|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|fetch failed|timeout/i.test(String(err && err.message)) ? 'offline' : 'error', why: String((err && err.message) || err) });
+        if (err instanceof Refused) { log('update refused:', err.message); return { ...set('failed'), next: cadence.every() }; }
         if (!(err instanceof Retry)) log('update error:', (err && err.stack) || err);
         failures++;
         let next = err.after || Math.min(BACKOFF_MAX_MS, BACKOFF_MIN_MS * 2 ** (failures - 1));
         if (!err.after) next = next / 2 + Math.random() * (next / 2);
-        next = Math.min(Math.max(next, 1000), err.after ? 86400e3 : everyMs);
+        next = Math.min(Math.max(next, 1000), err.after ? 86400e3 : cadence.every());
         if (/429/.test(err.message)) notBefore = Date.now() + next;
         log((err && err.message) || err, '- next try in', Math.round(next / 1000), 's');
         if (err.space) return { ...set('space'), next };
         if (['downloading', 'ready', 'applying'].includes(state)) set('retrying');
         return { state: 'retry', next, why: err.message };
       }
-    })().finally(() => { running = null; });
+    })().finally(() => { running = null; hurried = false; });
     return running;
   }
 
@@ -849,10 +899,49 @@ function createAppUpdater(o) {
     line,
     onChange: (fn) => listeners.push(fn),
     onUpdated: (fn) => updatedListeners.push(fn),
-    /** Launch: the first check after FIRST_CHECK_MS, then every 6 hours. */
+    /** Launch: the first check after FIRST_CHECK_MS, then hourly (checkCadence.js). */
     start() { stopped = false; schedule(firstCheckMs); },
     /** Back from sleep or offline: check soon (never before a 429's Retry-After). */
     wake(ms = firstCheckMs) { if (!running) schedule(ms); },
+    /** Woken from sleep or unlocked: a check soon if the last one is 15 minutes old. True if one was set. */
+    wakeIfDue(ms = WAKE_DELAY_MS) {
+      if (stopped || running || !cadence.wakeDue()) return false;
+      schedule(ms);
+      return true;
+    },
+    /**
+     * "Check for updates": a check now. Resolves as soon as the manifest is read: {outcome: 'current' |
+     * 'downloading' | 'manual' | 'failed' | 'offline' | 'error' | 'busy', version, why}; a new version then
+     * downloads at full speed. One already downloading or waiting to install answers at once.
+     */
+    checkNow() {
+      if (stopped) return Promise.resolve({ outcome: 'off' });
+      // Downloading, or staged and waiting to install: say so. A check just finishing: wait, then look again.
+      if (running && ['downloading', 'retrying', 'ready', 'applying'].includes(state)) {
+        return Promise.resolve({ outcome: state === 'ready' || state === 'applying' ? 'ready' : 'downloading', version: target });
+      }
+      return (running ? running.catch(() => {}) : Promise.resolve()).then(() => {
+        if (notBefore > Date.now()) return { outcome: 'busy', retryAt: new Date(notBefore).toISOString() };
+        return new Promise((resolve) => {
+          phaseWaiters.push(resolve);
+          // Straight away, not through the timer (a check just ending reschedules it); the next regular check after.
+          const c = check();
+          hurried = true;   // set after check() began: its finally clears it for the next one
+          c.then((r) => { if (!stopped) schedule(r.next); }, () => {});
+        });
+      });
+    },
+    /** "Restart now": the downloaded version installs as soon as no dictation is in progress. False if none is waiting. */
+    applyNow() {
+      if (state !== 'ready') return false;
+      rushed = true;
+      log('Restart now: installing', target, 'without waiting for the person to step away');
+      return true;
+    },
+    get lastOutcome() { return lastOutcome; },
+    get target() { return target; },
+    get progress() { return { ...progress }; },
+    get cadence() { return cadence; },
     stop() { stopped = true; clearTimeout(timer); timer = null; },
     report,
     get state() { return state; },
@@ -916,12 +1005,13 @@ const envMs = (name, d) => { const n = Number(process.env[name]); return process
  * Called once by src/main/index.js, first thing when ready. Returns the updater, or null when this
  * copy never updates itself (run from source, TYPD_NO_APP_UPDATE=1).
  *   busy          () => boolean: a session is open, or a Typd window or dialog is on screen
+ *   dictating     () => boolean: a session is open ("Restart now" waits only for this)
  *   onWarm        local.onWarm: every model start's outcome
  *   changed       () => void: the tray line changed
  *   quit          () => void: leave for the update (the helper waits for this process to end)
  *   reportExtra   () => object: what the CI's report adds (windows, dock)
  */
-function start({ busy, onWarm, changed, quit, reportExtra }) {
+function start({ busy, dictating, onWarm, changed, quit, reportExtra }) {
   if (main || !electron) return main;
   const { app, powerMonitor, net } = electron;
   if (!app.isPackaged) { debug('off: run from source'); return null; }   // never: from source the "app" would be node_modules/electron
@@ -943,6 +1033,7 @@ function start({ busy, onWarm, changed, quit, reportExtra }) {
     firstCheckMs: envMs('TYPD_APP_UPDATE_FIRST_MS', FIRST_CHECK_MS),
     everyMs: envMs('TYPD_APP_UPDATE_EVERY_MS', CHECK_EVERY_MS),
     busy,
+    ...(dictating ? { dictating } : {}),
     systemIdle: () => { try { return powerMonitor.getSystemIdleTime(); } catch { return Infinity; } },
     warmSettled: () => Boolean(warm),
     modelOk: () => (warm ? Boolean(warm.ok) : null),
@@ -959,7 +1050,9 @@ function start({ busy, onWarm, changed, quit, reportExtra }) {
   debug('app updates on:', main.line() ? main.line().label : 'nothing to say', where.problem ? '(cannot install here: ' + where.problem + ')' : '', 'from', endpointFromEnv());
   main.firstStart = s.postUpdate;
   main.start();
-  powerMonitor.on('resume', () => main.wake());
+  // Woken or unlocked: a check if the last one is 15 minutes old (checkCadence.js).
+  powerMonitor.on('resume', () => main.wakeIfDue());
+  powerMonitor.on('unlock-screen', () => main.wakeIfDue());
   return main;
 }
 
