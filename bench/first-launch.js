@@ -136,6 +136,19 @@ check('0.2.5 installed over 0.2.4 by the installer (settings and a model kept): 
 r = launch(folder({}), false, '0.2.5');
 check('0.2.5, a fresh install: due', r.fresh === true && r.now === 'due', r);
 
+// 0.2.6: an update from 0.2.5 -- a model-less install whose model (and maybe the CUDA pack, in userData)
+// arrived after its first start, sharing on by default -- never shows it; a fresh 0.2.6 install does.
+const S025 = { ...S024 };
+const PACK = { 'typd/cuda/': '' };
+r = launch(folder({ 'typd/settings.json': S025, ...HISTORY, ...MODEL, ...PACK, 'typd/app-update/': '', 'typd/app-update/pending.json': { from: '0.2.5', to: '0.2.6' } }), true, '0.2.6');
+check('0.2.6: update from 0.2.5 (walkthrough done, a downloaded model and pack, the app update pending): never', r.fresh === false && r.now === 'done' && r.saved === 'done', r);
+r = launch(folder({ 'typd/settings.json': { ...S025, walkthrough: 'due' }, ...MODEL, 'typd/app-update/': '', 'typd/app-update/pending.json': { from: '0.2.5', to: '0.2.6' } }), true, '0.2.6');
+check('0.2.6: update from a 0.2.5 install that never got to show it: never', r.now === 'done', r);
+r = launch(folder({ 'typd/settings.json': S025, ...MODEL }), false, '0.2.6');
+check('0.2.6 installed over 0.2.5 by the installer (settings and a model kept): never', r.fresh === false && r.now === 'done', r);
+r = launch(folder({}), false, '0.2.6');
+check('0.2.6, a fresh install: due', r.fresh === true && r.now === 'due', r);
+
 {
   // A fresh install's next launches: due until it is shown, then done for good.
   const d = folder({});
