@@ -195,7 +195,7 @@ jobs:
             node scripts/check-icns.js "$app/Contents/Resources/icon.icns"
             rm -rf "$RUNNER_TEMP/icon.iconset"
             iconutil -c iconset "$app/Contents/Resources/icon.icns" -o "$RUNNER_TEMP/icon.iconset"
-            got=$(cd "$RUNNER_TEMP/icon.iconset" && for f in *.png; do printf '%s=%s ' "$f" "$(sips -g pixelWidth "$f" | awk '/pixelWidth/ {print $2}')"; done)
+            got=$(cd "$RUNNER_TEMP/icon.iconset" && for f in *.png; do echo "$f=$(sips -g pixelWidth "$f" | awk '/pixelWidth/ {print $2}')"; done | LC_ALL=C sort | tr '\n' ' ')
             want="icon_128x128.png=128 icon_128x128@2x.png=256 icon_16x16.png=16 icon_16x16@2x.png=32 icon_256x256.png=256 icon_256x256@2x.png=512 icon_32x32.png=32 icon_32x32@2x.png=64 icon_512x512.png=512 icon_512x512@2x.png=1024 "
             echo "iconutil reads back: $got"
             [ "$got" = "$want" ] || { echo "the icon is not a full iconset at the right sizes"; exit 1; }
