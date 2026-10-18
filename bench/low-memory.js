@@ -285,7 +285,9 @@ async function real() {
         r.revise.push({ id: it.id, spanChars: it.span.length, ms: Date.now() - s0, event: info.event || null, reason: info.reason || null, error: err, werVsTarget: err ? null : +w.toFixed(3) });
         console.log(`  revise ${it.id} span ${it.span.length} chars -> ${err ? 'error: ' + err : info.event + (info.reason ? ' (' + info.reason + ')' : '') + ', WER vs target ' + (100 * w).toFixed(1) + ' %'} ${Date.now() - s0} ms`);
         const fits = it.span.length <= local.reviseLimit().chars;
-        if (fits) check(`${mode}: revise of ${it.span.length} chars runs to a result`, !err && info.event === 'done' && text.length > 0, { err, info });
+        // A result, or one of the revise guards' verdicts (guards.js: "nothing changed" and the like) -- the
+        // model's call, the same in either mode; never an error, and never 'truncated' (the window ran out).
+        if (fits) check(`${mode}: revise of ${it.span.length} chars runs to a result (${info.event}${info.reason ? ': ' + info.reason : ''})`, !err && (info.event === 'done' || (info.event === 'refused' && info.reason !== 'truncated')) && text.length > 0, { err, info });
         else check(`${mode}: revise of ${it.span.length} chars refused with the limit in words ("${err}")`, Boolean(err) && /Too much selected — up to ~[\d,]+ words/.test(err), err);
       }
       save();
