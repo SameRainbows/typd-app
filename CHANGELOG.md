@@ -7,6 +7,7 @@
 - **The walkthrough is for new installs only.** Updating Typd never shows it; **Show the walkthrough** in Settings still opens it.
 - **Sharing is on to help improve Typd.** Your dictations are shared to train the model, so it gets better for everyone. A new install's walkthrough says so on its first screen, and **Share dictations** in Settings turns it off at once. If you turned sharing off before, it stays off. What is shared has not changed: **What's shared** in Settings lists it. Dictating itself still runs on your computer and works offline.
 - **No more first-run question about sharing.** The consent window is gone; Settings has the switch, **What's shared** and **Delete what I've shared**.
+- **Send my past dictations.** If you share, Settings can also send the recordings Typd kept before, once and slowly over a few hours, skipping any already shared. Never while sharing is off.
 - **Sharing stays light.** At most 50 dictations (or 20 MB of audio) a day are shared, and Typd waits quietly when the server is busy or full instead of trying again and again.
 
 ## 0.2.3 · October 2026

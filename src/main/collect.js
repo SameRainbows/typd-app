@@ -478,6 +478,11 @@ function createCollector({
       if (note) meta.note = note;
     }
     if (rec.test) meta.test = true;
+    // A past dictation sent once (backfill.js): which kept recording it is (its file's stamp).
+    if (rec.backfill) {
+      meta.backfill = true;
+      meta.keptAt = rec.keptAt ? new Date(rec.keptAt).toISOString() : null;
+    }
     return meta;
   }
 
@@ -506,13 +511,18 @@ function createCollector({
   function queue(rec) {
     if (revoked || stopped || (paused() && rec.consent !== 'flag')) return null;
     if (!rec || !rec.samples || typeof rec.text !== 'string') return null;
+    // A past dictation (backfill.js) has a fixed name -- its recording's time and an id made from
+    // that recording -- so queuing it twice, or sending it twice, stores it once (the server's key
+    // is the same name). Already waiting here: nothing new.
+    const fixed = rec.backfill && /^[0-9a-f]{16}$/.test(String(rec.id || '')) && Number.isFinite(rec.keptAt);
+    const created = fixed ? new Date(rec.keptAt) : new Date();
+    const id = fixed ? rec.id : crypto.randomBytes(8).toString('hex');
+    const name = `${stamp(created)}-${id}`;
+    if (fixed && (writes.has(name) || fs.existsSync(path.join(dir, name + '.json')))) return name;
     if (rec.consent !== 'flag' && !takeDaily(wavBytes(rec.samples, rec.sampleRate))) {
       log('daily sharing limit reached; not queued');
       return null;
     }
-    const created = new Date();
-    const id = crypto.randomBytes(8).toString('hex');
-    const name = `${stamp(created)}-${id}`;
     const p = new Promise((resolve) => setImmediate(resolve)).then(() => write(rec, name, created, id)).then(
       (ok) => { if (ok && !failures) schedule(2000); return ok; },   // mid-backoff, the pending retry stands
       (err) => { log('could not queue', err && err.message); return false; }
@@ -617,6 +627,22 @@ function createCollector({
     /** Until when the server asked for nothing more (ms since the epoch; 0: no such wait). */
     heldUntil: () => (holdUntil > now() ? holdUntil : 0),
     pending: async () => (await ready()).length,
+    /** What the daily limit still allows today, {items, bytes}; null where there is none (testers). */
+    dailyLeft() {
+      if (!daily) return null;
+      const day = new Date(now()).toISOString().slice(0, 10);
+      if (!today || today.day !== day) today = readDay(daily.file, day);
+      return { items: Math.max(0, daily.items - today.items), bytes: Math.max(0, daily.bytes - today.bytes) };
+    },
+    /** The metas of the items waiting here ({name, createdAt, keptAt, backfill}), oldest first. */
+    async waiting() {
+      const out = [];
+      for (const name of await ready()) {
+        const m = await readJson(path.join(dir, name + '.json'));
+        if (m) out.push({ name, createdAt: m.createdAt || null, keptAt: m.keptAt || null, backfill: m.backfill === true });
+      }
+      return out;
+    },
     isRevoked: () => revoked,
     status: () => {
       const cfg = configNow();

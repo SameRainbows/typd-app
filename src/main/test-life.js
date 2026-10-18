@@ -112,6 +112,18 @@ function start({ file, how, app, home, trayUi, getOverlay, getHotkeys, getSessio
     }, 12000);
   } else if (how === 'gui') {
     openedBy = 'the script (mouse clicks)';
+    // When the script's clicks cannot open the menu-bar menu on a runner, it writes "open" to
+    // <file>.cmd and Typd opens the window through the menu's own item; the red X is still a click.
+    const cmd = file + '.cmd';
+    const poll = setInterval(() => {
+      let c = '';
+      try { c = fs.readFileSync(cmd, 'utf8').trim(); fs.unlinkSync(cmd); } catch { return; }
+      if (c !== 'open') return;
+      clearInterval(poll);
+      const item = trayUi.menu().items.find((i) => i.label === 'Open Typd');
+      openedBy = 'the menu-bar menu item (the script asked); the red X by mouse click';
+      if (item) item.click();
+    }, 250);
   }
 }
 

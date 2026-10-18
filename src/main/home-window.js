@@ -315,6 +315,13 @@ function register(d) {
     const r = await deps.chooseSharing(on);
     return { ...r, settings: settingsState() };
   });
+  // "Send my past dictations" (backfill.js): the kept recordings not shared yet, sent slowly, once.
+  handle('sharing:backfill', async () => {
+    const s = sharing.get();
+    if (!s || !s.backfill) return null;
+    const r = await s.backfill.request('settings');
+    return { ...r, settings: settingsState() };
+  });
   handle('sharing:delete', async () => {
     const s = sharing.get();
     if (!s) return null;

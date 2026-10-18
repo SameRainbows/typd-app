@@ -106,19 +106,16 @@ sleep 1
 if [ "$HOW" = gui ]; then
   IFS=, read -r tx ty tw th <<< "$(field tray)"
   if [ -n "${tw:-}" ]; then
+    # The menu-bar icon, clicked; then the first enabled item below the status lines, "Open Typd".
     "$UI" click $(( tx + tw / 2 )) $(( ty + th / 2 )) >> "$KEYS" 2>&1 || bad "mac-ui could not click"
     sleep 1.5
-    "$UI" keys 31 35 14 45 >> "$KEYS" 2>&1; sleep 0.4; "$UI" keys 36 >> "$KEYS" 2>&1
+    "$UI" keys 125 >> "$KEYS" 2>&1; sleep 0.3; "$UI" keys 36 >> "$KEYS" 2>&1
   fi
-  for i in $(seq 1 20); do case "$(field window)" in open*) break ;; esac; sleep 0.5; done
+  for i in $(seq 1 16); do case "$(field window)" in open*) break ;; esac; sleep 0.5; done
   if [ "$(field window | cut -c1-4)" != open ]; then
-    echo "[$MODE] typing in the menu did not open the window; System Events instead"
+    echo "[$MODE] the click on the menu-bar icon did not open the window here; Typd opens it through its menu item, the red X stays a click"
     "$UI" keys 53 >> "$KEYS" 2>&1; sleep 0.5
-    ax 'ignoring application responses
-  click menu bar item 1 of menu bar 2
-end ignoring' || true
-    sleep 1.5
-    ax 'click menu item "Open Typd" of menu 1 of menu bar item 1 of menu bar 2' || true
+    echo open > "$MARK.cmd"
     for i in $(seq 1 20); do case "$(field window)" in open*) break ;; esac; sleep 0.5; done
   fi
   case "$(field window)" in open*) echo "[$MODE] the window is open: $(field window)" ;; *) bad "could not open the Typd window from the menu bar ($(field window))" ;; esac
