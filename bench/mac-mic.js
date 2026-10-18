@@ -52,10 +52,11 @@ function world() {
   const w = {
     mic: 'not-determined', ax: true, listen: 'granted', afterReset: null,
     askImpl: () => new Promise(() => {}),       // macOS's prompt: nobody answers
-    asks: 0, dialogs: [], responses: [], opened: [], execs: [], life: [], focus: 0
+    asks: 0, dialogs: [], responses: [], opened: [], execs: [], life: [], focus: 0, quits: 0,
+    userData: fs.mkdtempSync(path.join(os.tmpdir(), 'typd-mic-ud-'))
   };
   w.electron = {
-    app: { isPackaged: true, focus() { w.focus++; }, getAppPath: () => root },
+    app: { isPackaged: true, focus() { w.focus++; }, getAppPath: () => root, getPath: () => w.userData, quit() { w.quits++; } },
     dialog: {
       async showMessageBox(o) {
         w.dialogs.push(o);
@@ -79,6 +80,7 @@ function world() {
   w.child = {
     spawn(file, args) {
       w.execs.push([file, ...args]);
+      if (file === '/bin/sh') return { unref() {} };
       const { PassThrough } = require('stream');
       const out = new PassThrough();
       const ee = new (require('events'))();
@@ -127,22 +129,43 @@ async function permissionsSection() {
   {
     // A. The reporter's first launch: macOS's prompt is up and nobody answers it.
     const w = world();
-    w.responses.push({ response: 0, advance: 11000 });   // "Allow Microphone", more than 10 s after the first ask
+    let answer = null;
+    w.askImpl = () => new Promise((res) => { answer = res; });   // answered only when the bench says so
     const pm = fresh(w);
+    let opened = 0;
+    pm.whenUnanswered(() => { opened++; });
     const r = await within(pm.ensure('startup'), 3000);
     check('a prompt nobody answers does not hold the launch check (0.2.6 waited forever)', r.done, r);
-    check('...macOS was asked once at launch', w.asks >= 1, w.asks);
+    check('...macOS was asked once at launch, Typd brought to the front for it', w.asks === 1 && w.focus >= 1, { asks: w.asks, focus: w.focus });
     check('...the request and the missing answer are in the life log', w.life.some((l) => /^microphone: asking macOS/.test(l)) && w.life.some((l) => /^microphone: no answer from macOS after/.test(l)), w.life);
-    const d = w.dialogs[0];
-    check('...Typd\'s own dialog follows, its first button "Allow Microphone"', d && d.buttons[0] === 'Allow Microphone', d && d.buttons);
-    check('...it says why Typd is not in the Microphone list', d && /not in its Microphone list/.test(d.detail), d && d.detail);
-    await sleep(50);
-    check('..."Allow Microphone" asks macOS again (its prompt), it does not open a list Typd is not in', w.asks === 2 && !w.opened.some((u) => /Privacy_Microphone/.test(u)), { asks: w.asks, opened: w.opened });
-    check('...Typd came to the front for macOS\'s prompt', w.focus >= 1, w.focus);
+    check('...no modal dialog of Typd\'s over macOS\'s prompt (a modal holds Typd up, macOS\'s answer included)', w.dialogs.length === 0, w.dialogs.map((d) => d.message));
+    check('...the Typd window opens instead (its card offers Allow / Ask again), and the life log says why', opened === 1 && w.life.some((l) => /still unanswered: no dialog/.test(l)), { opened, life: w.life });
     check('...micState says "asking" while the prompt is up', pm.micState() === 'asking', pm.micState());
     check('...the walkthrough waits on it for at most its own limit', pm.isAsking(60000) === true && pm.isAsking(0) === false);
-    const s = await pm.status();
-    check('...status(): a microphone never answered counts as off (the tray and Home offer "Allow")', s.microphone === false, s);
+    const s0 = await pm.status();
+    check('...status(): a microphone never answered counts as off (the tray and Home offer "Allow")', s0.microphone === false, s0);
+    clockOffset += 11000;
+    pm.request('microphone');   // Home's "Ask again", more than 10 s later
+    await sleep(30);
+    check('..."Ask again" asks macOS again (its prompt), it opens no list Typd is not in', w.asks === 2 && !w.opened.some((u) => /Privacy_Microphone/.test(u)), { asks: w.asks, opened: w.opened });
+    // macOS answers at last: the check runs again by itself and explains the switches still off.
+    w.ax = false;
+    w.mic = 'granted';
+    answer(true);
+    await sleep(900);
+    check('macOS answers later: Typd hears it and runs the check again (the other switches explained)', w.life.some((l) => /macOS answered: allowed/.test(l)) && w.dialogs.length === 1 && /Accessibility/.test(w.dialogs[0].detail) && !/Microphone —/.test(w.dialogs[0].detail), w.dialogs.map((d) => d.detail));
+  }
+  {
+    // A2. Never answered, and no prompt pending (macOS dropped it): the dialog's first button asks macOS.
+    const w = world();
+    w.askImpl = () => Promise.resolve(false);   // returns at once, still not-determined
+    w.responses.push({ response: 0, advance: 11000 });
+    const pm = fresh(w);
+    await within(pm.ensure('startup'), 3000);
+    const d = w.dialogs[0];
+    check('never answered, no prompt left: the dialog\'s first button is "Allow Microphone", and says why Typd is not in the list', d && d.buttons[0] === 'Allow Microphone' && /not in its Microphone list/.test(d.detail), d && { b: d.buttons, detail: d.detail });
+    await sleep(30);
+    check('..."Allow Microphone" asks macOS again, it opens no pane', w.asks === 2 && !w.opened.some((u) => /Privacy_Microphone/.test(u)), { asks: w.asks, opened: w.opened });
   }
   {
     // B. Allow.
@@ -159,31 +182,39 @@ async function permissionsSection() {
     // C. NellowTCS's macOS 27: "It is turned off for Typd" -- and Typd is not in the list.
     const w = world();
     w.mic = 'denied';
-    w.afterReset = 'not-determined';
-    w.askImpl = () => new Promise((res) => setTimeout(() => { w.mic = 'granted'; res(true); }, 200));   // the person clicks Allow
+    w.afterReset = 'denied';   // the running app keeps the old answer after the reset (seen in CI)
     w.responses.push({ response: 1 });   // "Ask macOS Again"
     const pm = fresh(w);
+    pm.quitWith(() => { w.quits++; });   // index.js's quit(by)
     await within(pm.ensure('startup'), 4000);
+    await sleep(300);
     const d = w.dialogs[0];
     check('denied: the dialog offers "Open System Settings", "Ask macOS Again", "Not Now"', d && JSON.stringify(d.buttons) === JSON.stringify(['Open System Settings', 'Ask macOS Again', 'Not Now']), d && d.buttons);
     check('...and says what to do when Typd is not in the list', d && /not in the Microphone list\? “Ask macOS Again”/.test(d.detail) && /tccutil reset Microphone ai\.typd\.app/.test(d.detail), d && d.detail);
-    check('..."Ask macOS Again" resets Typd\'s own entry only (tccutil reset Microphone ai.typd.app)', JSON.stringify(w.execs) === JSON.stringify([['/usr/bin/tccutil', 'reset', 'Microphone', 'ai.typd.app']]), w.execs);
-    check('...then asks macOS (its prompt): granted', w.asks === 1 && w.mic === 'granted', { asks: w.asks, mic: w.mic });
-    check('...logged: the reset and the answer', w.life.some((l) => /tccutil reset Microphone ai\.typd\.app: done/.test(l)) && w.life.some((l) => /macOS answered: allowed/.test(l)), w.life);
-    check('...no "refused" dialog for a real answer', w.dialogs.length === 1, w.dialogs.map((x) => x.message));
+    const reset = w.execs.filter((e) => e[0] === '/usr/bin/tccutil');
+    check('..."Ask macOS Again" resets Typd\'s own entry only (tccutil reset Microphone ai.typd.app)', JSON.stringify(reset) === JSON.stringify([['/usr/bin/tccutil', 'reset', 'Microphone', 'ai.typd.app']]), w.execs);
+    const sh = w.execs.find((e) => e[0] === '/bin/sh');
+    check('...then Typd starts again through LaunchServices (open), the running app keeping macOS\'s old answer', sh && /\/usr\/bin\/open "\$0"/.test(sh[2]) && w.quits === 1 && w.asks === 0, { sh, quits: w.quits, asks: w.asks });
+    check('...and leaves a note for that start', fs.existsSync(path.join(w.userData, 'mic-reset.json')));
+    // The next start, the answer cleared: macOS asks as for a new app.
+    const w2 = world();
+    w2.userData = w.userData;
+    w2.askImpl = () => new Promise((res) => setTimeout(() => { w2.mic = 'granted'; res(true); }, 100));
+    const pm2 = fresh(w2);
+    await within(pm2.ensure('startup'), 3000);
+    check('the start after the reset: macOS asks afresh, Allow is heard', w2.asks === 1 && w2.life.some((l) => /started again after the reset: macOS says not-determined/.test(l)) && w2.life.some((l) => /macOS answered: allowed/.test(l)), w2.life);
+    check('...the note is used once', !fs.existsSync(path.join(w.userData, 'mic-reset.json')));
   }
   {
-    // D. A rule on the Mac: macOS refuses at once, with no dialog, even after the reset.
+    // D. A rule on the Mac (AMFI off, a profile): right after the reset, the new Typd is still refused.
     const w = world();
+    fs.writeFileSync(path.join(w.userData, 'mic-reset.json'), JSON.stringify({ at: Date.now(), why: 'the dialog' }));
     w.mic = 'denied';
-    w.afterReset = 'not-determined';
-    w.askImpl = () => { w.mic = 'denied'; return Promise.resolve(false); };
-    w.responses.push({ response: 1 });
     const pm = fresh(w);
     await within(pm.ensure('startup'), 3000);
-    const second = w.dialogs[1];
-    check('a policy refusal after the reset is told apart: "macOS refuses the microphone to Typd without asking"', second && /without asking/.test(second.message), w.dialogs.map((x) => x.message));
-    check('...and logged as a rule, not an answer', w.life.some((l) => /refused at once after the reset/.test(l)), w.life);
+    const m = w.dialogs.map((x) => x.message);
+    check('denied again at the start right after the reset: "macOS refuses the microphone to Typd without asking", not the switch dialog again', m.length === 1 && /without asking/.test(m[0]), m);
+    check('...logged as a rule, not an answer', w.life.some((l) => /still says denied at the start right after the reset/.test(l)), w.life);
   }
   {
     // E. A real "off" switch: the Microphone pane opens (Typd is in that list).
@@ -453,6 +484,8 @@ function sourceSection() {
   check('main never holds a dictation back on the privacy status when a model is there (it asks, and records)', micBlock.length > 50 && returns === 1 && guarded && /requestMic\('the key'/.test(micBlock), { returns, guarded });
   const onMic = main.slice(main.indexOf("ipcMain.on('overlay:mic'"), main.indexOf("ipcMain.on('overlay:cancel'"));
   check('the pill\'s words come from the capture (kind) and, on a Mac, macOS\'s status says which', /kind === 'silent'/.test(onMic) && /Allow the microphone in macOS’s dialog/.test(onMic) && /requestMic\(/.test(onMic));
+  check('the key is bound again once Accessibility and Input Monitoring come on (as choosing it in Settings does)', /keySwitchesOff === true && !keyOff && rebindKey/.test(main) && /rebindKey = \(\) => \{[\s\S]*?applyHotkey\(/.test(main));
+  check("Copy diagnostics names SIP and AMFI's boot arguments (AMFI off: macOS refuses every non-Apple app's prompt)", /securitySettings\(\)/.test(main) && /amfi_get_out_of_my_way/.test(read('src/main/permissions-mac.js')));
   const page = code(read('src/renderer/overlay.js'));
   check('the page: the synthetic envelope only in preview builds', /synthetic = Boolean\(window\.__typdSynthetic\)/.test(page) && /if \(synthetic && window\.__typdSynthetic\)/.test(page));
 

@@ -13,11 +13,13 @@
 #      is Typd's own, not a helper's or the shell's, and macOS does not refuse it by policy (the way it
 #      refuses a hardened-runtime app without com.apple.security.device.audio-input);
 #   2. Typd's life log says it asked ("microphone: asking macOS");
-#   3. with nobody answering, Typd does not wait forever (0.2.6 did: no dialog of its own, nothing
-#      asked again): "no answer from macOS after 20 s" in the life log, and its own dialog on screen;
+#   3. with nobody answering, Typd does not wait forever (0.2.6 did: nothing asked again, nothing
+#      said): "no answer from macOS after 20 s" in the life log, and no modal dialog of Typd's over
+#      macOS's prompt (a modal holds Typd itself up, macOS's answer included: seen here, 22 s);
 #   4. Allow pressed in macOS's alert (Accessibility; skipped with a note where the runner has none):
-#      "macOS answered: allowed" in the life log, and TCC holds the answer -- the row that puts Typd
-#      in Privacy & Security > Microphone. Its location moved in macOS 27 (ProtectedSystem); both read.
+#      "macOS answered: allowed" in the life log at once, TCC holds the answer -- the row that puts
+#      Typd in Privacy & Security > Microphone (its location moved in macOS 27; both read) -- and the
+#      check runs again for the other switches;
 #   5. the reporter's macOS 27 sequence: first run from ~/Downloads (the move offer comes before any
 #      macOS prompt), Don't Allow, that copy deleted, Typd installed in /Applications: its dialog offers
 #      "Ask macOS Again", which unregisters the gone copy, resets Typd's answer and prompts; Allow.
@@ -81,7 +83,10 @@ done
 if [ $ok = 1 ]; then say "3. life log: $(life 'no answer from macOS' | sed 's/^.*\] //')"; else bad "3. Typd never stopped waiting on macOS's prompt"; fi
 sleep 3
 "$ALERT" windows | sed 's/^/  /' | head -8
-if "$ALERT" windows | grep -qE '^window: Typd layer (8|[1-9][0-9])'; then say "3. Typd's own dialog is on screen"; else bad "3. no dialog from Typd after the wait"; fi
+l=$(life 'still unanswered: no dialog')
+[ -n "$l" ] && say "3. life log: ${l#*] }" || bad "3. no word from Typd about the unanswered prompt"
+if "$ALERT" windows | grep -qE '^window: Typd layer (8|[1-9][0-9])'; then bad "3. a modal dialog of Typd's is over macOS's prompt"; else say "3. no modal dialog of Typd's over macOS's prompt"; fi
+"$ALERT" windows | grep -qE '^window: UserNotificationCenter' && say "3. macOS's prompt is still on screen" || say "3. (macOS's prompt is not on screen)"
 grep -aE '^\[typd:permissions\]' "$OUT" | tail -3 | sed 's/^/  /'
 
 # 4. Allow: Typd hears the answer, and TCC holds it (Typd in the Microphone list)
@@ -95,7 +100,10 @@ else
     if [ -n "$(life 'macOS answered: allowed')" ]; then ok=1; break; fi
     sleep 1
   done
-  if [ $ok = 1 ]; then say "4. life log: $(life 'macOS answered' | sed 's/^.*\] //')"; else bad "4. Typd did not hear macOS's answer"; life microphone; fi
+  if [ $ok = 1 ]; then say "4. life log: $(life 'macOS answered' | sed 's/^.*\] //')"; else bad "4. Typd did not hear macOS's answer"; life microphone; life 'main thread late'; fi
+  ok=0
+  for _ in $(seq 1 10); do grep -aq 'checked for the microphone answer' "$OUT" && { ok=1; break; }; sleep 1; done
+  [ $ok = 1 ] && say "4. the check ran again after the answer: $(grep -a 'checked for the microphone answer' "$OUT" | tail -1)" || bad "4. no check after macOS's answer (the other switches unexplained)"
   r=$(rows | tr '\n' ' ')
   if echo "$r" | grep -q 'kTCCServiceMicrophone 2'; then say "4. TCC: kTCCServiceMicrophone allowed for ai.typd.app (Typd is in the Microphone list)"; else bad "4. no TCC row for ai.typd.app's microphone ($r)"; fi
 fi
@@ -115,44 +123,71 @@ else
   LSREG=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
   to() { perl -e 'alarm shift; exec @ARGV' "$@"; }
   DL="$HOME/Downloads/Typd.app"; AP=/Applications/Typd.app
-  openapp() { to 20 open "$1" --env TYPD_DEBUG=1 --env TYPD_NO_MODEL_UPDATE=1 --env TYPD_NO_APP_UPDATE=1 --env TYPD_NO_SHARE=1 --env TYPD_NO_WALKTHROUGH=1 --env TYPD_MIC_WAIT_MS=20000 --stdout "$2" --stderr "$2.err"; }
+  openapp() {   # openapp <app> <out> [--env X=Y ...]
+    a=$1; o=$2; shift 2
+    to 20 open "$a" --env TYPD_DEBUG=1 --env TYPD_NO_MODEL_UPDATE=1 --env TYPD_NO_APP_UPDATE=1 --env TYPD_NO_SHARE=1 --env TYPD_NO_WALKTHROUGH=1 --env TYPD_MIC_WAIT_MS=20000 "$@" --stdout "$o" --stderr "$o.err"
+  }
   waitfor() { for _ in $(seq 1 "$2"); do "$ALERT" texts "$3" | grep -qE "$1" && return 0; sleep 1; done; return 1; }
   killall UserNotificationCenter 2>/dev/null; sleep 1
   tccutil reset Microphone ai.typd.app >/dev/null 2>&1
   rm -rf "$UD" "$DL" "$AP"
   ditto "$APP" "$DL"
   : > "$TLOG"
+  # macOS's prompt for Typd: tccd says so (its alert's text differs between macOS versions).
+  prompted() { for _ in $(seq 1 "$1"); do grep -aqE 'AUTHREQ_PROMPTING: .*service=kTCCServiceMicrophone, subject=Sub:\{ai\.typd\.app\}' "$TLOG" && return 0; sleep 1; done; return 1; }
   openapp "$DL" "$OUT.dl"
   if waitfor 'Move Typd to your Applications folder' 20 Typd; then say "5. from ~/Downloads: Typd offers the move to Applications first"; else bad "5. no move offer from a Typd in ~/Downloads"; fi
   if grep -aq 'AUTHREQ_PROMPTING: .*service=kTCCServiceMicrophone' "$TLOG"; then bad "5. macOS was asked for the microphone while the move offer was up"; else say "5. ...and macOS was not asked anything before it"; fi
-  "$ALERT" press Typd "Not Now" | sed 's/^/  /'
-  if waitfor 'access your microphone|would like to access the microphone' 25 UserNotificationCenter; then "$ALERT" press UserNotificationCenter "Don't Allow" | sed 's/^/  /'; else bad "5. no microphone prompt after Not Now"; fi
-  sleep 3
-  l=$(life 'macOS answered: not allowed'); [ -n "$l" ] && say "5. the Downloads copy: ${l#*] }" || bad "5. Don't Allow not heard"
-  pkill -f "$DL/Contents/MacOS/Typd" 2>/dev/null; sleep 3
+  "$ALERT" click Typd "Not Now" | sed 's/^/  /'
+  sleep 2
+  if [ -n "$(life 'kept this copy where it is')" ]; then say "5. Not Now heard (a real click)"; else
+    # A real click on Typd's own NSAlert did not land on this runner: start the Downloads copy again
+    # past the offer (as "Not Now" would), so the rest of the sequence still runs.
+    say "5. (the click on Not Now did not land here; starting the Downloads copy again past the offer)"
+    pkill -9 -f "$DL/Contents/MacOS/Typd" 2>/dev/null; sleep 3
+    openapp "$DL" "$OUT.dl2" --env TYPD_NO_MOVE_OFFER=1
+  fi
+  if prompted 45; then sleep 1; "$ALERT" press UserNotificationCenter "Don't Allow" | sed 's/^/  /'; else bad "5. no microphone prompt after Not Now"; fi
+  ok=0
+  for _ in $(seq 1 10); do [ -n "$(life 'macOS answered: not allowed')" ] && { ok=1; break; }; sleep 1; done
+  [ $ok = 1 ] && say "5. the Downloads copy: $(life 'macOS answered: not allowed' | sed 's/^.*\] //')" || bad "5. Don't Allow not heard"
+  pkill -9 -f "$DL/Contents/MacOS/Typd" 2>/dev/null; sleep 3
   rm -rf "$DL"
   ditto "$APP" "$AP"
   say "5. LaunchServices now holds Typd at: $(to 60 "$LSREG" -dump 2>/dev/null | grep -aE '^(path|identifier):' | grep -aB1 'ai\.typd\.app$' | grep -a '^path' | sed -E 's/^path: +//; s/ \(0x[0-9a-f]+\)$//' | sort -u | tr '\n' ' ')"
   killall UserNotificationCenter 2>/dev/null; sleep 1
   : > "$TLOG"
   openapp "$AP" "$OUT.ap"
-  if waitfor 'Ask macOS Again' 40 Typd; then say "5. /Applications copy: the dialog offers Ask macOS Again"; else bad "5. no Ask macOS Again in the /Applications copy's dialog"; "$ALERT" texts Typd | head -8; fi
-  "$ALERT" press Typd "Ask macOS Again" | sed 's/^/  /'
+  if waitfor 'Ask macOS Again' 40 Typd; then say "5. /Applications copy: macOS says denied, and the dialog offers Ask macOS Again"; else bad "5. no Ask macOS Again in the /Applications copy's dialog"; "$ALERT" texts Typd | head -8; fi
+  : > "$TLOG"
+  c=$("$ALERT" click Typd "Ask macOS Again"); echo "  $c"
+  if ! echo "$c" | grep -q 'it is gone'; then
+    # The same fallback: the dialog answers "Ask macOS Again" by itself (TYPD_TEST_DIALOG_ANSWER=reset);
+    # what follows -- LaunchServices, tccutil reset, Typd starting again, macOS's prompt -- is the real thing.
+    say "5. (the click did not land here; starting the /Applications copy again with TYPD_TEST_DIALOG_ANSWER=reset)"
+    pkill -9 -f "$AP/Contents/MacOS/Typd" 2>/dev/null; sleep 3
+    killall UserNotificationCenter 2>/dev/null; sleep 1
+    : > "$TLOG"
+    openapp "$AP" "$OUT.ap2" --env TYPD_TEST_DIALOG_ANSWER=reset
+    sleep 12
+    l=$(life 'test: the dialog answered reset'); [ -n "$l" ] && say "5. ${l#*] }" || bad "5. the dialog did not answer reset"
+  fi
+  # Ask macOS Again: Typd's own answer cleared, then Typd starts again (the running app keeps macOS's old
+  # answer) and the new Typd is asked about afresh.
   ok=0
-  for _ in $(seq 1 25); do
-    if grep -aqE 'AUTHREQ_PROMPTING: .*service=kTCCServiceMicrophone, subject=Sub:\{ai\.typd\.app\}' "$TLOG"; then ok=1; break; fi
-    sleep 1
-  done
-  [ $ok = 1 ] && say "5. Ask macOS Again: macOS prompts again" || bad "5. no new prompt after Ask macOS Again"
-  grep -a 'location: unregistered\|tccutil reset' "$LIFE" | tail -3 | sed 's/^.*\] /  life: /'
+  for _ in $(seq 1 30); do [ -n "$(life 'started again after the reset')" ] && { ok=1; break; }; sleep 1; done
+  [ -n "$(life 'tccutil reset Microphone ai.typd.app: done')" ] && say "5. Ask macOS Again reset Typd's own answer (tccutil)" || bad "5. no tccutil reset after Ask macOS Again"
+  [ $ok = 1 ] && say "5. Typd started again: $(life 'started again after the reset' | sed 's/^.*\] //')" || bad "5. Typd did not start again after the reset"
+  if prompted 30; then say "5. Ask macOS Again: macOS prompts again, for ai.typd.app"; else bad "5. no new prompt after Ask macOS Again"; fi
   [ -n "$(life 'unregistered a copy of Typd that is gone')" ] && say "5. the gone ~/Downloads copy was unregistered from LaunchServices" || say "5. (no gone copy left in LaunchServices to unregister)"
+  sleep 1
   "$ALERT" press UserNotificationCenter Allow | sed 's/^/  /'
   ok=0
   for _ in $(seq 1 15); do [ -n "$(life 'macOS answered: allowed')" ] && { ok=1; break; }; sleep 1; done
   [ $ok = 1 ] && say "5. Allow heard: $(life 'macOS answered: allowed' | sed 's/^.*\] //')" || bad "5. Allow not heard after Ask macOS Again"
   r=$(rows | tr '\n' ' ')
   echo "$r" | grep -q 'kTCCServiceMicrophone 2' && say "5. TCC: allowed (Typd in the Microphone list)" || bad "5. no allowed TCC row after Ask macOS Again ($r)"
-  pkill -f "$AP/Contents/MacOS/Typd" 2>/dev/null; sleep 2
+  pkill -9 -f "$AP/Contents/MacOS/Typd" 2>/dev/null; sleep 2
   rm -rf "$AP"
   # Leave LaunchServices as the next steps expect: the build folder's Typd, not the copies made here.
   to 30 "$LSREG" -u "$AP" >/dev/null 2>&1; to 30 "$LSREG" -u "$DL" >/dev/null 2>&1; to 30 "$LSREG" -f "$APP" >/dev/null 2>&1
