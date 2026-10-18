@@ -28,10 +28,11 @@ contextBridge.exposeInMainWorld('typd', {
     return () => ipcRenderer.removeListener(channel, wrapped);
   },
 
-  // The overlay is click-through except where it is not. The renderer decides,
-  // because only it knows where the two controls currently are.
-  setInteractive(on) {
-    ipcRenderer.send('overlay:interactive', !!on);
+  // The overlay is click-through except over its live controls. The page says where they are
+  // ({x, y, w, h} in CSS px; [] when there are none) and main decides from the cursor
+  // (overlay-window.js, the click gate).
+  hitAreas(list) {
+    ipcRenderer.send('overlay:hit', Array.isArray(list) ? list.slice(0, 4) : []);
   },
 
   // Captured PCM, handed over once at the end of a session. `buffer` is the
