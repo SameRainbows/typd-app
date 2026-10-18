@@ -178,11 +178,13 @@
     } catch (err) {
       // No mic, no permission, or a device held exclusively elsewhere. Preview builds
       // fall back to a synthetic envelope so the motion stays tunable; the real app
-      // says so at once instead of animating a meter over a dead microphone.
-      synthetic = true;
+      // says so at once and its meter stays flat: never a meter moving over a dead
+      // microphone (0.2.6 drew the synthetic envelope here too, so a Mac whose
+      // microphone macOS had not allowed yet looked as if it heard speech).
+      synthetic = Boolean(window.__typdSynthetic);
       analyser = null;
       capturing = false;
-      if (!window.__typdSynthetic) window.typd.micProblem('unavailable');
+      if (!window.__typdSynthetic) window.typd.micProblem('unavailable', (err && err.name) || '');
     }
   }
 
@@ -231,7 +233,7 @@
       peak = Math.max(peak * 0.995, rms);
       return Math.min(1, rms / Math.max(peak, 0.015));
     }
-    if (synthetic) {
+    if (synthetic && window.__typdSynthetic) {
       var syl = Math.abs(Math.sin(t * 4.1) * Math.sin(t * 2.3 + 1.1));
       var micro = 0.55 + 0.45 * Math.sin(t * 21.7 + 0.6);
       var phrase = 0.5 + 0.5 * Math.sin(t * 0.52 - 0.4);

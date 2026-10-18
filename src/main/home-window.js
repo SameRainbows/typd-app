@@ -363,16 +363,36 @@ function register(d) {
     if (id === 'retry') { deps.retryModel(); return true; }
     if (id === 'permissions' && MAC) {
       const off = status.get().perms;
-      require('./permissions-mac').openPane(off[0] || 'accessibility');
+      require('./permissions-mac').request(off[0] || 'accessibility');   // the microphone never answered: macOS's prompt
       return true;
     }
     return false;
   });
   handle('app:pane', (kind) => {
     if (!MAC || !['microphone', 'accessibility', 'input', 'automation'].includes(kind)) return false;
-    require('./permissions-mac').openPane(kind);
+    // A microphone macOS was never asked about is not in its list yet: ask instead (permissions-mac.js).
+    require('./permissions-mac').request(kind);
     return true;
   });
+  // The microphone (macOS): its state for the walkthrough and Home, and macOS's own prompt for it.
+  handle('mic:get', () => (MAC ? require('./permissions-mac').micState() : 'granted'));
+  handle('mic:request', () => {
+    if (!MAC) return 'granted';
+    const pm = require('./permissions-mac');
+    return pm.requestMic('the Typd window', { wait: 60 * 1000, again: true }).then((s) => {
+      if (s === 'denied' || s === 'restricted') pm.openPane('microphone');
+      deps.permsChanged && deps.permsChanged();
+      return s;
+    });
+  });
+  handle('mic:reset', () => {
+    if (!MAC) return { state: 'granted' };
+    return require('./permissions-mac').resetMic('the Typd window').then((r) => {
+      if (deps.permsChanged) deps.permsChanged();
+      return r;
+    });
+  });
+  if (MAC) require('./permissions-mac').onMicChange((state) => { send('home:mic', { state }); if (deps.permsChanged) deps.permsChanged(); });
   // The model's licence (MODEL_LICENSE.txt: shipped in the app's resources, the repo's in development)
   handle('app:license', () => {
     const file = app.isPackaged ? path.join(process.resourcesPath, 'MODEL_LICENSE.txt') : path.join(__dirname, '..', '..', 'MODEL_LICENSE.txt');
@@ -390,7 +410,7 @@ function register(d) {
 }
 
 function openPrivacy() {
-  if (MAC) { require('./permissions-mac').openPane('microphone'); return true; }
+  if (MAC) { require('./permissions-mac').request('microphone'); return true; }
   shell.openExternal('ms-settings:privacy-microphone').catch(() => {});
   return true;
 }

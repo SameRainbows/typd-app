@@ -282,6 +282,23 @@ function appLabel(focus) {
 }
 
 function beginSession() {
+  // macOS: a microphone macOS was never asked about (no answer yet, so Typd is not in Privacy & Security ›
+  // Microphone). The key asks for it -- macOS's own prompt, brought to the front -- also while the first
+  // speech model is still downloading. The dictation is not held back by the status: what the capture
+  // gets decides (overlay:mic), so a stream that works records whatever the status says.
+  if (MAC && !session) {
+    const pm = require('./permissions-mac');
+    const mic = pm.micState();
+    if (mic === 'not-determined' || mic === 'asking') {
+      pm.requestMic('the key', { again: true }).then(checkMacPermissions);
+      if (modelMissing()) {
+        const fetch = status.get().modelFetch;
+        note('Allow the microphone in macOS’s dialog. ' + (fetch && fetch.state === 'downloading'
+          ? 'The speech model is downloading (' + fetch.pct + ' %).' : 'The speech model is not here yet.'), 8000);
+        return;
+      }
+    }
+  }
   // No speech model yet (a public install's first launch: modelUpdate.js is downloading it). The key
   // says how far that is, in the pill, and nothing is recorded: no error, no dialog.
   if (!session && modelMissing()) {
@@ -557,10 +574,14 @@ function statusAction(id) {
   if (id === 'retry') { if (modelMissing()) { modelUpdate.recheck(0); return null; } return warmModel(); }
   if (id === 'model-now') return modelUpdate.approve().catch(() => {});
   if (id === 'privacy') {
-    if (MAC) return require('./permissions-mac').openPane('microphone');
+    if (MAC) return require('./permissions-mac').request('microphone');   // never answered: macOS's prompt; else the pane
     return require('electron').shell.openExternal('ms-settings:privacy-microphone').catch(() => {});
   }
-  if (id === 'permissions') return home.open('home', { by: 'the menu bar status line' });
+  if (id === 'permissions') {
+    // The microphone never answered: macOS's own prompt straight from the menu (Typd is not in its list yet).
+    if (MAC && status.get().perms[0] === 'microphone' && require('./permissions-mac').micState() !== 'denied') require('./permissions-mac').request('microphone');
+    return home.open('home', { by: 'the menu bar status line' });
+  }
 }
 
 const trayUi = createTray({
@@ -877,7 +898,9 @@ function startWalkthrough(afterUpdate) {
   if (!walkthroughDue()) return;
   const show = () => {
     if (!walkthroughDue()) return;
-    if (MAC && require('./permissions-mac').isAsking()) { setTimeout(show, 1000); return; }
+    // Not over macOS's microphone prompt (the walkthrough has its own Allow button for one that is
+    // missed): at most 15 s after it went up; never over Typd's own permission dialog.
+    if (MAC && (require('./permissions-mac').isAsking(15000) || require('./mac/app-location').isOffering())) { setTimeout(show, 1000); return; }
     settings.set('walkthrough', 'done');
     home.open('home', { walkthrough: true, by: 'the first-run walkthrough' });
   };
@@ -1000,9 +1023,11 @@ function checkMic(openIfBlocked) {
 /** macOS: which of the switches Typd needs are off, for the tray line and Home's card. */
 function checkMacPermissions() {
   if (!MAC) return;
-  require('./permissions-mac').status().then((on) => {
+  const pm = require('./permissions-mac');
+  pm.status().then((on) => {
     const off = ['microphone', 'accessibility', 'input'].filter((k) => on && on[k] === false);
-    status.set({ perms: off });
+    const mic = pm.micState();
+    status.set({ perms: off, micUnasked: mic === 'not-determined' || mic === 'asking' });
   }).catch(() => {});
 }
 
@@ -1224,6 +1249,8 @@ app.whenReady().then(() => {
     restartForUpdate,
     modelNow: () => modelUpdate.approve(),
     modelLater: () => modelUpdate.later(),
+    // macOS: the microphone's state moved (macOS's prompt answered, or asked): the tray and Home follow.
+    permsChanged: checkMacPermissions,
     // Automatic / Full / Light, or the asking switch, changed: read the hardware again and check soon.
     modelChanged: () => { choice.forget(); modelUpdate.recheck(); },
     lowMemoryNow: () => require('./pipeline/local').lowMemory,
@@ -1282,8 +1309,18 @@ app.whenReady().then(() => {
   if (MAC) {
     // After a quiet update relaunch the dialog waits until someone is at the keyboard (a new
     // ad-hoc build is a new app to macOS, so its switches may need turning on again).
-    const askPermissions = () => require('./permissions-mac').ensure('startup').then(checkMacPermissions);
-    if (appUpdater && appUpdater.firstStart) { checkMacPermissions(); appUpdate.whenUserActive(askPermissions); } else askPermissions();
+    // Before any permission is asked: Typd's LaunchServices entries tidied (a copy of Typd that is gone
+    // must not hold its permissions: mac/app-location.js), and a Typd running from Downloads, the
+    // Desktop, a disk image or a translocated copy offers to move to Applications first.
+    const location = require('./mac/app-location');
+    // The LaunchServices scan (lsregister -dump) only while the microphone is not on: then a stale entry
+    // for a copy of Typd that is gone may be what keeps macOS from asking.
+    const micOn = () => { try { return systemPreferences.getMediaAccessStatus('microphone') === 'granted'; } catch { return true; } };
+    const askPermissions = () => location.tidy(settings, { scan: !micOn() }).catch(() => {})
+      .then(() => require('./permissions-mac').ensure('startup')).then(checkMacPermissions);
+    if (appUpdater && appUpdater.firstStart) { checkMacPermissions(); appUpdate.whenUserActive(askPermissions); } else {
+      location.offerMove().then((leaving) => { if (!leaving) askPermissions(); }, () => askPermissions());
+    }
     require('./mac/login-item').sync(settings.get('startAtLogin'));
     setInterval(checkMacPermissions, 15000);
   }
@@ -1392,7 +1429,11 @@ app.whenReady().then(() => {
 
   // A dead microphone ends the session at once with the reason, instead of after the
   // user has finished talking ("No audio captured").
-  ipcMain.on('overlay:mic', (_e, kind) => {
+  // What failed is decided by the capture itself -- an error opening the stream ('unavailable'), or
+  // nothing but exact zeros ('silent') -- never by the privacy status alone. On a Mac the status then
+  // says why: a microphone macOS was never asked about (or whose prompt is still up) gets macOS's
+  // prompt again, at once, and a pill that says so; macOS hands a refused app exact zeros.
+  ipcMain.on('overlay:mic', (_e, kind, why) => {
     if (!session || session.endedAt) return;
     hotkeys.settle();
     session.controller.abort();
@@ -1400,11 +1441,22 @@ app.whenReady().then(() => {
     status.set({ live: false });
     passThrough();
     checkMic(false);
-    const blocked = status.get().mic === 'blocked';
-    send('session:error', {
-      message: blocked ? 'Mic blocked by ' + (MAC ? 'macOS' : 'Windows') + ' privacy'
-        : kind === 'silent' ? 'Mic silent — check mute or privacy' : 'No microphone — check Settings'
-    });
+    const mic = MAC ? require('./permissions-mac').micState() : null;
+    life.log('microphone', 'capture ' + (kind === 'silent' ? 'gave only silence' : 'did not open') + (why ? ' (' + String(why).slice(0, 40) + ')' : '') +
+      (MAC ? '; macOS status ' + mic : '; privacy ' + status.get().mic));
+    let message;
+    if (MAC && (mic === 'not-determined' || mic === 'asking')) {
+      require('./permissions-mac').requestMic('a dictation found no microphone', { again: true }).then(checkMacPermissions);
+      message = 'Allow the microphone in macOS’s dialog';
+    } else if (MAC && (mic === 'denied' || mic === 'restricted')) {
+      message = 'Microphone off for Typd in macOS — Fix…';
+      require('./permissions-mac').ensure('microphone');
+    } else {
+      const blocked = status.get().mic === 'blocked';
+      message = blocked ? 'Mic blocked by ' + (MAC ? 'macOS' : 'Windows') + ' privacy'
+        : kind === 'silent' ? 'Mic silent — check mute or privacy' : 'No microphone — check Settings';
+    }
+    send('session:error', { message });
   });
 
   ipcMain.on('overlay:cancel', () => {

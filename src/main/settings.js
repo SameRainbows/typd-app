@@ -44,7 +44,10 @@ const DEFAULTS = {
   // The first-run walkthrough (home window): 'due' on a fresh install until it has been shown once,
   // then 'done'; '' (never decided) becomes one of the two at launch (walkthroughFor). Fresh installs
   // only: an update, or any install that ran Typd before, never sees it (since 0.2.4).
-  walkthrough: ''
+  walkthrough: '',
+  // macOS: the places this Typd ran from, newest first, one per line (mac/app-location.js): copies that
+  // are gone are unregistered from LaunchServices, so macOS never ties Typd's permissions to them.
+  macAppPaths: ''
 };
 
 const VARIANTS = ['auto', 'full', 'light'];

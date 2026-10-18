@@ -370,6 +370,13 @@
         <div class="walk-bar" id="walkBar" hidden><span id="walkBarFill"></span></div>
         <button class="btn solid" type="button" id="walkModelNow" hidden>Download now</button>
       </div>
+      <!-- macOS, until macOS has allowed the microphone (home.js): one button that asks macOS. macOS lists
+           Typd under Privacy & Security › Microphone only after it asked, so this is what puts it there. -->
+      <div class="walk-model walk-mic" id="walkMic" role="status" aria-live="polite" hidden>
+        <p class="walk-model-text" id="walkMicText"></p>
+        <button class="btn solid" type="button" id="walkMicAllow" hidden>Allow microphone</button>
+        <button class="text" type="button" id="walkMicReset" hidden>Not in that list? Ask macOS again</button>
+      </div>
       <div class="walk-try" id="walkTry" hidden>
         <textarea id="walkPad" rows="3" spellcheck="false" aria-label="Practice box"></textarea>
         <p class="walk-hint" id="walkHint"></p>
