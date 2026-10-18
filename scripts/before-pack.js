@@ -18,17 +18,50 @@
  * no model at all. The folder holds only NO_MODEL.txt, so the app has no bundled model and
  * downloads the one its hardware suits at its first launch (src/main/modelUpdate.js). Tester
  * builds always bundle theirs (after-pack.js refuses the combination).
+ *
+ * Windows: llama.cpp too, into dist/.stage/llama/ (= build.win.extraResources' source): llama-server
+ * and the libraries it needs from vendor/llama (llama.cpp's CUDA release; none of the other tools'
+ * *-impl.dll), hard links again, and cuda.json naming the CUDA backend's files -- ggml-cuda.dll, cuBLAS,
+ * cuBLASLt, the CUDA runtime, 1.14 GB -- with their size and sha256 and the CUDA pack that holds them
+ * (scripts/llama-info.js; src/main/cudaPack.js reads it). TYPD_NO_BUNDLED_CUDA=1 (public installers,
+ * scripts/public-build.js): without those four files, so the app is llama.cpp's CPU build (every other
+ * file of the release is byte for byte the CPU build's) and fetches the CUDA pack after its model on a
+ * PC whose NVIDIA GPU takes the GPU path. Tester builds keep them.
  */
 
 const fs = require('fs');
 const path = require('path');
 
 const STAGE = path.join('dist', '.stage', 'models', 'typd-dictate');   // = build.extraResources[0].from
+const LLAMA_STAGE = path.join('dist', '.stage', 'llama');                // = build.win.extraResources[0].from
+
+function link(from, to) {
+  try { fs.linkSync(from, to); } catch { fs.copyFileSync(from, to); }
+}
+
+/** Windows: llama.cpp's files into dist/.stage/llama, without the CUDA backend for a public build; cuda.json beside them. */
+function stageLlama(projectDir) {
+  const info = require('./llama-info');
+  const src = path.join(projectDir, 'vendor', 'llama');
+  const dst = path.join(projectDir, LLAMA_STAGE);
+  const d = info.describe(src);
+  const noCuda = process.env.TYPD_NO_BUNDLED_CUDA === '1';
+  fs.rmSync(dst, { recursive: true, force: true });
+  fs.mkdirSync(dst, { recursive: true });
+  const names = noCuda ? d.cpuFiles : d.all;
+  for (const n of names) link(path.join(src, n), path.join(dst, n));
+  const desc = info.cudaJson(d);
+  if (desc) fs.writeFileSync(path.join(dst, 'cuda.json'), JSON.stringify(desc, null, 1) + '\n');
+  const mb = names.reduce((s, n) => s + fs.statSync(path.join(dst, n)).size, 0) / 1e6;
+  console.log(`  • typd: staged llama.cpp b${d.build} (${names.length} files, ${mb.toFixed(0)} MB)` +
+    (desc ? (noCuda ? `, CPU only: the CUDA backend comes as ${desc.pack} (TYPD_NO_BUNDLED_CUDA=1)` : `, with the CUDA backend (${desc.pack})`) : ', no CUDA backend in vendor/llama'));
+}
 
 module.exports = async function beforePack(context) {
   const projectDir = (context.packager && context.packager.projectDir) || process.cwd();
   const src = path.join(projectDir, 'models', 'typd-dictate');
   const dst = path.join(projectDir, STAGE);
+  if (context.electronPlatformName === 'win32') stageLlama(projectDir);
 
   if (process.env.TYPD_NO_BUNDLED_MODEL === '1') {
     fs.rmSync(dst, { recursive: true, force: true });

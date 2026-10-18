@@ -31,6 +31,7 @@ function preview40(text) {
  * @param {(id: string) => void} deps.statusAction             a click on the status line
  * @param {(term: string) => void} deps.forget                 undo a learned word
  * @param {() => string|null} [deps.modelLine]                 model-update line (modelUpdate.js)
+ * @param {() => string|null} [deps.packLine]                  the CUDA pack's line (modelUpdate.js), Windows
  * @param {() => {size: string, later: boolean}|null} [deps.modelPrompt]   a model download waiting for "Update now"
  * @param {() => void} [deps.modelNow]                         "Update now"
  * @param {() => void} [deps.modelLater]                       "Later" (asked again after a day)
@@ -92,11 +93,13 @@ function createTray(deps) {
     const update = deps.updateLine ? deps.updateLine() : null;
     // Tester builds and the developer's machines: which model, and whether it is updating.
     const model = deps.modelLine ? deps.modelLine() : null;
+    // Windows on the GPU path: the CUDA pack downloading after the model, or waiting for an answer.
+    const pack = deps.packLine ? deps.packLine() : null;
     // A big model download on a metered connection (or with "Ask before downloading new models"):
     // "Update now" / "Later". After Later, only "Update now" stays until it asks again.
     const prompt = deps.modelPrompt ? deps.modelPrompt() : null;
     const promptItems = prompt
-      ? [{ label: prompt.first ? `Download the speech model (${prompt.size})` : `New model available (${prompt.size}) — Update now`, click: () => deps.modelNow() },
+      ? [{ label: prompt.kind === 'pack' ? `Download GPU acceleration (${prompt.size})` : prompt.first ? `Download the speech model (${prompt.size})` : `New model available (${prompt.size}) — Update now`, click: () => deps.modelNow() },
         ...(prompt.later ? [] : [{ label: 'Later', click: () => deps.modelLater() }])]
       : [];
     // Where sharing exists (sharing.js): flag the last dictation, with its shortcut beside it.
@@ -108,6 +111,7 @@ function createTray(deps) {
     return Menu.buildFromTemplate([
       s.action ? { label: s.line, click: () => deps.statusAction(s.action.id) } : { label: s.line, enabled: false },
       ...(model ? [{ label: model, enabled: false }] : []),
+      ...(pack ? [{ label: pack, enabled: false }] : []),
       ...promptItems,
       ...(update ? [update.action && deps.updateAction
         ? { label: update.label, click: () => deps.updateAction(update.action) }

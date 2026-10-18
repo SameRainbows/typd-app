@@ -4,7 +4,7 @@
  * Make an app-update package from a packaged Typd: what src/main/appUpdate.js downloads, checks
  * and installs, and what dictation-research/scripts/publish_app_update.py signs and uploads.
  *
- *   node scripts/app-update-package.js win [--app dist/win-unpacked] [--out dist/update] [--with-llama]
+ *   node scripts/app-update-package.js win [--app dist/win-unpacked] [--out dist/update] [--carry-llama]
  *   node scripts/app-update-package.js mac --app dist/mac-arm64/Typd.app [--out dist/update]   (on a Mac)
  *
  * Writes <out>/Typd-<version>-update-<mac|win>-<arch>.zip and, beside it, <zip>.json: the record
@@ -16,10 +16,17 @@
  *     app update never changes the model (tester builds follow model updates, modelUpdate.js).
  *   - tester.json: a tester's upload key. Update packages are public. A tester build keeps its own
  *     through the update (carried over like the model).
- *   - Windows: llama.cpp (resources/llama, 1.2 GB of CUDA libraries), unless --with-llama. The
- *     package then names the tree it was built with (`requires`); an install with another one is
- *     told to reinstall rather than run a llama.cpp the app was not built for. Pass --with-llama
- *     whenever vendor/llama changes.
+ *   - Windows: llama.cpp's CUDA backend (the files resources/llama/cuda.json names: ggml-cuda.dll,
+ *     cuBLAS, cuBLASLt, the CUDA runtime, 1.14 GB). Since 0.2.5 the package holds the rest of llama.cpp
+ *     (its CPU build, ~43 MB, and cuda.json) and CARRIES those files over from the installed app, one
+ *     by one: an install from 0.2.4 or earlier, whose llama.cpp is the whole CUDA release, keeps its
+ *     CUDA backend through the update (no download), and one without them (a 0.2.5 public install)
+ *     simply has none carried (the helper skips a path the installed app lacks). The new version
+ *     checks what was carried against its own cuda.json before llama-server starts and deletes files
+ *     that are not its build's (src/main/cudaPack.js prepare()), then fetches the CUDA pack if the
+ *     hardware wants it. Nothing is `requires`d, so any install can take the package.
+ *     --carry-llama is the way before 0.2.5: llama.cpp left out whole and carried over, the package
+ *     naming the tree an install must have (`requires`; another one is told to reinstall).
  * Windows also carries the NSIS uninstaller, which the unpacked app does not have.
  *
  * macOS: taking the model out breaks the bundle's seal, so the copy is signed again, the way
@@ -122,7 +129,7 @@ function git(...a) {
 
 function main() {
   const kind = args[0];
-  if (kind !== 'win' && kind !== 'mac') die('usage: app-update-package.js win|mac [--app <path>] [--out <dir>] [--with-llama] [--version x.y.z]');
+  if (kind !== 'win' && kind !== 'mac') die('usage: app-update-package.js win|mac [--app <path>] [--out <dir>] [--carry-llama] [--version x.y.z]');
   const want = opt('--version', require(path.join(ROOT, 'package.json')).version);
   if (!/^\d+\.\d+\.\d+$/.test(want)) die('the version must look like 0.1.0, not ' + want);
   const out = path.resolve(opt('--out', path.join(ROOT, 'dist', 'update')));
@@ -139,14 +146,21 @@ function main() {
     if (!version) die(`cannot read the version from ${asar} (pass --trust-version only for a test app)`);
     platform = 'win32-x64';
     appName = 'Typd';
-    const withLlama = flag('--with-llama');
-    skip = ['resources/models', 'resources/tester.json', ...(withLlama ? [] : ['resources/llama'])];
-    carry = ['resources/models/typd-dictate', 'resources/tester.json', 'Uninstall Typd.exe', ...(withLlama ? [] : ['resources/llama'])];
-    if (!withLlama) {
-      const llama = path.join(app, 'resources', 'llama');
-      if (!fs.existsSync(llama)) die(`${llama} is missing: without --with-llama the package needs the tree to name`);
+    const llama = path.join(app, 'resources', 'llama');
+    if (!fs.existsSync(path.join(llama, 'llama-server.exe'))) die(`${llama} has no llama-server.exe`);
+    if (flag('--carry-llama')) {
+      skip = ['resources/models', 'resources/tester.json', 'resources/llama'];
+      carry = ['resources/models/typd-dictate', 'resources/tester.json', 'Uninstall Typd.exe', 'resources/llama'];
       console.log('  hashing resources/llama (the tree an install must have to take this package)...');
       requires = { 'resources/llama': treeHash(llama) };
+    } else {
+      // The CUDA backend's files, by cuda.json (an older layout without one: by name).
+      let names = [];
+      try { names = JSON.parse(fs.readFileSync(path.join(llama, 'cuda.json'), 'utf8')).files.map((f) => f.name); } catch { /* by name */ }
+      if (!names.length) names = ['ggml-cuda.dll', 'cublas64_12.dll', 'cublasLt64_12.dll', 'cudart64_12.dll'];
+      const cudaRel = names.map((n) => 'resources/llama/' + n);
+      skip = ['resources/models', 'resources/tester.json', ...cudaRel];
+      carry = ['resources/models/typd-dictate', 'resources/tester.json', 'Uninstall Typd.exe', ...cudaRel];
     }
   } else {
     if (process.platform !== 'darwin') die('a macOS package is made on a Mac (it is signed ad hoc again)');

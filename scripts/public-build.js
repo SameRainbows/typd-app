@@ -4,13 +4,15 @@
 /**
  * Public builds: an app anyone may download, so it must carry no key (docs/PUBLIC_BETA.md).
  *
- *   node scripts/public-build.js win [--dir] [--out dist/public] [--with-model]
+ *   node scripts/public-build.js win [--dir] [--out dist/public] [--with-model] [--with-cuda]
  *       Windows: electron-builder --win nsis --x64 into dist/public as Typd-Setup-<version>.exe
  *       (no spaces: the download route takes 1-128 of A-Z a-z 0-9 . _ -), with every tester
  *       variable cleared, then `verify` on the unpacked app the installer was made from.
  *       Since 0.2.5 WITHOUT the dictation model (TYPD_NO_BUNDLED_MODEL=1): the app downloads the
  *       one its hardware suits at first launch (src/main/modelUpdate.js). --with-model bundles
- *       models/typd-dictate as before.
+ *       models/typd-dictate as before. And WITHOUT llama.cpp's CUDA backend (TYPD_NO_BUNDLED_CUDA=1,
+ *       1.14 GB unpacked): the app is llama.cpp's CPU build and a PC on the GPU path fetches the
+ *       CUDA pack after its model (src/main/cudaPack.js). --with-cuda bundles it as before.
  *       --dir makes only the unpacked app (no installer, no record): a quick check of the pipeline.
  *
  *   node scripts/public-build.js verify --app <app> --platform <win-x64|mac-arm64|mac-x64> [--installer <file>]
@@ -29,6 +31,9 @@
  *                       build, the default since 0.2.5): no .gguf anywhere in the app, no model.json,
  *                       and llama-server is there (also as model_absent / bundled_model: false).
  *                       --expect-model yes|no makes the kind itself a check.
+ *   cuda_ok             Windows: resources/llama/cuda.json names the CUDA backend and its pack, and
+ *                       either every file it names is there (bundled_cuda) or none is (the CUDA pack
+ *                       is fetched: the default since 0.2.5). --expect-cuda yes|no makes the kind a check.
  *   known keys          every key this machine knows -- tester*.json in this checkout and the main one,
  *                       this machine's model-updates.json reader key, dictation-research's admin key,
  *                       $TYPD_COLLECT_ADMIN_KEY -- is searched for, byte for byte, in every file of
@@ -62,7 +67,7 @@ function args(argv) {
     const a = argv[i];
     if (a.startsWith('--')) {
       const k = a.slice(2);
-      if (['dir', 'with-model'].includes(k)) out[k] = true;
+      if (['dir', 'with-model', 'with-cuda'].includes(k)) out[k] = true;
       else out[k] = argv[++i];
     } else out._.push(a);
   }
@@ -193,8 +198,9 @@ function gitInfo() {
   } catch { return { commit: null, dirty: null, ci_run: null }; }
 }
 
-function verify({ app, platform, installer, expectModel = null }) {
+function verify({ app, platform, installer, expectModel = null, expectCuda = null }) {
   if (expectModel && !['yes', 'no'].includes(expectModel)) fail('--expect-model takes yes or no');
+  if (expectCuda && !['yes', 'no'].includes(expectCuda)) fail('--expect-cuda takes yes or no');
   if (!app || !fs.existsSync(app)) fail('--app must name the packaged app (win-unpacked, or Typd.app)');
   if (!/^(win-x64|mac-arm64|mac-x64)$/.test(platform || '')) fail('--platform must be win-x64, mac-arm64 or mac-x64');
   const mac = platform.startsWith('mac');
@@ -248,6 +254,25 @@ function verify({ app, platform, installer, expectModel = null }) {
     problems.push(expectModel === 'yes' ? 'expected a bundled model; this build has none' : 'expected a model-less build; this one bundles ' + (spec && spec.model));
   }
 
+  // 3b. Windows: llama.cpp's CUDA backend, all of it (bundled) or none of it (the CUDA pack)
+  let cudaDesc = null;
+  if (!mac) {
+    const llama = path.dirname(server);
+    try { cudaDesc = JSON.parse(fs.readFileSync(path.join(llama, 'cuda.json'), 'utf8')); } catch { /* below */ }
+    const names = cudaDesc && Array.isArray(cudaDesc.files) ? cudaDesc.files.map((f) => f.name) : [];
+    const present = names.filter((n) => sizeOf(path.join(llama, n)) > 0);
+    const stray = entries.filter((e) => !e.dir && /^(ggml-cuda|cublas(Lt)?64_\d+|cudart64_\d+)\.dll$/i.test(e.name) && !names.includes(e.name)).map((e) => path.relative(app, e.p));
+    checks.cuda_pack = cudaDesc ? cudaDesc.pack : null;
+    checks.bundled_cuda = names.length > 0 && present.length === names.length;
+    checks.cuda_ok = Boolean(cudaDesc && cudaDesc.pack && names.length && (present.length === 0 || present.length === names.length) && !stray.length);
+    if (!cudaDesc) problems.push('resources/llama/cuda.json is missing: the app would not know its CUDA pack');
+    else if (present.length && present.length !== names.length) problems.push('part of the CUDA backend is in the app: ' + present.join(', '));
+    if (stray.length) problems.push('CUDA libraries cuda.json does not name: ' + stray.join(', '));
+    if (expectCuda && cudaDesc && (expectCuda === 'yes') !== checks.bundled_cuda) {
+      problems.push(expectCuda === 'yes' ? 'expected the CUDA backend in the app; it has none' : 'expected no CUDA backend in the app (the CUDA pack); it has ' + present.join(', '));
+    }
+  }
+
   // 4. every key this machine knows, byte for byte, in every file
   const keys = knownKeys();
   checks.known_keys_scanned = keys.length;
@@ -278,6 +303,7 @@ function verify({ app, platform, installer, expectModel = null }) {
       record = {
         schema: SCHEMA, file: name, size: fs.statSync(installer).size, sha256: sha256File(installer), platform, app_version: appVersion,
         model: spec ? spec.model : null, mmproj: spec ? spec.mmproj : null, model_bytes: modelBytes + mmprojBytes, bundled_model: Boolean(spec),
+        ...(mac ? {} : { bundled_cuda: Boolean(checks.bundled_cuda), cuda_pack: checks.cuda_pack || null }),
         installed_bytes: entries.filter((e) => !e.dir).reduce((s, e) => s + sizeOf(e.p), 0),
         commit: git.commit, dirty: git.dirty, ci_run: git.ci_run, built_at: new Date().toISOString(), checks, ok: true
       };
@@ -303,7 +329,7 @@ function verify({ app, platform, installer, expectModel = null }) {
 
 /* --------------------------------------------------------------------- win */
 
-function buildWin({ dir, out, withModel }) {
+function buildWin({ dir, out, withModel, withCuda }) {
   const outDir = path.resolve(ROOT, out || path.join('dist', 'public'));
   const env = { ...process.env };
   for (const v of TESTER_VARS) if (env[v]) { console.log(`public-build: ${v} is set; ignored for a public build`); delete env[v]; }
@@ -314,12 +340,13 @@ function buildWin({ dir, out, withModel }) {
   } else {
     env.TYPD_NO_BUNDLED_MODEL = '1';
   }
+  if (withCuda) delete env.TYPD_NO_BUNDLED_CUDA; else env.TYPD_NO_BUNDLED_CUDA = '1';
   if (!fs.existsSync(path.join(ROOT, 'vendor', 'llama', 'llama-server.exe'))) fail('vendor/llama/llama-server.exe is missing');
   const cli = path.join(ROOT, 'node_modules', 'electron-builder', 'cli.js');
   if (!fs.existsSync(cli)) fail('node_modules/electron-builder is missing: npm ci first');
   const version = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
   const installer = path.join(outDir, `Typd-Setup-${version}.exe`);
-  console.log(`public-build: Windows ${dir ? 'app folder only (--dir)' : 'installer'} with ${spec.model} into ${path.relative(ROOT, outDir)}`);
+  console.log(`public-build: Windows ${dir ? 'app folder only (--dir)' : 'installer'} with ${spec.model}, ${withCuda ? 'with' : 'without'} the CUDA backend, into ${path.relative(ROOT, outDir)}`);
 
   // A leftover win-unpacked from an earlier build would be checked instead of this one's.
   fs.rmSync(path.join(outDir, 'win-unpacked'), { recursive: true, force: true });
@@ -330,7 +357,7 @@ function buildWin({ dir, out, withModel }) {
   if (r.status !== 0) fail('electron-builder failed');
   const app = path.join(outDir, 'win-unpacked');
   if (!dir && !fs.existsSync(installer)) fail(`electron-builder did not make ${installer}`);
-  verify({ app, platform: 'win-x64', installer: dir ? null : installer, expectModel: withModel ? 'yes' : 'no' });
+  verify({ app, platform: 'win-x64', installer: dir ? null : installer, expectModel: withModel ? 'yes' : 'no', expectCuda: withCuda ? 'yes' : 'no' });
 }
 
 /* -------------------------------------------------------------------- main */
@@ -338,9 +365,9 @@ function buildWin({ dir, out, withModel }) {
 if (require.main === module) {
   const a = args(process.argv.slice(2));
   const cmd = a._[0];
-  if (cmd === 'win') buildWin({ dir: a.dir, out: a.out, withModel: a['with-model'] });
-  else if (cmd === 'verify') verify({ app: a.app, platform: a.platform, installer: a.installer, expectModel: a['expect-model'] || null });
-  else fail('usage: node scripts/public-build.js win [--dir] [--out dist/public] [--with-model]\n       node scripts/public-build.js verify --app <app> --platform <win-x64|mac-arm64|mac-x64> [--installer <file>] [--expect-model yes|no]');
+  if (cmd === 'win') buildWin({ dir: a.dir, out: a.out, withModel: a['with-model'], withCuda: a['with-cuda'] });
+  else if (cmd === 'verify') verify({ app: a.app, platform: a.platform, installer: a.installer, expectModel: a['expect-model'] || null, expectCuda: a['expect-cuda'] || null });
+  else fail('usage: node scripts/public-build.js win [--dir] [--out dist/public] [--with-model] [--with-cuda]\n       node scripts/public-build.js verify --app <app> --platform <win-x64|mac-arm64|mac-x64> [--installer <file>] [--expect-model yes|no] [--expect-cuda yes|no]');
 }
 
 module.exports = { verify, readAsar, knownKeys, KEY_FILE };

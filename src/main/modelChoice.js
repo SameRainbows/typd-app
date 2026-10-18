@@ -43,14 +43,24 @@ function createChoice({ setting = () => 'auto', detect = () => hardware.detect()
     return (await auto()).variant;
   }
 
-  /** For Settings: {setting, auto, why, variant} -- the choice, Automatic's answer and its reason, the result. */
+  /**
+   * Does this computer take the GPU path (hardware.js cuda(): Windows, an NVIDIA GPU with 3.5 GB or
+   * more)? Then the CUDA pack is fetched after the model (cudaPack.js). The hardware decides, whatever
+   * Settings pins: the CUDA pack makes either model faster on such a GPU.
+   */
+  async function cuda() {
+    return hardware.cuda((await auto()).hw).cuda;
+  }
+
+  /** For Settings: {setting, auto, why, variant, cuda, cudaWhy} -- the choice, Automatic's answer and its reason, the result, the GPU path. */
   async function describe() {
     const a = await auto();
     const s = chosen();
-    return { setting: s, auto: a.variant, why: a.why, variant: s === 'auto' ? a.variant : s };
+    const c = hardware.cuda(a.hw);
+    return { setting: s, auto: a.variant, why: a.why, variant: s === 'auto' ? a.variant : s, cuda: c.cuda, cudaWhy: c.why };
   }
 
-  return { variant, describe, forget: () => { cache = null; } };
+  return { variant, cuda, describe, forget: () => { cache = null; } };
 }
 
 module.exports = { createChoice, CHOICES, CACHE_MS };

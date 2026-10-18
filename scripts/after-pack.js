@@ -6,6 +6,8 @@
  *
  * Every platform: refuse to ship an app that cannot dictate -- the model named by the
  * packaged model.json, its mmproj and llama-server must all be in the resources folder.
+ * Windows: with TYPD_NO_BUNDLED_CUDA=1 (public installers) no CUDA backend file may be in it and
+ * cuda.json must name the pack the app fetches instead; otherwise every file cuda.json names is there.
  * With TYPD_TESTER_CONFIG=<path to a tester.json>, ship it as <resources>/tester.json,
  * which makes a tester build (src/main/sharing.js); without it, make sure there is none.
  *
@@ -117,6 +119,26 @@ async function afterPack(context) {
       if (!fs.existsSync(f) || fs.statSync(f).size === 0) throw new Error(`Packaged app is missing ${f}`);
     }
     console.log(`  • typd: ${platform}/${arch} resources ok (model ${spec.model}, ${path.basename(server)})`);
+  }
+
+  // --- Windows: llama.cpp's CUDA backend, in the app or (public installers) not -------------
+  // cuda.json (scripts/before-pack.js) names its files; TYPD_NO_BUNDLED_CUDA=1 means none of them may
+  // be in the app (the CUDA pack brings them: src/main/cudaPack.js), otherwise all of them.
+  if (!mac) {
+    const llama = path.dirname(server);
+    let desc = null;
+    try { desc = JSON.parse(fs.readFileSync(path.join(llama, 'cuda.json'), 'utf8')); } catch { /* none */ }
+    const names = desc && Array.isArray(desc.files) ? desc.files.map((f) => f.name) : [];
+    const present = names.filter((n) => fs.existsSync(path.join(llama, n)));
+    if (process.env.TYPD_NO_BUNDLED_CUDA === '1') {
+      if (!desc) throw new Error(`TYPD_NO_BUNDLED_CUDA=1, but ${llama} has no cuda.json: the app could not fetch its CUDA pack`);
+      if (present.length) throw new Error(`TYPD_NO_BUNDLED_CUDA=1, but ${llama} holds ${present.join(', ')}`);
+      console.log(`  • typd: llama.cpp CPU build (the CUDA backend comes as the CUDA pack ${desc.pack})`);
+    } else if (desc) {
+      const missing = names.filter((n) => !present.includes(n));
+      if (missing.length) throw new Error(`${llama} is missing the CUDA backend's ${missing.join(', ')}`);
+      console.log(`  • typd: llama.cpp with its CUDA backend (${desc.pack})`);
+    }
   }
 
   // --- tester builds: TYPD_TESTER_CONFIG names a tester.json to ship ---------------------

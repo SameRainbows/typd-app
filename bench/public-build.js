@@ -47,6 +47,9 @@ function asar(files) {
   return Buffer.concat([sp, hp, ...blobs]);
 }
 
+const CUDA_FILES = [['ggml-cuda.dll', crypto.randomBytes(3000)], ['cublas64_12.dll', crypto.randomBytes(2000)], ['cublasLt64_12.dll', crypto.randomBytes(2500)], ['cudart64_12.dll', crypto.randomBytes(500)]];
+const withCuda = (app) => { for (const [name, b] of CUDA_FILES) fs.writeFileSync(path.join(app, 'resources', 'llama', name), b); };
+
 /** A fake win-unpacked folder and installer; `change(app)` spoils it. */
 function fakeApp(name, change = () => {}, asarExtra = {}) {
   const app = path.join(tmp, name, 'win-unpacked');
@@ -64,6 +67,9 @@ function fakeApp(name, change = () => {}, asarExtra = {}) {
   fs.writeFileSync(path.join(res, 'models', 'typd-dictate', 'm.gguf'), crypto.randomBytes(3 * 1024 * 1024));
   fs.writeFileSync(path.join(res, 'models', 'typd-dictate', 'mm.gguf'), crypto.randomBytes(1024 * 1024));
   fs.writeFileSync(path.join(res, 'llama', 'llama-server.exe'), crypto.randomBytes(8192));
+  // Since 0.2.5: cuda.json names the CUDA backend the app fetches as its pack (none of its files here).
+  fs.writeFileSync(path.join(res, 'llama', 'cuda.json'), JSON.stringify({ schema: 'typd-cuda/1', pack: 'cuda-b1-cu12.4', llama: { build: 1, commit: 'abc' }, cuda: '12.4',
+    files: CUDA_FILES.map(([name, b]) => ({ name, size: b.length, sha256: crypto.createHash('sha256').update(b).digest('hex') })) }));
   change(app);
   const installer = path.join(tmp, name, 'Typd-Setup-9.9.9.exe');
   fs.writeFileSync(installer, crypto.randomBytes(2 * 1024 * 1024));
@@ -72,8 +78,9 @@ function fakeApp(name, change = () => {}, asarExtra = {}) {
 
 const keyFile = path.join(tmp, 'tester.bench.json');
 fs.writeFileSync(keyFile, JSON.stringify({ tester: 'bench', key: KEY }));
-function verify(app, installer, platform = 'win-x64', expect = null) {
-  const r = spawnSync(process.execPath, [SCRIPT, 'verify', '--app', app, '--platform', platform, ...(installer ? ['--installer', installer] : []), ...(expect ? ['--expect-model', expect] : [])], {
+function verify(app, installer, platform = 'win-x64', expect = null, expectCuda = null) {
+  const r = spawnSync(process.execPath, [SCRIPT, 'verify', '--app', app, '--platform', platform, ...(installer ? ['--installer', installer] : []), ...(expect ? ['--expect-model', expect] : []),
+    ...(expectCuda ? ['--expect-cuda', expectCuda] : [])], {
     encoding: 'utf8', env: { ...process.env, TYPD_PUBLIC_EXTRA_KEY_FILES: keyFile }
   });
   const out = (r.stdout || '') + (r.stderr || '');
@@ -192,6 +199,27 @@ print(json.dumps(pa.public_record_problems(p, len(b), hashlib.sha256(b).hexdiges
   a = fakeApp('no-server', (app) => { modelLess(app); fs.rmSync(path.join(app, 'resources', 'llama', 'llama-server.exe')); });
   r = verify(a.app, a.installer, 'win-x64', 'no');
   check(r.status === 1 && /llama-server is missing/.test(r.out), 'model-less without llama-server: fails', r.out);
+
+  // 9c. the CUDA backend (0.2.5): none of it in a public app, cuda.json naming its pack
+  a = fakeApp('nocuda', modelLess);
+  r = verify(a.app, a.installer, 'win-x64', 'no', 'no');
+  const crec = fs.existsSync(a.installer + '.public.json') ? JSON.parse(fs.readFileSync(a.installer + '.public.json', 'utf8')) : null;
+  check(r.status === 0 && crec && crec.bundled_cuda === false && crec.cuda_pack === 'cuda-b1-cu12.4' && crec.checks.cuda_ok === true,
+    'no CUDA file, cuda.json there: passes; the record says bundled_cuda false and names the pack', r.out);
+  a = fakeApp('withcuda', (app) => { modelLess(app); withCuda(app); });
+  r = verify(a.app, a.installer, 'win-x64', 'no', 'no');
+  check(r.status === 1 && /expected no CUDA backend/.test(r.out), '--expect-cuda no on an app with the CUDA backend: fails', r.out);
+  r = verify(a.app, a.installer, 'win-x64', 'no', 'yes');
+  check(r.status === 0, '--expect-cuda yes on it: passes', r.out);
+  a = fakeApp('partcuda', (app) => { modelLess(app); withCuda(app); fs.rmSync(path.join(app, 'resources', 'llama', 'cublasLt64_12.dll')); });
+  r = verify(a.app, a.installer, 'win-x64', 'no');
+  check(r.status === 1 && /part of the CUDA backend/.test(r.out), 'part of the CUDA backend: fails', r.out);
+  a = fakeApp('nocudajson', (app) => { modelLess(app); fs.rmSync(path.join(app, 'resources', 'llama', 'cuda.json')); });
+  r = verify(a.app, a.installer, 'win-x64', 'no');
+  check(r.status === 1 && /cuda\.json is missing/.test(r.out), 'no cuda.json (the app would not know its pack): fails', r.out);
+  a = fakeApp('straycuda', (app) => { modelLess(app); fs.writeFileSync(path.join(app, 'resources', 'cudart64_13.dll'), 'x'); });
+  r = verify(a.app, a.installer, 'win-x64', 'no');
+  check(r.status === 1 && /CUDA libraries cuda\.json does not name/.test(r.out), 'a CUDA library cuda.json does not name: fails', r.out);
 
   // 10. the asar reader on a real build, if there is one
   let main = ROOT;
