@@ -1,6 +1,6 @@
 {
   "name": "typd",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "private": true,
   "description": "Voice dictation you can talk back to.",
   "license": "GPL-3.0-only",

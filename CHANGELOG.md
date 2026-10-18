@@ -1,5 +1,10 @@
 # What's new
 
+## 0.2.9 · October 2026
+
+- **One download: the model that suits your computer.** A new install now downloads only the model Typd picks for its hardware — the full model on a PC with a strong NVIDIA GPU or a Mac with 16 GB or more, the Light model otherwise — instead of fetching the Light model first on a slow connection. A PC with an NVIDIA GPU still gets its GPU libraries before the full model starts, so the full model never runs slowly on the processor. An install that was already using the Light model while the full one downloaded simply finishes, and the Light model is removed afterwards.
+- **On a Mac, this update also brings everything from 0.2.7 and 0.2.8 below.**
+
 ## 0.2.8 · October 2026
 
 - **Sharing is your choice.** A new install asks on its first screen whether to share your dictations (audio and text) to help train Typd's model, with nothing pre-selected, and shares nothing until you choose **Share**. A recent install that was never asked sees the same short question once; choosing **Don't share** there also deletes anything it had already shared. You can change it anytime in Settings.

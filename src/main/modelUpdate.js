@@ -93,25 +93,15 @@
  * llama-server does not start with is set aside (cudaPack markBad) and not fetched again until the
  * manifest changes; Typd stays on the processor. Typd before 0.2.5 ignores the field.
  *
- * Light first, full later (0.2.6). A fresh install (no model at all) whose Automatic pick is the full
- * model starts downloading the full model as before and times it for PROBE_MS. If the rest of it -- with
- * the CUDA pack's bytes on the GPU path -- would take more than LIGHT_FIRST_ABOVE_MS at that speed, the
- * full download is paused (its partial file kept) and the light model is fetched with the whole link,
- * switched to, and dictation starts; then the CUDA pack (GPU path), then the rest of the full model,
- * resumed with Range from where it paused, never from zero (pausing rather than fetching both at once
- * gets the light model in soonest on a slow link, which is when this runs at all), and unthrottled like
- * the first model. The switch to the full model is the usual one (activate: when nothing has been
- * dictated for IDLE_MS). A fast link gets no light model at all. state.json "lightFirst" {light, full}
- * marks the light model as standing in (Home says so: interim()); it keeps the paused download through
- * tidy() and a restart, and goes once the full model has had its good start (confirm), when the light
- * model is then deleted like any previous version (the updater keeps one downloaded version; until that
- * start the light one is current.json's "previous", what a failed start goes back to). A failed or cut
- * full download leaves the light model in use and resumes at the next check.
- *   Only for Automatic (`automatic()`): a Settings pin of Full downloads only the full model, as asked.
- *   Only when the light model needs no question: on a metered connection, or with "Ask before
- * downloading new models", the light model is not fetched (nor asked for: the person has just answered
- * for the full one) and the full model comes as in 0.2.5. Only when the light model is smaller than what
- * is left of the full one (and the pack), and there is disk space for both.
+ * Only the model the hardware picks (0.2.9, the user's rule). Typd downloads the variant `variant()`
+ * names and nothing else: a computer Automatic gives the full model downloads the full model straight
+ * away, however slow the link; one it gives the light model downloads the light one. 0.2.6-0.2.8 could
+ * fetch the light model first as a stand-in on a slow link ("light first"); that never starts any more.
+ * An install left in that state (state.json "lightFirst" {light, full}: the light model standing in, or
+ * the full download paused before the light one arrived) is finished, not repeated: the full model is
+ * fetched (resumed with Range), switched to at the next idle moment (activate), and the light one goes
+ * once the full model has had its good start (confirm), like any previous version; Home says so meanwhile
+ * (interim()). tidy() keeps both of its folders until then.
  *
  * Never the full model on the processor while the GPU path is pending (0.2.6): on a machine whose
  * hardware takes the GPU path, with the CUDA pack published for this build, not here and not set aside,
@@ -160,9 +150,6 @@ const OFFLINE_POLL_MS = 15e3;
 // What the first download is about, before the manifest says exactly: the live versions' sizes
 // (r24_1p7b_rev128 with its mmproj and adapter: 1,602,588,192 B; light_soup_r20kd: 611,092,960 B).
 const EXPECTED_BYTES = { full: 1.6e9, light: 611e6 };
-// Light first, full later: see above. Tests shrink both.
-const PROBE_MS = 10e3;                   // the first full-model download is timed for this long, then
-const LIGHT_FIRST_ABOVE_MS = 180e3;      // if the rest (with the CUDA pack) would take longer, the light model goes first
 
 /* ------------------------------------------------------------ on-disk layout */
 
@@ -401,9 +388,8 @@ class Paused extends Retry {
  *   switchBackend () => Promise: restart llama-server on the backend now there (the pack just installed,
  *                 or none after it was set aside); rejects if it does not come up
  *   automatic     () => boolean (or a Promise of it): `variant` is Automatic's pick, not a Settings pin
- *                 (modelChoice.automatic). Light first, and the light model when the CUDA pack is set
- *                 aside, are Automatic's only; default false (as before 0.2.6)
- *   probeMs, lightFirstAboveMs   light first's timing window and threshold (PROBE_MS, LIGHT_FIRST_ABOVE_MS)
+ *                 (modelChoice.automatic). The light model when the CUDA pack is set aside is
+ *                 Automatic's only; default false (as before 0.2.6)
  */
 function createUpdater({
   config, modelsDir, bundledDir, appVersion = '0.0.0', fetch = globalThis.fetch, busy = () => false,
@@ -415,7 +401,7 @@ function createUpdater({
   firstNeedMs = FIRST_NEED_MS, needBackoffMinMs = NEED_BACKOFF_MIN_MS, needBackoffMaxMs = NEED_BACKOFF_MAX_MS,
   needEveryMs = NEED_EVERY_MS, offlinePollMs = OFFLINE_POLL_MS, expectedBytes = EXPECTED_BYTES,
   cuda = null, cudaWanted = () => false, switchBackend = async () => {}, random = Math.random,
-  automatic = () => false, probeMs = PROBE_MS, lightFirstAboveMs = LIGHT_FIRST_ABOVE_MS
+  automatic = () => false
 }) {
   const cadence = createCadence({ everyMs, now, random });
   // "Check for updates": promises waiting for this check's first verdict ({outcome, ...}; notePhase).
@@ -1002,80 +988,6 @@ function createUpdater({
   }
 
   /**
-   * Light first: may the light model go first on this fresh install? The light entry of `m` if the full
-   * model `e` is Automatic's pick, the manifest has a light one this app can follow (not the same
-   * version, not set aside as bad under this manifest); else null. (The connection is judged later.)
-   */
-  async function lightCandidate(m, tag, e) {
-    let auto = false;
-    try { auto = Boolean(await automatic()); } catch { auto = false; }
-    if (!auto) return null;
-    const { entry: l, variant: lv } = selectVariant(m, 'light');
-    if (lv !== 'light' || l.version === e.version || older(appVersion, l.min_app)) return null;
-    const s = readState();
-    if (s.bad && s.bad.manifest === tag && s.bad.version === l.version) return null;
-    return l;
-  }
-
-  /**
-   * The full model `e`, timed: downloaded for probeMs, then -- if the rest of it and `packNeed` bytes of
-   * CUDA pack would take more than lightFirstAboveMs at that speed, the light model `light` is smaller
-   * than that rest, needs no question on this connection and fits on the disk with it -- paused (its
-   * partial file kept). Resolves 'done' (the full model is here) or 'slow' (paused: the light one first).
-   */
-  async function fetchTimed(e, tag, light, packNeed) {
-    const ctl = new AbortController();
-    const t0 = Date.now(), b0 = netBytes;
-    const left0 = await bytesToFetch(e);
-    let over = false, slow = false;
-    const decide = async () => {
-      const ms = Math.max(1, Date.now() - t0), got = netBytes - b0;
-      const rest = Math.max(0, left0 - got) + packNeed;
-      const eta = got > 0 ? (rest * ms) / got : Infinity;
-      const say = (...a) => log('light first?', ...a, '(' + fmtSize(rest) + ' to go, about', Number.isFinite(eta) ? Math.round(eta / 1000) + ' s' : 'forever', 'at this speed)');
-      if (eta <= lightFirstAboveMs) return say('no: the full model keeps going');
-      const lightNeed = await bytesToFetch(light);
-      if (lightNeed >= rest) return say('no: the light model is no smaller than what is left');
-      if (await mustAsk(light, lightNeed)) return say('no: the light model would need an OK on this connection');
-      let free = Infinity;
-      try { const st = await statfs(modelsDir); free = Number(st.bavail) * Number(st.bsize); } catch { /* unknown: try */ }
-      if (free < (lightNeed + rest) * SPACE_FACTOR) return say('no: not enough disk space for both');
-      if (over) return;
-      say('yes: the full model pauses,', fmtSize(lightNeed), 'of light model first');
-      slow = true;
-      ctl.abort();
-    };
-    const timer = setTimeout(() => { decide().catch((err) => log('light first: could not decide:', err && err.message)); }, probeMs);
-    try {
-      await fetchVersion(e, tag, { pause: ctl.signal });
-      return 'done';
-    } catch (err) {
-      if (slow && err instanceof Paused) return 'slow';
-      throw err;
-    } finally {
-      over = true;
-      clearTimeout(timer);
-    }
-  }
-
-  /**
-   * Light first: the light model `light` fetched (unthrottled: there is no model yet) and switched to,
-   * standing in for the full model `full` (state.json "lightFirst"). True once it runs.
-   */
-  async function standIn(light, full, tag) {
-    const s = readState();
-    s.lightFirst = { light: light.version, full: full.version, at: new Date(now()).toISOString() };
-    await writeState(s);
-    fetchingLight = light.version;
-    target = light.version;
-    log('light first:', light.version, 'stands in for', full.version, 'so dictation can start');
-    if (!isComplete(dirOf(light.version))) await fetchVersion(light, tag);
-    const r = await activate(light.version, tag, light.version, 'light', { variant: 'light' });
-    fetchingLight = null;
-    return r.state === 'current';
-  }
-
-  /**
    * The CUDA pack before the full model's first start (no model yet, the GPU path pending): downloaded,
    * checked and unpacked, not switched to (there is nothing running to switch). 'installed'; 'ask' when it
    * waits for the person's OK (the full model then starts on the processor, as in 0.2.5); 'failed' when
@@ -1167,29 +1079,16 @@ function createUpdater({
       notePhase({ outcome: 'downloading', what: 'model', version: e.version });
       // No model yet: the CUDA pack this full model will wait for (its bytes count in needed() and the timing).
       const pack = first && got === 'full' ? await pendingPack(m, tag) : null;
-      let packNeed = 0;
       if (pack) {
         const f = pack.files[0];
         const have = await fsp.stat(path.join(cuda.packsDir, pack.version + '.partial', f.name)).then((st) => Math.min(st.size, f.size), () => 0);
-        packNeed = f.size - have;
         firstPack = true;
         packProgress = { done: have, total: f.size };
       }
-      const light = first && got === 'full' ? await lightCandidate(m, tag, e) : null;
-      if (light) {
-        // Decided once already (a restart, a retry): the light model straight away.
-        const decided = lf && lf.full === e.version && lf.light === light.version;
-        if (decided || (await fetchTimed(e, tag, light, packNeed)) === 'slow') {
-          firstPack = false;
-          if (await standIn(light, e, tag)) return { state, more: true };   // the CUDA pack, then the rest of the full model
-          if (pack) firstPack = true;   // the light model did not start: the full one after all
-          await fetchVersion(e, tag);
-        }
-      } else {
-        // Unthrottled: the full model while the light one stands in, and the light one replacing a full
-        // model left on the processor (the CUDA pack set aside), like the first model and the pack.
-        await fetchVersion(e, tag, { hurry: standingIn(active) || (got === 'light' && asideTag === tag) });
-      }
+      // Only the model the hardware picks (0.2.9): never the light one as a stand-in, however slow the
+      // link. Unthrottled: the first model, the full model while a light one from 0.2.6-0.2.8 still stands
+      // in, and the light one replacing a full model left on the processor (the CUDA pack set aside).
+      await fetchVersion(e, tag, { hurry: standingIn(active) || (got === 'light' && asideTag === tag) });
     } else {
       notePhase({ outcome: 'downloading', what: 'model', version: e.version });
     }
@@ -1708,5 +1607,5 @@ const packInfo = () => (main ? main.packInfo() : null);
 module.exports = {
   start, line, needed, interim, following, pending, approve, later, recheck, chosen, packLine, packInfo, checkNow,
   createUpdater, activeModel, activeVersion, versionOf, readCurrent, isComplete, checkManifest, checkSignature, selectVariant, selectPack, fmtSize, labelOf, older, sha256File, readConfig, findConfig,
-  ENDPOINT, SIG_PREFIX, ASK_ABOVE_BYTES, LATER_MS, EXPECTED_BYTES, PROBE_MS, LIGHT_FIRST_ABOVE_MS
+  ENDPOINT, SIG_PREFIX, ASK_ABOVE_BYTES, LATER_MS, EXPECTED_BYTES
 };

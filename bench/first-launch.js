@@ -156,6 +156,20 @@ check('0.2.6 installed over 0.2.5 by the installer (settings and a model kept): 
 r = launch(folder({}), false, '0.2.6');
 check('0.2.6, a fresh install: due', r.fresh === true && r.now === 'due', r);
 
+// 0.2.9: an update from 0.2.8 (Windows; sharing answered or on, a model and maybe the pack), and on a Mac
+// from 0.2.6 or 0.2.7 straight to 0.2.9 -- never the walkthrough; a fresh 0.2.9 install: due.
+const S028 = { ...S025, share: 'on', shareAsk: 'done', lowMemory: 'auto' };
+for (const from of ['0.2.8', '0.2.7', '0.2.6']) {
+  r = launch(folder({ 'typd/settings.json': S028, ...HISTORY, ...MODEL, ...PACK, 'typd/app-update/': '', 'typd/app-update/pending.json': { from, to: '0.2.9' } }), true, '0.2.9');
+  check(`0.2.9: update from ${from} (walkthrough done, a downloaded model, the app update pending): never`, r.fresh === false && r.now === 'done' && r.saved === 'done', r);
+}
+r = launch(folder({ 'typd/settings.json': { ...S028, walkthrough: 'due' }, ...MODEL, 'typd/app-update/': '', 'typd/app-update/pending.json': { from: '0.2.8', to: '0.2.9' } }), true, '0.2.9');
+check('0.2.9: update from a 0.2.8 install that never got to show it: never', r.now === 'done', r);
+r = launch(folder({ 'typd/settings.json': S028, ...MODEL }), false, '0.2.9');
+check('0.2.9 installed over 0.2.8 by the installer (settings and a model kept): never', r.fresh === false && r.now === 'done', r);
+r = launch(folder({}), false, '0.2.9');
+check('0.2.9, a fresh install: due', r.fresh === true && r.now === 'due', r);
+
 {
   // A fresh install's next launches: due until it is shown, then done for good.
   const d = folder({});
