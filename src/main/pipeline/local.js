@@ -682,14 +682,15 @@ async function* dictate(samples, sampleRate, signal, system = '', maxTokens = 10
 }
 
 /** One request's worth of audio to text, streamed, then the dictionary check (vocab.js). */
-async function* decodeOne(samples, sr, signal, system, maxTokens) {
+async function* decodeOne(samples, sr, signal, system, maxTokens, opts = {}) {
   const parts = [toWav(samples, sr).toString('base64')];
-  const info = {};
+  const info = opts.info || {};
   let text = '';
   // The first word comes after the encoder and the prompt: on a slow processor a 40-70 s piece takes a
   // while, so the watchdog waits 30 s plus half a second per second of audio before calling it stuck.
   const firstWordMs = 30000 + Math.round(500 * (samples.length / sr));
-  for await (const t of dictateParts(parts, signal, system, maxTokens, false, { info, firstWordMs })) {
+  // opts.prefill: the answer so far (work while you talk), which the model continues.
+  for await (const t of dictateParts(parts, signal, system, maxTokens, false, { info, firstWordMs, prefill: opts.prefill })) {
     text = t;
     yield t;
   }
@@ -711,7 +712,7 @@ async function* dictateLong(samples, sr, signal, system, cache, hooks, limits = 
   const { pieces, cuts } = long.splitLong(samples, sr, limits);
   let waited = false;
   // Yields partial text while it writes; its last value is the whole text.
-  async function* textOf(key, kind, index, audio) {
+  async function* textOf(key, kind, index, audio, prefill = null) {
     const job = cache && cache.take(key, system);
     if (job) {
       const r = await job;
@@ -721,7 +722,7 @@ async function* dictateLong(samples, sr, signal, system, cache, hooks, limits = 
     if (cache && !waited) { await cache.idle(); waited = true; }
     const t0 = Date.now();
     let text = '';
-    for await (const t of decodeOne(audio, sr, signal, system, dictationBudget(audio, sr))) { text = t; yield t; }
+    for await (const t of decodeOne(audio, sr, signal, system, dictationBudget(audio, sr), { prefill })) { text = t; yield t; }
     if (cache) cache.timings.push({ kind, index, phase: 'finish', ms: Date.now() - t0 });
     if (!text) yield '';
   }
@@ -737,8 +738,12 @@ async function* dictateLong(samples, sr, signal, system, cache, hooks, limits = 
     }
     // Partials are progress for the pill only; the joins are made once each piece is whole.
     const key = p < cuts.length ? pieceKey(cuts[p]) : 'piece:last';
+    // The last piece continues what was written of it while the user talked (openLong, talk steps).
+    const lastStart = p ? cuts[p - 1].next : 0;
+    const cont = cache && cache.prefill && p === cuts.length && cache.prefill.start === lastStart ? cache.prefill.text : null;
+    const fin = cache && cache.final && p === cuts.length && cache.final.start === lastStart ? cache.final.text : null;
     let part = '';
-    for await (const t of textOf(key, 'piece', p, pieces[p])) {
+    for await (const t of (fin !== null ? [fin] : textOf(key, 'piece', p, pieces[p], cont))) {
       part = t;
       yield done ? done + ' ' + part : part;
     }
@@ -769,6 +774,15 @@ async function* dictateLong(samples, sr, signal, system, cache, hooks, limits = 
  * whatever it cannot find. Nothing is pasted until finish() has joined everything; a cancelled
  * session's signal stops the request in flight and every one after it.
  *
+ * Work while you talk (0.2.10, the full model): the last piece -- for most dictations the whole of
+ * it -- is written while the user talks too, without cutting it. From TALK_FROM_S on, at a pause,
+ * a step writes everything said so far in the piece, continuing from the words the last two steps
+ * wrote alike (talkCommit); on release one request with the whole piece continues from there, so only
+ * the words after it are left to write -- or none at all: a step that already heard all the speech
+ * (only silence after its end, as when the user stops talking and then lets go) is the answer, waited
+ * for if still running. The text is the model's own answer for the whole recording, as before: one
+ * answer, no cut, no seam. A dictation that ends before the first step is written exactly as before.
+ *
  * @param {AbortSignal} signal   the session's
  * @param {() => string} system  the prompt, read when each piece is sent
  */
@@ -783,11 +797,106 @@ function openLong(signal, system) {
   const jobs = new Map();
   const timings = [];
   let chain = Promise.resolve();
+  let busy = 0;   // pieces and seams queued or running
+
+  // Work while you talk: the steps. One at a time, only while no piece or seam is waiting.
+  const talk = talkOn();
+  let energy = new Float64Array(0), frames = 0;   // 20 ms frames, for the pauses
+  let step = null;      // the step in flight
+  let done = [];        // the steps written for the last piece, in order: {start, end, raw, sys}
+  let steps = 0;
+  let plan = null;
+  if (signal) signal.addEventListener('abort', () => { if (step) step.ctl.abort(); }, { once: true });
+
+  /**
+   * The latest pause of TALK_PAUSE_FRAMES+ in frames [lo, frames): {at (a sample just inside it, or -1),
+   * trailing (quiet frames at the very end), loud (a frame of speech: a third of the median frame, and
+   * never under the pause threshold -- a click or a breath stays under it or is over in < 100 ms)}.
+   */
+  function pauseAfter(lo) {
+    const f = TALK_FRAME, n = Math.floor(len / f);
+    if (n > energy.length) {
+      const grown = new Float64Array(Math.max(n, energy.length * 2, 4096));
+      grown.set(energy.subarray(0, frames));
+      energy = grown;
+    }
+    for (let j = frames; j < n; j++) {
+      let s = 0;
+      for (let k = j * f, end = k + f; k < end; k++) s += buf[k] * buf[k];
+      energy[j] = s;
+    }
+    frames = n;
+    if (lo >= n) return { at: -1, trailing: 0, loud: 0 };
+    // long.js's pause: under 1/30 of the median frame, or 3x the 10th percentile in a noisy room.
+    const sorted = Float64Array.from(energy.subarray(0, n)).sort();
+    const quiet = Math.max(sorted[Math.floor(n / 2)] / 30, 3 * sorted[Math.floor(n / 10)]);
+    let run = 0, at = -1;
+    for (let j = lo; j < n; j++) {
+      run = energy[j] < quiet ? run + 1 : 0;
+      if (run === TALK_PAUSE_FRAMES) at = (j - TALK_PAUSE_FRAMES + 1 + TALK_PAUSE_FRAMES / 2) * f;
+    }
+    return { at, trailing: run, loud: Math.max(quiet, sorted[Math.floor(n / 2)] / 3) };
+  }
+
+  /** What the last two steps of the piece from `start` wrote alike with prompt `sys`: the next opening, or null. */
+  function agreed(start, sys) {
+    const mine = done.filter((d) => d.start === start && d.sys === sys);
+    return mine.length >= 2 ? talkCommit(mine[mine.length - 1].raw, mine[mine.length - 2].raw) : null;
+  }
+
+  function maybeStep() {
+    if (!talk || closed || step || busy || (signal && signal.aborted) || len < TALK_FROM_S * SR) return;
+    const start = splitter.start;
+    done = done.filter((d) => d.start === start);   // a piece cut off since: only the new last piece's
+    const last = done[done.length - 1];
+    const from = last ? last.end : start;
+    if (len - from < TALK_LAST_S * SR || (len - start) / SR > limits.longS) return;
+    // A pause TALK_STEP_S after the last step; or, a second after it, a pause still going on at
+    // TALK_DONE_FRAMES (the user may be done: that step would be the answer).
+    const p = pauseAfter(Math.ceil((from + TALK_LAST_S * SR) / TALK_FRAME));
+    const end = p.at >= from + TALK_STEP_S * SR || (p.at >= 0 && p.trailing >= TALK_DONE_FRAMES) ? p.at : -1;
+    if (end < 0) return;
+    const sys = system();
+    const s = { start, end, sys, loud: p.loud, ctl: new AbortController(), t0: Date.now(), prefill: agreed(start, sys), writing: false };
+    const t = { kind: 'step', index: steps++, phase: 'early', availableS: len / SR, startS: len / SR, audioS: Math.round((end - start) / SR * 10) / 10, ms: null, prefill: s.prefill ? s.prefill.length : 0 };
+    timings.push(t);
+    const audio = buf.subarray(start, end);
+    const stopped = new Promise((resolve) => s.ctl.signal.addEventListener('abort', () => resolve(null), { once: true }));
+    const run = (async () => {
+      const info = {};
+      try {
+        const parts = [toWav(audio, SR).toString('base64')];
+        let text = '';
+        for await (const x of dictateParts(parts, s.ctl.signal, sys, dictationBudget(audio, SR), false, { info, prefill: s.prefill })) {
+          text = x;
+          // Past the opening it was given: the audio is read, the rest is writing.
+          if (info.raw && info.raw.length > (s.prefill ? s.prefill.length : 0)) s.writing = true;
+        }
+        // Only a whole answer counts: not one cut short by the budget, a loop or the watchdog.
+        if (s.ctl.signal.aborted || info.finish !== 'stop' || !text) return null;
+        return { start, end, raw: info.raw, sys, loud: s.loud, audio };
+      } catch {
+        return null;
+      }
+    })();
+    s.promise = Promise.race([run, stopped]).then((r) => {
+      t.ms = Date.now() - s.t0;
+      if (!r) t.error = s.ctl.signal.aborted ? 'dropped' : 'failed';
+      if (r && r.start === splitter.start) done.push(r);
+      if (step === s) step = null;
+      maybeStep();
+      return r;
+    });
+    if (signal && signal.aborted) s.ctl.abort();
+    step = s;
+    chain = chain.then(() => s.promise);   // a piece cut off now waits for it
+  }
 
   function schedule(key, kind, index, audio) {
     const sys = system();
     const t = { kind, index, phase: 'early', availableS: len / SR, ms: null };
     timings.push(t);
+    busy++;
     const promise = chain.then(async () => {
       if (signal && signal.aborted) { t.ms = 0; return { error: 'cancelled' }; }
       const t0 = Date.now();
@@ -805,6 +914,7 @@ function openLong(signal, system) {
     });
     chain = promise;
     jobs.set(key, { sys, promise });
+    promise.then(() => { busy--; maybeStep(); });
   }
 
   return {
@@ -819,26 +929,83 @@ function openLong(signal, system) {
       }
       buf.set(samples, len);
       len += samples.length;
-      if (len <= limits.longS * SR) return;
-      for (const c of splitter.feed(buf, len)) {
-        const i = splitter.cuts.length - 1;
-        debug('early: cut', i, 'settled at', (len / SR).toFixed(1), 's; piece', (c.start / SR).toFixed(1), '-', (c.end / SR).toFixed(1), 's');
-        schedule(pieceKey(c), 'piece', i, buf.subarray(c.start, c.end));
-        schedule(seamKey(c), 'seam', i, long.seamAudio(buf, SR, c));
+      if (len > limits.longS * SR) {
+        for (const c of splitter.feed(buf, len)) {
+          const i = splitter.cuts.length - 1;
+          debug('early: cut', i, 'settled at', (len / SR).toFixed(1), 's; piece', (c.start / SR).toFixed(1), '-', (c.end / SR).toFixed(1), 's');
+          if (step) step.ctl.abort();   // a step of the piece just cut off: no longer the last piece
+          schedule(pieceKey(c), 'piece', i, buf.subarray(c.start, c.end));
+          schedule(seamKey(c), 'seam', i, long.seamAudio(buf, SR, c));
+        }
       }
+      maybeStep();
     },
 
     /** Finished text for the whole recording: `samples` is the complete capture. */
     async* finish(samples, sampleRate, sig, sys, maxTokens = 1024) {
       closed = true;
+      // What was written early must be of this very audio: the capture is the chunks, in order.
+      let same = sampleRate === SR && samples.length >= len;
+      for (let i = 0; same && i < len; i++) if (samples[i] !== buf[i]) same = false;
+      plan = { steps, waited: false, dropped: false, final: false };
+      const start = splitter.start;
+      const fits = (x) => same && x && x.sys === sys && x.start === start;
+      // No speech in the capture after `end`: never TALK_SOUND_FRAMES in a row as loud as speech (the
+      // key's click as it is let go, a breath, are not).
+      const silentAfter = (end, loud) => {
+        const f = TALK_FRAME;
+        let run = 0;
+        for (let j = Math.ceil(end / f); (j + 1) * f <= samples.length; j++) {
+          let e = 0;
+          for (let k = j * f, stop = k + f; k < stop; k++) e += samples[k] * samples[k];
+          run = e < loud ? 0 : run + 1;
+          if (run >= TALK_SOUND_FRAMES) return false;
+        }
+        return true;
+      };
+      let answer = null;   // a step that heard all the speech: its answer is the piece's
+      if (step) {
+        const s = step;
+        if (fits(s) && silentAfter(s.end, s.loud)) {
+          plan.waited = true;
+          answer = await s.promise;
+        } else {
+          // A step that has read its audio and is writing: whatever it writes, release would have to
+          // write too, and it has read it already -- wait. One still reading: stop it.
+          if (!same || s.sys !== sys || !s.writing) { s.ctl.abort(); plan.dropped = true; } else plan.waited = true;
+          await s.promise;
+        }
+      }
+      const latest = done[done.length - 1];
+      if (!answer && fits(latest) && silentAfter(latest.end, latest.loud)) answer = latest;
+      const text = same && !answer ? agreed(start, sys) : null;
+      const cont = text ? { start, text } : null;
+      const mine = done.filter((d) => d.start === start && d.sys === sys);
+      plan.fromS = Math.round((start / SR) * 10) / 10;
+      plan.final = Boolean(answer);
+      plan.agreedChars = text ? text.length : 0;
+      plan.lastStepS = mine.length ? Math.round(((mine[mine.length - 1].end - start) / SR) * 10) / 10 : 0;
+      let final = null;
+      if (answer) {
+        // Its text, as decodeOne() would give it: the tag off, then the dictionary check.
+        const own = answer.raw.replace(/^\s*language \w+<asr_text>/, '').replace(/^\s+/, '');
+        final = { start, text: await checkTerms([toWav(answer.audio, SR).toString('base64')], sys, { raw: answer.raw }, own, sig) };
+        if (sig && sig.aborted) return;
+      }
+      if (steps) debug('talk:', steps, 'steps while talking; the last to', plan.lastStepS, 's;', final ? 'it heard everything: its answer' : cont ? plan.agreedChars + ' characters agreed' : 'nothing agreed', plan.waited ? '(waited for the last)' : plan.dropped ? '(the last dropped)' : '');
       if (!jobs.size || sampleRate !== SR) {
         await chain;
+        if (final && final.start === 0 && samples.length / SR <= limits.longS) {
+          yield final.text;
+          return;
+        }
+        if (cont && cont.start === 0 && samples.length / SR <= limits.longS) {
+          yield* decodeOne(samples, SR, sig, sys, maxTokens, { prefill: cont.text });
+          return;
+        }
         yield* dictate(samples, sampleRate, sig, sys, maxTokens);
         return;
       }
-      // What was written early must be of this very audio: the capture is the chunks, in order.
-      let same = samples.length >= len;
-      for (let i = 0; same && i < len; i++) if (samples[i] !== buf[i]) same = false;
       if (!same) debug('early: the capture differs from the chunks; writing it all now');
       debug('early:', jobs.size, 'requests settled while talking;', ((samples.length - splitter.start) / SR).toFixed(1), 's after the last cut');
       const cache = {
@@ -847,15 +1014,59 @@ function openLong(signal, system) {
           return j && j.sys === prompt ? j.promise : null;
         },
         idle: () => chain,
-        timings
+        timings,
+        prefill: cont,
+        final
       };
       yield* dictateLong(samples, SR, sig, sys, cache, null, limits);
     },
 
     /** Every request's timing so far -- for the bench and the replay. */
     get timings() { return timings.map((t) => ({ ...t })); },
-    get cuts() { return splitter.cuts.map((c) => c.end); }
+    get cuts() { return splitter.cuts.map((c) => c.end); },
+    /** At release: {steps, waited, dropped (the step in flight), final (a step's answer used), fromS (the last piece), lastStepS, agreedChars}. */
+    get plan() { return plan && { ...plan }; }
   };
+}
+
+/*
+ * Work while you talk (0.2.10). Steps start TALK_FROM_S into a dictation -- shorter ones are untouched --
+ * at a pause of TALK_PAUSE_FRAMES x 20 ms, once TALK_STEP_S of audio has come since the last (TALK_LAST_S
+ * for a pause that lasts TALK_DONE_FRAMES: the user may have stopped). Each, and
+ * the request at release, continues from the words the last two steps wrote alike (local agreement, as
+ * streaming recognisers do): a word is kept once two answers written with different amounts of the
+ * audio after it agree on it; anything after the first difference, and always the last TALK_OPEN_WORDS
+ * of the newer answer, is written again with all the audio there is. Measured on the user's 41 s
+ * dictation: the whole text, continued from its first 33 s less 3 words, came back word for word as
+ * the model wrote it in one go, with 23 new tokens instead of 84; keeping every word but the last 3
+ * changed a few words elsewhere on his longer recordings ("in first principles" -> "there are four
+ * principles"), which agreement keeps open (dictation-research LOG.md, 2026-10-20). Off in low-memory
+ * mode, on a server on the processor (every step reads all the audio again) and with TYPD_TALK=0.
+ */
+const TALK_FROM_S = 20, TALK_STEP_S = 3, TALK_LAST_S = 1, TALK_PAUSE_FRAMES = 8, TALK_DONE_FRAMES = 20, TALK_FRAME = 320;
+// Agreement never keeps the newer answer's last TALK_OPEN_WORDS; TALK_SOUND_FRAMES x 20 ms in a row as loud
+// as speech after a step's end is speech it did not hear (on the user's recordings the key's click and
+// breaths after the last word stay at 4 or fewer; words run far longer: LOG.md, 2026-10-21).
+const TALK_OPEN_WORDS = 2, TALK_SOUND_FRAMES = 5;
+function talkOn() {
+  return !lowMemory.on && device !== 'CPU' && process.env.TYPD_TALK !== '0';
+}
+
+/**
+ * The opening two answers agree on, word for word from the start, less at least TALK_OPEN_WORDS of
+ * `raw` (the newer), up to the end of a word; null when that leaves fewer than 3 words of text.
+ */
+function talkCommit(raw, prev) {
+  if (typeof raw !== 'string' || typeof prev !== 'string') return null;
+  const a = [...raw.matchAll(/\S+/g)], b = [...prev.matchAll(/\S+/g)];
+  let n = 0;
+  while (n < a.length && n < b.length && a[n][0] === b[n][0]) n++;
+  n = Math.min(n, a.length - TALK_OPEN_WORDS);
+  if (n <= 0) return null;
+  const end = a[n - 1].index + a[n - 1][0].length;
+  const tag = raw.indexOf('<asr_text>');
+  const text = raw.slice(tag < 0 ? 0 : tag + '<asr_text>'.length, end);
+  return (text.match(/\S+/g) || []).length >= 3 ? raw.slice(0, end) : null;
 }
 
 /* ------------------------------------------------------- the dictionary check */
@@ -1075,7 +1286,9 @@ async function* ask(parts, signal, system = '', maxTokens = 1024, asRevise = fal
   // A request for a session already cancelled would still run to the end on the server (the abort
   // listener below only fires on a change), holding the GPU from the next one.
   if (signal && signal.aborted) return;
-  const payload = body(parts, system, { stream: true, max_tokens: maxTokens }, asRevise);
+  // opts.prefill (work while you talk): the answer's opening, which the server streams back first.
+  const prefill = typeof opts.prefill === 'string' && opts.prefill ? opts.prefill : null;
+  const payload = body(parts, system, { stream: true, max_tokens: maxTokens }, asRevise, prefill || PREFILL);
 
   const queue = [];
   let done = false;
@@ -1157,6 +1370,9 @@ async function* ask(parts, signal, system = '', maxTokens = 1024, asRevise = fal
       text += queue.join('');
       queue.length = 0;
       last = Date.now();
+      // A prefilled answer: the server streams the opening back, then the rest. One that would not
+      // echo it gets it put in front, so the text is always the whole answer.
+      if (prefill && !text.startsWith(prefill) && !prefill.startsWith(text)) text = prefill + text;
       info.raw = text;
       // The server may echo the prefilled tag on some builds; never show it.
       // A model that names the language itself streams the tag first; show nothing
@@ -1387,6 +1603,7 @@ async function transcribe(samples, sampleRate, signal, system = '') {
 module.exports = {
   warm, stop, ping, dictate, revise, transcribe, openStream, openLong, dictationBudget, loopCut, contextPrompt, revisePrompt,
   countTokens, setVocabLog, configure, lowMemoryStale, gpuBackend, longLimits, reviseLimit, serverArgs, serverEnv, contextChars,
+  talkCommit,
   /** The server's window, in tokens: 4,096, or 1,280 in low-memory mode. */
   get CONTEXT() { return contextSize(); },
   /** Low-memory mode for the server now running (or about to): {on, why}. */

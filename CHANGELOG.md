@@ -4,6 +4,7 @@
 
 - **Nothing to paste into? Copy it instead.** When you dictate with no text field selected — on the desktop, in File Explorer or Finder, on a button — Typd no longer pastes into nowhere. A small card appears just above the pill with the start of what you said and a **Copy** button. It stays about six seconds (a thin bar shows how long), waits while your pointer is over it, and never takes the keyboard from the app you are in. Your clipboard is left alone until you click **Copy**, and the dictation is always in Home if you want it later. Browsers, terminals, chat apps, editors and games still get the paste as before: Typd only holds back when it is sure there is no text field.
 - **When a paste fails,** the same card replaces the old "Copied — press Ctrl+V" message: the text is already on your clipboard, and **Copy** puts it there again.
+- **Long dictations arrive about as fast as short ones.** Once you have been talking for about 20 seconds, Typd starts writing while you keep talking, so when you let go of the key there is little or nothing left to write: a 41-second dictation that took 1.4 seconds to appear now takes about 0.4 seconds on a laptop GPU. Accuracy is unchanged: the model still writes your whole dictation as one answer, it just starts early. Dictations shorter than 20 seconds work exactly as before. (With the full model; in low-memory mode long dictations are written as before.)
 
 ## 0.2.9 · October 2026
 

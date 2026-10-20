@@ -1453,8 +1453,8 @@ app.whenReady().then(() => {
   });
 
   // Live PCM while the user talks, 256 ms at a time (pipeline.openStream): a model
-  // trained on audio in pieces has them primed, any other has a long dictation's
-  // 45-70 s pieces written before the key is released. Revision never uses it --
+  // trained on audio in pieces has them primed, any other has a dictation past 20 s
+  // written while the user talks (local.openLong). Revision never uses it --
   // the instruction is short and the span decides what it means.
   ipcMain.on('overlay:chunk', (_e, payload) => {
     const current = session;
