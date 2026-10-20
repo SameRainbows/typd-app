@@ -356,9 +356,10 @@ async function* run(opts = {}) {
 /**
  * A feed for audio that arrives while the user talks. A model trained on short pieces
  * (model.json "stream") has them primed as they come (local.openStream); any other has a long
- * dictation's 45-70 s pieces written while the user is still talking (local.openLong), which
- * does nothing at all under 79 s. TYPD_EARLY_DECODE=0 turns the latter off. `contextBlock` is
- * a getter: the screen read finishes a beat after the session opens.
+ * dictation's 45-70 s pieces written while the user is still talking (local.openLong), and the
+ * full model also the rest of it from 20 s on, so that on release only the last words are left
+ * (0.2.10, "work while you talk"). Shorter dictations are untouched. TYPD_EARLY_DECODE=0 turns all
+ * of it off. `contextBlock` is a getter: the screen read finishes a beat after the session opens.
  */
 function openStream(signal, contextBlock) {
   if (ENGINE !== 'single') return null;
