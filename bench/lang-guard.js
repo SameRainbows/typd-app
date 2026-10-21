@@ -75,7 +75,7 @@ const opening = (b) => { const m = b.messages[b.messages.length - 1]; return m.r
 
 const instances = [];
 function freshLocal(env) {
-  for (const k of ['TYPD_MODEL_DIR', 'TYPD_LLAMA_PORT', 'TYPD_LLAMA_SERVER', 'TYPD_GPU_LAYERS', 'TYPD_SELFTEST', 'CUDA_VISIBLE_DEVICES', 'TYPD_LANG_GUARD']) delete process.env[k];
+  for (const k of ['TYPD_MODEL_DIR', 'TYPD_LLAMA_PORT', 'TYPD_LLAMA_SERVER', 'TYPD_GPU_LAYERS', 'TYPD_SELFTEST', 'CUDA_VISIBLE_DEVICES', 'TYPD_LANG_GUARD', 'TYPD_LOW_MEMORY']) delete process.env[k];
   Object.assign(process.env, env);
   delete require.cache[require.resolve('../src/main/pipeline/local')];
   const local = require('../src/main/pipeline/local');
@@ -201,7 +201,8 @@ async function bodyTests() {
   const own = modelDir('own-tag', { model: 'm.gguf', mmproj: 'p.gguf', context: true, revise: true, stream: false, prefill: '' });
   const given = modelDir('given-tag', { model: 'm.gguf', mmproj: 'p.gguf', context: true, revise: true, stream: false });
   const fake = await fakeLlama({ answer: tagged });
-  const env = (dir, extra = {}) => ({ TYPD_MODEL_DIR: dir, TYPD_LLAMA_PORT: String(fake.port), TYPD_LLAMA_SERVER: server, TYPD_SELFTEST: '0', ...extra });
+  // Low-memory mode off, as on a GPU: work while you talk runs only then (a CI runner with 7 GB would be low-memory).
+  const env = (dir, extra = {}) => ({ TYPD_MODEL_DIR: dir, TYPD_LLAMA_PORT: String(fake.port), TYPD_LLAMA_SERVER: server, TYPD_SELFTEST: '0', TYPD_LOW_MEMORY: '0', ...extra });
   const short = speech(3);
 
   let local = freshLocal(env(own));
