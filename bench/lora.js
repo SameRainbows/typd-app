@@ -193,10 +193,11 @@ async function fakeTests() {
   local = freshLocal(env(noLora));
   await local.warm();
   ({ bodies } = await everyRequest(local));
-  const keys = bodies.map((b) => Object.keys(b).join(','));
-  check('model.json without revise_lora: no "lora" field, the body keys as before',
-    local.REVISE_ADAPTER === null && bodies.every((b) => !('lora' in b)) &&
-    keys.every((k) => k === 'messages,temperature,cache_prompt,stream,max_tokens' || k === 'messages,temperature,cache_prompt,max_tokens'), keys);
+  // 0.2.10's language guard adds "grammar" to every request but the revise (bench/lang-guard.js).
+  const keys = bodies.map((b) => Object.keys(b).filter((k) => k !== 'grammar').join(','));
+  check('model.json without revise_lora: no "lora" field, the body keys as before (+ the language guard’s grammar, never on the revise)',
+    local.REVISE_ADAPTER === null && bodies.every((b) => !('lora' in b)) && bodies.every((b) => ('grammar' in b) === !isRevise(b)) &&
+    keys.every((k) => k === 'messages,temperature,cache_prompt,stream,max_tokens' || k === 'messages,temperature,cache_prompt,max_tokens'), bodies.map((b) => Object.keys(b).join(',')));
 
   fs.rmSync(path.join(withLora, 'rev.gguf'));
   local = freshLocal(env(withLora));

@@ -1123,7 +1123,7 @@ async function checkTerms(parts, system, info, text, signal) {
     if (signal && signal.aborted) return text;
     const before = (echoed ? '' : PREFILL) + raw.slice(0, lead + occ.index).replace(/\s+$/, '');
     const t0 = Date.now();
-    const first = await complete(body(parts, system, { max_tokens: 1, logprobs: true, top_logprobs: 10 }, false, before), signal);
+    const first = await complete(body(parts, system, { max_tokens: 1, logprobs: true, top_logprobs: 10 }, false, before, false), signal);
     const lp = first && first.choices && first.choices[0] && first.choices[0].logprobs && first.choices[0].logprobs.content && first.choices[0].logprobs.content[0];
     if (!lp || typeof lp.id !== 'number') { debug('vocab:', occ.term, 'no token probabilities; kept'); continue; }
     const tok = String(lp.token || '').trim().toLowerCase();
@@ -1141,7 +1141,7 @@ async function checkTerms(parts, system, info, text, signal) {
         .sort((x, y) => y.logprob - x.logprob)[0];
       if (other) {
         const n = occ.term.split(/\s+/).length;
-        const second = await complete(body(parts, system, { max_tokens: 6 + 3 * n }, false, before + other.token), signal);
+        const second = await complete(body(parts, system, { max_tokens: 6 + 3 * n }, false, before + other.token, false), signal);
         let content = second && second.choices && second.choices[0] && second.choices[0].message && second.choices[0].message.content;
         // llama-server answers with the opening it was given and then its own tokens (the first
         // real run took that echo, "language English<asr_text>...", for the other word).
@@ -1247,12 +1247,47 @@ function ping(system = '') {
   if (!starting) nudge(system);   // a server that is not up just refuses the connection
 }
 
+/*
+ * The language guard. A model that names the language itself ("prefill": "") can pick one the
+ * user does not speak: P2d, trained from stock Qwen3-ASR, wrote three short accented English clips
+ * in Japanese ("20年。", and twice Japanese under an English tag: "ピアノ。かっこいい？",
+ * "わからない。"), and with screen context it sometimes opened its answer with "active_application"
+ * in place of the tag (23 of 320 gold_eval_ctx items), which would be pasted. So a dictation's
+ * request carries a llama-server grammar: the answer opens with "language English<asr_text>" or
+ * "language Turkish<asr_text>", and its text has no letter of the other scripts the base model
+ * writes (Han and kana, Hangul, Cyrillic, Arabic, Devanagari, Thai). Emoji, symbols, Greek and
+ * every Latin letter stay allowed. The server checks only the token the model picked and resamples
+ * under the grammar when that token breaks it, so an answer that keeps to it is token for token
+ * the unguarded one. A request that continues an answer already holding its tag (work while you
+ * talk) gets the text rule alone. Revise, the dictionary check and models given their tag (older
+ * than round 11) send what they always sent. TYPD_LANG_GUARD=0 turns it off; a server that
+ * refuses the grammar gets the request again without it, and no grammar from then on (ask()).
+ */
+const GUARD_LANGUAGES = ['English', 'Turkish'];
+// Every range spans whole UTF-8 lead bytes where it matters: llama.cpp rejects a token that ends
+// inside a character when any character it could complete to is excluded.
+const GUARD_SCRIPTS = '\\u0400-\\u052F\\u0600-\\u06FF\\u0750-\\u077F\\u08A0-\\u08FF\\u0900-\\u097F' +
+  '\\u0E00-\\u0E7F\\u3000-\\u9FFF\\uAC00-\\uD7AF';
+const GUARD_TEXT = `text ::= [^${GUARD_SCRIPTS}]*`;
+const GUARD_OPEN = `root ::= "language " (${GUARD_LANGUAGES.map((l) => `"${l}"`).join(' | ')}) "<asr_text>" text\n${GUARD_TEXT}`;
+const GUARD_REST = `root ::= text\n${GUARD_TEXT}`;
+let guardRefused = false;
+
+/** The grammar for a request whose answer opens with `assistant`, or null (none sent). */
+function guardGrammar(assistant, asRevise) {
+  if (asRevise || PREFILL !== '' || guardRefused || process.env.TYPD_LANG_GUARD === '0') return null;
+  if (!assistant) return GUARD_OPEN;
+  return /^\s*language (?:English|Turkish)<asr_text>/.test(assistant) ? GUARD_REST : null;
+}
+
 /**
  * The request body for audio in one or more pieces (base64 WAVs, in order). Every request
  * goes through here. With a revise adapter loaded it names the adapter's scale: on only when
- * `asRevise` (see `adapter`); without one the body is what it always was.
+ * `asRevise` (see `adapter`); without one the body is what it always was. `guard` false: no
+ * language guard (the dictionary check, which reads the model's own probabilities).
  */
-function body(parts, system, extra, asRevise = false, assistant = PREFILL) {
+function body(parts, system, extra, asRevise = false, assistant = PREFILL, guard = true) {
+  const grammar = guard ? guardGrammar(assistant, asRevise) : null;
   return JSON.stringify({
     messages: [
       { role: 'system', content: system || '' },
@@ -1264,6 +1299,7 @@ function body(parts, system, extra, asRevise = false, assistant = PREFILL) {
     temperature: 0,
     cache_prompt: true,
     ...(adapter ? { lora: [{ id: adapter.id, scale: asRevise ? 1 : 0 }] } : {}),
+    ...(grammar ? { grammar } : {}),
     ...extra
   });
 }
@@ -1288,6 +1324,7 @@ async function* ask(parts, signal, system = '', maxTokens = 1024, asRevise = fal
   if (signal && signal.aborted) return;
   // opts.prefill (work while you talk): the answer's opening, which the server streams back first.
   const prefill = typeof opts.prefill === 'string' && opts.prefill ? opts.prefill : null;
+  const guarded = !!guardGrammar(prefill || PREFILL, asRevise);
   const payload = body(parts, system, { stream: true, max_tokens: maxTokens }, asRevise, prefill || PREFILL);
 
   const queue = [];
@@ -1312,6 +1349,7 @@ async function* ask(parts, signal, system = '', maxTokens = 1024, asRevise = fal
         res.on('end', () => {
           debug('status', res.statusCode, body.slice(0, 400));
           failure = new Error('The dictation model refused the audio (' + res.statusCode + ')');
+          failure.grammar = guarded && /grammar/i.test(body);
           done = true;
           poke();
         });
@@ -1394,7 +1432,17 @@ async function* ask(parts, signal, system = '', maxTokens = 1024, asRevise = fal
       yield shown;
       continue;
     }
-    if (failure) throw failure;
+    if (failure) {
+      // A llama-server that cannot take the language guard (none known): the same request without
+      // it, and no guard from then on. Nothing was shown yet: a refusal comes before any word.
+      if (failure.grammar && !guardRefused) {
+        guardRefused = true;
+        debug('the server refused the language guard; dictating without it');
+        yield* ask(parts, signal, system, maxTokens, asRevise, opts);
+        return;
+      }
+      throw failure;
+    }
     if (done) {
       if (shownSoFar.length > checkedAt) {
         const cut = loopCut(shownSoFar, opts.allow);
@@ -1604,6 +1652,8 @@ module.exports = {
   warm, stop, ping, dictate, revise, transcribe, openStream, openLong, dictationBudget, loopCut, contextPrompt, revisePrompt,
   countTokens, setVocabLog, configure, lowMemoryStale, gpuBackend, longLimits, reviseLimit, serverArgs, serverEnv, contextChars,
   talkCommit,
+  // The language guard, for the bench (bench/lang-guard.js).
+  guardGrammar, languageGuard: { open: GUARD_OPEN, rest: GUARD_REST, scripts: GUARD_SCRIPTS, languages: GUARD_LANGUAGES },
   /** The server's window, in tokens: 4,096, or 1,280 in low-memory mode. */
   get CONTEXT() { return contextSize(); },
   /** Low-memory mode for the server now running (or about to): {on, why}. */

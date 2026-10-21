@@ -130,6 +130,12 @@ jobs:
       - name: Fetch llama.cpp for macOS (b11351)
         run: node scripts/fetch-llama-mac.js $ARCHS
 
+      - name: Bench, the language guard on the real model (informational)
+        # 0.2.10: macOS's llama-server (b11351, on the CPU) takes the guard's grammar (English or Turkish only),
+        # and the published model hears the test clip with it.
+        continue-on-error: true
+        run: TYPD_GUARD_BENCH_MODEL="$PWD/models/typd-dictate" node bench/lang-guard.js
+
       - name: Build uiohook-napi with its start handshake fixed
         # The key's event tap. uiohook-napi's start could hang Typd's main thread for good at
         # launch (scripts/build-uiohook-mac.js says how); this builds it from source, fixed, for
