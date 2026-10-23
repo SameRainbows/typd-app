@@ -18,6 +18,12 @@ name: First run (public download)
 
 on:
   workflow_dispatch:
+    inputs:
+      os:
+        description: Which machines
+        type: choice
+        options: [both, mac, windows]
+        default: both
 
 permissions:
   contents: read
@@ -96,9 +102,45 @@ env:
       process.exit(res.clips.some((c) => c.err || !c.text) ? 2 : 0);
     })().catch((e) => { console.error('dictation script failed: ' + ((e && e.stack) || e)); process.exit(1); });
 
+  # Windows: a list of the visible windows (process | title | size) and a screenshot of the whole screen.
+  WIN_HELPERS_PS1: |
+    Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+    Add-Type -TypeDefinition @"
+    using System; using System.Text; using System.Collections.Generic; using System.Runtime.InteropServices;
+    public static class Wins {
+      delegate bool EnumProc(IntPtr h, IntPtr l);
+      [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc f, IntPtr l);
+      [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+      [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+      [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint p);
+      [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
+      public struct RECT { public int L, T, R, B; }
+      public static List<string> List() {
+        var o = new List<string>();
+        EnumWindows((h, l) => {
+          if (!IsWindowVisible(h)) return true;
+          uint p; GetWindowThreadProcessId(h, out p);
+          var s = new StringBuilder(256); GetWindowText(h, s, 256); RECT r; GetWindowRect(h, out r);
+          string n = ""; try { n = System.Diagnostics.Process.GetProcessById((int)p).ProcessName; } catch {}
+          o.Add(n + " | " + s + " | " + (r.R - r.L) + "x" + (r.B - r.T) + " at " + r.L + "," + r.T);
+          return true;
+        }, IntPtr.Zero);
+        return o;
+      }
+    }
+    "@
+    function Shot($name) {
+      try {
+        $b = [System.Windows.Forms.SystemInformation]::VirtualScreen
+        $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+        $g = [System.Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen($b.Left, $b.Top, 0, 0, $bmp.Size)
+        $bmp.Save("$L\shots\$name.jpg", [System.Drawing.Imaging.ImageFormat]::Jpeg); $g.Dispose(); $bmp.Dispose()
+      } catch { "screenshot $name failed: $($_.Exception.Message)" | Add-Content "$L\actions.txt" }
+    }
+
 jobs:
   mac:
-    if: github.repository == 'SameRainbows/typd-app'
+    if: github.repository == 'SameRainbows/typd-app' && inputs.os != 'windows'
     runs-on: macos-15
     timeout-minutes: 75
     permissions:
@@ -320,7 +362,7 @@ jobs:
           pkill -f /Applications/Typd.app/ || true
 
   windows:
-    if: github.repository == 'SameRainbows/typd-app'
+    if: github.repository == 'SameRainbows/typd-app' && inputs.os != 'mac'
     runs-on: windows-latest
     timeout-minutes: 75
     permissions:
@@ -374,15 +416,32 @@ jobs:
           "INSTALLER=$f" >> $env:GITHUB_ENV
 
       - name: Install it silently, for this user only (no admin)
-        id: install
-        timeout-minutes: 12
+        timeout-minutes: 15
         run: |
+          $ErrorActionPreference = 'Continue'
           $L = "$env:RUNNER_TEMP\fr"
+          . ([scriptblock]::Create($env:WIN_HELPERS_PS1))
           & {
+            'try 1: the download as the browser left it (Mark of the Web, unsigned), /S'
             $sw = [Diagnostics.Stopwatch]::StartNew()
-            $p = Start-Process -FilePath $env:INSTALLER -ArgumentList '/S' -PassThru
-            if (-not $p.WaitForExit(600000)) { 'installer still running after 10 min'; exit 1 }
-            "installer exit code $($p.ExitCode) after $([math]::Round($sw.Elapsed.TotalSeconds, 1)) s"
+            $j = Start-Job -ScriptBlock { param($f) (Start-Process -FilePath $f -ArgumentList '/S' -PassThru -Wait).ExitCode } -ArgumentList $env:INSTALLER
+            if (Wait-Job $j -Timeout 120) {
+              "installer exit code $(Receive-Job $j) after $([math]::Round($sw.Elapsed.TotalSeconds, 1)) s"
+            } else {
+              'after 120 s the installer has not finished. On screen:'
+              Shot 'install-held'
+              [Wins]::List() | Where-Object { $_ -notmatch '^(explorer|TextInputHost|ShellExperienceHost|SearchHost|StartMenuExperienceHost) ' } | ForEach-Object { "  window: $_" }
+              Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'Typd|smartscreen|consent|rundll32|pwsh|powershell' } | ForEach-Object { "  process: $($_.Name) pid $($_.ProcessId) parent $($_.ParentProcessId) $($_.CommandLine)" }
+              Get-WinEvent -LogName 'Microsoft-Windows-SmartScreen/Debug' -MaxEvents 10 -ErrorAction SilentlyContinue | ForEach-Object { "  smartscreen event $($_.Id): $($_.Message)" }
+              Stop-Job $j; Remove-Job $j -Force
+              Get-Process | Where-Object { $_.ProcessName -like 'Typd-Setup*' } | Stop-Process -Force
+              'try 2: the mark taken off (Unblock-File: what "Run anyway" lets through), /S'
+              Unblock-File $env:INSTALLER
+              $sw.Restart()
+              $p = Start-Process -FilePath $env:INSTALLER -ArgumentList '/S' -PassThru
+              if (-not $p.WaitForExit(600000)) { 'installer still running after 10 min'; Shot 'install-held-2'; [Wins]::List() | ForEach-Object { "  window: $_" }; exit 1 }
+              "installer exit code $($p.ExitCode) after $([math]::Round($sw.Elapsed.TotalSeconds, 1)) s"
+            }
           } *>&1 | Tee-Object -FilePath "$L\install.txt"
 
       - name: What the install left
@@ -407,39 +466,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Continue'
           $L ="$env:RUNNER_TEMP\fr"; $UD = "$env:APPDATA\typd"; $OUT = "$L\typd.out"; $REP = "$L\app-update-report.json"
-          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
-          Add-Type -TypeDefinition @"
-          using System; using System.Text; using System.Collections.Generic; using System.Runtime.InteropServices;
-          public static class Wins {
-            delegate bool EnumProc(IntPtr h, IntPtr l);
-            [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc f, IntPtr l);
-            [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
-            [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
-            [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint p);
-            [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
-            public struct RECT { public int L, T, R, B; }
-            public static List<string> List() {
-              var o = new List<string>();
-              EnumWindows((h, l) => {
-                if (!IsWindowVisible(h)) return true;
-                uint p; GetWindowThreadProcessId(h, out p);
-                var s = new StringBuilder(256); GetWindowText(h, s, 256); RECT r; GetWindowRect(h, out r);
-                string n = ""; try { n = System.Diagnostics.Process.GetProcessById((int)p).ProcessName; } catch {}
-                o.Add(n + " | " + s + " | " + (r.R - r.L) + "x" + (r.B - r.T) + " at " + r.L + "," + r.T);
-                return true;
-              }, IntPtr.Zero);
-              return o;
-            }
-          }
-          "@
-          function Shot($name) {
-            try {
-              $b = [System.Windows.Forms.SystemInformation]::VirtualScreen
-              $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
-              $g = [System.Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen($b.Left, $b.Top, 0, 0, $bmp.Size)
-              $bmp.Save("$L\shots\$name.jpg", [System.Drawing.Imaging.ImageFormat]::Jpeg); $g.Dispose(); $bmp.Dispose()
-            } catch { "screenshot $name failed: $($_.Exception.Message)" | Add-Content "$L\actions.txt" }
-          }
+          . ([scriptblock]::Create($env:WIN_HELPERS_PS1))
           "profile before launch: $(Test-Path $UD)" | Tee-Object -FilePath "$L\first-launch.txt"
           # TYPD_DEBUG only adds log lines; TYPD_APP_UPDATE_REPORT only writes where the update check stands.
           $env:TYPD_DEBUG = '1'; $env:TYPD_APP_UPDATE_REPORT = $REP
