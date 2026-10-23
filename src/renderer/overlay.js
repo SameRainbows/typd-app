@@ -24,43 +24,63 @@
 
   /* -------------------------------------------------------- click-through */
 
-  var interactive = false;
+  /* The window is click-through except over the two controls while they are live. Main decides
+   * that from the cursor (overlay-window.js, the click gate); this page only says where the
+   * controls are, whenever that changes -- it hears no mouse at all while the window is
+   * click-through, so it could not decide anyway. */
 
-  function setInteractive(on) {
-    if (on === interactive) return;
-    interactive = on;
-    window.typd.setInteractive(on);
-  }
+  var controlsLive = false;   // listening, until capture ends or the session goes
+  var acted = false;          // this session's controls have been used: one answer only
+  var lastHits = '';
 
-  function overControl(x, y) {
+  function hitAreas() {
+    if (!controlsLive || state !== 'listening' || overlay.getAttribute('data-visible') !== 'true') return [];
+    var out = [];
     var controls = [cancelBtn, confirmBtn];
     for (var i = 0; i < controls.length; i++) {
       var r = controls[i].getBoundingClientRect();
       // A folded-away control still has a box; its width is what says it is
       // gone, and a 0-width button must not keep swallowing clicks.
       if (r.width < 2) continue;
-      if (x >= r.left - HIT_PAD && x <= r.right + HIT_PAD &&
-          y >= r.top - HIT_PAD && y <= r.bottom + HIT_PAD) {
-        return true;
-      }
+      out.push({
+        x: Math.floor(r.left - HIT_PAD), y: Math.floor(r.top - HIT_PAD),
+        w: Math.ceil(r.width + HIT_PAD * 2), h: Math.ceil(r.height + HIT_PAD * 2)
+      });
     }
-    return false;
+    return out;
   }
 
-  // The window forwards mousemove even while ignoring clicks, which is what
-  // makes selective pass-through possible at all.
-  document.addEventListener('mousemove', function (e) {
-    setInteractive(state !== 'idle' && overControl(e.clientX, e.clientY));
-  });
-  document.addEventListener('mouseleave', function () { setInteractive(false); });
+  /** Tell main where the controls are -- only when that changed (the unfold moves them). */
+  function reportHits() {
+    var list = hitAreas();
+    var key = JSON.stringify(list);
+    if (key === lastHits) return;
+    lastHits = key;
+    window.typd.hitAreas(list);
+  }
 
-  cancelBtn.addEventListener('click', function () {
-    setInteractive(false);
-    window.typd.cancel();
-  });
-  confirmBtn.addEventListener('click', function () {
-    setInteractive(false);
-    window.typd.confirm();
+  function controlsOff() {
+    controlsLive = false;
+    reportHits();
+  }
+
+  /* The release is the click. On Windows the pill can never be activated (focusable: false), and
+   * Chromium answers a press on such a window with MA_NOACTIVATEANDEAT -- "does not activate the
+   * window, and discards the mouse message" -- whenever the press reaches its top-level window
+   * rather than the content's child window. Then no mousedown arrives, and so no `click` either:
+   * only the mouseup. Acting on the mouseup works both ways; `click` stays for anything that
+   * clicks without a mouse, and `acted` keeps it to one answer per session. */
+  function act(which) {
+    if (acted || !controlsLive || state !== 'listening') return;
+    acted = true;
+    controlsOff();   // main makes the window click-through again at once
+    if (which === 'cancel') window.typd.cancel();
+    else window.typd.confirm();
+  }
+
+  [[cancelBtn, 'cancel'], [confirmBtn, 'confirm']].forEach(function (c) {
+    c[0].addEventListener('mouseup', function (e) { if (e.button === 0) act(c[1]); });
+    c[0].addEventListener('click', function () { act(c[1]); });
   });
 
   /* ------------------------------------------------------------------ audio */
@@ -158,11 +178,13 @@
     } catch (err) {
       // No mic, no permission, or a device held exclusively elsewhere. Preview builds
       // fall back to a synthetic envelope so the motion stays tunable; the real app
-      // says so at once instead of animating a meter over a dead microphone.
-      synthetic = true;
+      // says so at once and its meter stays flat: never a meter moving over a dead
+      // microphone (0.2.6 drew the synthetic envelope here too, so a Mac whose
+      // microphone macOS had not allowed yet looked as if it heard speech).
+      synthetic = Boolean(window.__typdSynthetic);
       analyser = null;
       capturing = false;
-      if (!window.__typdSynthetic) window.typd.micProblem('unavailable');
+      if (!window.__typdSynthetic) window.typd.micProblem('unavailable', (err && err.name) || '');
     }
   }
 
@@ -211,7 +233,7 @@
       peak = Math.max(peak * 0.995, rms);
       return Math.min(1, rms / Math.max(peak, 0.015));
     }
-    if (synthetic) {
+    if (synthetic && window.__typdSynthetic) {
       var syl = Math.abs(Math.sin(t * 4.1) * Math.sin(t * 2.3 + 1.1));
       var micro = 0.55 + 0.45 * Math.sin(t * 21.7 + 0.6);
       var phrase = 0.5 + 0.5 * Math.sin(t * 0.52 - 0.4);
@@ -270,10 +292,21 @@
     history[KEEP - 1] = v;
   }
 
-  // The loop runs only while there is something to draw. Idle, the pill is
+  // The loop runs only while there is something to draw: listening or working. Idle, the pill is
   // hidden, and redrawing an invisible canvas 60 times a second cost about a
-  // third of a CPU core (renderer plus GPU process) with nobody dictating.
+  // third of a CPU core (renderer plus GPU process) with nobody dictating. A note or an error
+  // shows words, not the meter, so it does not run then either.
   var drawing = false;
+  var live = function () { return state === 'listening' || state === 'working'; };
+
+  // requestAnimationFrame comes at the display's rate: 144 or 240 times a second on a gaming
+  // monitor, for a meter that takes a sample every 52 ms. A frame is drawn only once at least
+  // this long has passed, which settles on every frame at 60-90 Hz, every 2nd at 120-165 Hz and
+  // every 3rd at 240 Hz -- an even cadence, so the glide stays smooth -- at most ~95 a second.
+  var FRAME_MS = 10.5;
+  var lastDraw = -1e9;
+
+  var colour = null;   // --meter, read once per session rather than every frame
 
   function wake() {
     if (drawing) return;
@@ -282,14 +315,19 @@
   }
 
   function draw(now) {
-    if (state === 'idle') { drawing = false; return; }
+    if (!live()) {
+      drawing = false;
+      ctx2d.clearRect(0, 0, canvas.width, canvas.height);
+      return;
+    }
     requestAnimationFrame(draw);
+    if (now - lastDraw < FRAME_MS) return;
+    lastDraw = now;
+    if (state === 'listening') reportHits();   // the controls move while they unfold
 
     var w = canvas.clientWidth, h = canvas.clientHeight;
     if (!w || !h) return;
     var t = (now - t0) / 1000;
-
-    var live = state === 'listening' || state === 'working';
 
     if (state === 'listening') {
       level += (readLevel(t) - level) * 0.4;
@@ -302,14 +340,13 @@
       windowPeak = Math.max(windowPeak, level);
     }
 
-    if (live && now - lastPush >= INTERVAL) {
+    if (now - lastPush >= INTERVAL) {
       push(Math.max(FLOOR, windowPeak));
       windowPeak = 0;
       lastPush = now;
     }
 
     ctx2d.clearRect(0, 0, w, h);
-    if (!live) return;
 
     /* Crispness is three things: geometry snapped to whole device pixels,
        filled rounded rects rather than stroked lines, and no glow anywhere
@@ -329,7 +366,7 @@
     // than stepping once every 52ms.
     var frac = GLIDE * Math.min(1, (now - lastPush) / INTERVAL);
 
-    var colour = meterColour();
+    if (!colour) colour = meterColour();
 
     for (var i = 0; i < KEEP; i++) {
       var fromRight = (KEEP - 1 - i) + frac;
@@ -397,7 +434,7 @@
   function setState(s) {
     state = s;
     overlay.setAttribute('data-state', s);
-    if (s !== 'idle') wake();
+    if (live()) wake();
     // The creep only moves while working, so only then does its timer run.
     if (s === 'working' && !creepId) creepId = setInterval(function () { creep(performance.now()); }, 60);
     if (s !== 'working' && creepId) { clearInterval(creepId); creepId = null; }
@@ -415,7 +452,7 @@
     meterLayer.setAttribute('data-on', words ? 'false' : 'true');
     resultEl.setAttribute('data-on', words ? 'true' : 'false');
 
-    if (s === 'idle') setInteractive(false);
+    if (s !== 'listening') controlsOff();
   }
 
   function dismiss(delay) {
@@ -423,7 +460,7 @@
     clearTimeout(hideId);
     hideId = setTimeout(function () {
       if (mine !== epoch) return;
-      setInteractive(false);
+      controlsOff();
       overlay.setAttribute('data-visible', 'false');
       setTimeout(function () {
         if (mine !== epoch) return;
@@ -466,8 +503,12 @@
     windowPeak = 0;
     history.fill(0);
 
+    colour = null;   // the scheme can change between sessions (TYPD_PREVIEW_THEME)
+    acted = false;
+    controlsLive = true;
     overlay.setAttribute('data-visible', 'true');
     setState('listening');
+    reportHits();
     window.typdSound.play('start');
     startMic();
   });
@@ -477,7 +518,7 @@
   window.typd.on('session:capture-end', function () {
     window.typdSound.play('commit');
     stopMic(true);   // hands the captured audio to main
-    setInteractive(false);
+    controlsOff();   // they fold on 'thinking'; from here on they mean nothing
   });
 
   window.typd.on('session:thinking', function () {
@@ -509,7 +550,19 @@
     dismiss(LINGER_DONE_MS);
   });
 
+  // Written, but not pasted (0.2.10): there was no text field, or the paste failed. The copy
+  // pop-up (main, copy-popup.js) now carries the text and what to do, so the pill just leaves:
+  // the done cue when there was simply nowhere to paste, the error cue when the paste failed.
+  window.typd.on('session:offered', function (p) {
+    controlsOff();
+    stopMic(false);
+    window.typdSound.play(p.failed ? 'error' : 'done');
+    setProgress(1);
+    dismiss(LINGER_DONE_MS);
+  });
+
   window.typd.on('session:error', function (p) {
+    controlsOff();
     stopMic(false);   // an error can arrive while still listening (a dead mic); never leave it open
     window.typdSound.play('error');
     setState('error');
@@ -539,6 +592,7 @@
   });
 
   window.typd.on('session:cancel', function () {
+    controlsOff();
     window.typdSound.play('cancel');
     stopMic(false);
     dismiss(0);

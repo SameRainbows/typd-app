@@ -169,7 +169,22 @@ async function focusContext() {
   try {
     const r = await command('context', 4000);
     if (!r || !r.process) return null;
-    return { process: r.process, title: r.title || '', text: r.text || '' };
+    // field: whether the focused element can take a paste (Get-FieldFacts; pasteTarget.js decides).
+    return { process: r.process, title: r.title || '', text: r.text || '', field: r.field || null };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The field facts alone, read now: the second look before a dictation is offered in the copy
+ * pop-up instead of pasted (pasteTarget.decide). Null when the helper cannot answer -- which
+ * means "unknown", and the paste goes ahead.
+ */
+async function fieldState() {
+  try {
+    const r = await command('field', 1500);
+    return r && r.ok && r.field ? r.field : null;
   } catch {
     return null;
   }
@@ -350,6 +365,6 @@ function stop() {
 }
 
 module.exports = {
-  start, stop, paste, copy, maskAlt, focusedApp, focusContext, selection, selectionStillIs, buttons,
+  start, stop, paste, copy, maskAlt, focusedApp, focusContext, fieldState, selection, selectionStillIs, buttons,
   isReady: () => ready
 };

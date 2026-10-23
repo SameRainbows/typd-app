@@ -8,6 +8,7 @@ const { spawn } = require('child_process');
 const { activeModel, versionOf } = require('../modelUpdate');
 const long = require('./long');
 const vocab = require('./vocab');
+const lowMemoryRule = require('../lowMemory');
 
 /**
  * The single dictation model: audio in, finished writing out, on this machine.
@@ -160,14 +161,19 @@ const REVISE_SYSTEM = 'Revise the highlighted text by following the spoken instr
 
 // Screen context costs prompt time on every dictation; the tail nearest the caret
 // carries the vocabulary that matters, and the model was trained on <=1500 chars.
-const MAX_CONTEXT = 1500;
+// Low-memory mode keeps the last 600: names and identifiers near the caret, ~150-200 tokens
+// of a 1,280-token window (a names list of that size is what the models use: dictation-research
+// reports/icl_example_cache.md).
+const MAX_CONTEXT = 1500, LOW_MAX_CONTEXT = 600;
+const contextChars = () => (lowMemory.on ? LOW_MAX_CONTEXT : MAX_CONTEXT);
 
 function contextPrompt(block) {
   if (!SPEC.context || !block) return '';
-  if (block.length <= MAX_CONTEXT + 200) return block;
+  const max = contextChars();
+  if (block.length <= max + 200) return block;
   // Keep the app and title lines; trim the visible text from the front.
   return block.replace(/(<visible_text[^>]*>\n)([\s\S]*)(\n<\/visible_text>)/, (m, open, text, close) =>
-    open + '…' + text.slice(text.length - MAX_CONTEXT) + close);
+    open + '…' + text.slice(text.length - max) + close);
 }
 
 function revisePrompt(span) {
@@ -176,6 +182,7 @@ function revisePrompt(span) {
 const PORT = Number(process.env.TYPD_LLAMA_PORT || 8737);
 
 let proc = null;
+let device = null;        // 'GPU' | 'CPU': where the running server's self-test passed (null: not known)
 let starting = null;
 let startError = null;
 let stopping = null;      // a switch is taking the old server down; warm() waits for it
@@ -329,7 +336,62 @@ const modelId = () => VERSION || path.basename(MODEL);
  * 2026-10-05), 2,048 -> 8,192 +376 MiB on the 1.7B (results/revise_long_check.log), ~61 KiB a
  * token. Flash attention (on by default with CUDA and Metal) keeps the compute buffer flat.
  */
-const CONTEXT = 4096;
+const CONTEXT_FULL = 4096;
+
+/*
+ * Low-memory mode (0.2.6; src/main/lowMemory.js decides, Settings > Low-memory mode). The "free
+ * levers" of dictation-research reports/sub_half_gb_plan.md, measured on three held-out sets with no
+ * quality change on the light model (+0.01 content WER, n.s.):
+ *   -c 1280        the window (1,152 tokens, which llama.cpp pads to a multiple of 256 anyway);
+ *   -ctk q8_0 -ctv q4_0 -fa on
+ *                  the KV cache at 8 bits for K and 4 for V: 46,592 bytes a token instead of 60,928, so
+ *                  57 MiB for the window instead of 238 MiB at 4,096. A quantized V needs flash attention,
+ *                  hence -fa on. K must stay at q8_0: q4_0 there breaks decoding (+9.7 WER, empty outputs);
+ *   --no-repack    one copy of the decoder weights on the CPU instead of two (the repacked copy for the
+ *                  CPU's matrix kernels is ~205 MiB for the light model; identical output).
+ * With the window that small, one request must never need more than it holds: long dictations are cut
+ * into smaller pieces (longLimits()), the screen context is trimmed to LOW_MAX_CONTEXT, and a revision
+ * whose selection does not fit is refused with the usual message (revise(), maxReviseChars()).
+ * The encoder's conv front end one chunk at a time (MTMD_QWEN3A_CONV_GROUP=1) is on in low-memory mode and
+ * on the processor: see serverEnv(). Measured, the light model on the CPU: bench/low-memory.js, CHANGELOG 0.2.7.
+ */
+const LOW_CONTEXT = 1280;
+const LOW_ARGS = ['-fa', 'on', '-ctk', 'q8_0', '-ctv', 'q4_0', '--no-repack'];
+
+// Decided at each server start (warm()): {on, why}. configure() hands in the setting.
+let lowMemory = { on: false, why: 'not decided yet' };
+let lowMemorySetting = () => 'auto';
+/** index.js: where the Settings choice ('auto' | 'on' | 'off') is read, at each server start. */
+function configure({ lowMemory: setting } = {}) {
+  if (typeof setting === 'function') lowMemorySetting = setting;
+}
+function decideLowMemory() {
+  let setting = 'auto';
+  try { setting = lowMemorySetting(); } catch { setting = 'auto'; }
+  let modelBytes = 0;
+  try { modelBytes = fs.statSync(MODEL).size; } catch { modelBytes = 0; }
+  return lowMemoryRule.decide({ setting, modelBytes, totalMem: require('os').totalmem() });
+}
+const contextSize = () => (lowMemory.on ? LOW_CONTEXT : CONTEXT_FULL);
+/** Would a restart now change low-memory mode (the setting changed)? */
+function lowMemoryStale() {
+  return Boolean(proc) && decideLowMemory().on !== lowMemory.on;
+}
+
+/*
+ * How long a recording one request may hold, and so the long-dictation pieces (long.js). A request holds
+ * the chat template and the language tag (~40 tokens), the screen context (contextChars() plus ~200 for
+ * the app and title lines, at 3 characters a token at worst), 13 audio tokens a second (Qwen3-ASR: 100
+ * frames make 13), and room for the answer: dictationBudget(), 96 + 8 a second. Full mode: the 4,096
+ * window fits 160 s that way, more than the 75 s the model was trained on, so long.js's own limits hold.
+ * Low-memory mode, 1,280 tokens: 41 s, so pieces of 23-36 s, the last at most 41 s.
+ */
+const AUDIO_TOKENS_PER_S = 13, TEMPLATE_TOKENS = 40;
+function longLimits() {
+  const system = Math.ceil((contextChars() + 200) / 3);
+  const room = contextSize() - TEMPLATE_TOKENS - 96 - 16 - system;
+  return long.limitsFor(room / (AUDIO_TOKENS_PER_S + 8));
+}
 
 /**
  * Where llama-server runs, and with which PATH. With the CUDA pack installed (cuda.dir()), in its
@@ -338,6 +400,22 @@ const CONTEXT = 4096;
  * first on PATH as well. Otherwise in llama-server's own folder, so nothing in whatever directory
  * Typd was started from is ever picked up.
  */
+/**
+ * Has this llama.cpp a GPU backend to put layers on? Metal on Apple silicon; on Windows the CUDA pack
+ * (cuda.dir()) or a CUDA backend beside llama-server (tester builds, installs updated from 0.2.4 or
+ * earlier). Otherwise -ngl 99 runs on the processor all the same: the public Windows build without the
+ * pack, an Intel Mac. TYPD_GPU_BACKEND=0/1 overrides it (the bench).
+ */
+function gpuBackend() {
+  if (process.env.TYPD_GPU_BACKEND === '0' || process.env.TYPD_GPU_BACKEND === '1') return process.env.TYPD_GPU_BACKEND === '1';
+  if (process.platform === 'darwin') return process.arch === 'arm64';
+  try {
+    return Boolean(cuda.dir()) || fs.existsSync(path.join(path.dirname(SERVER), 'ggml-cuda.dll'));
+  } catch {
+    return false;
+  }
+}
+
 function spawnOptions(dir = cuda.dir(), base = process.env, serverDir = path.dirname(SERVER)) {
   if (!dir) return { cwd: serverDir, env: base };
   const env = { ...base };
@@ -346,23 +424,55 @@ function spawnOptions(dir = cuda.dir(), base = process.env, serverDir = path.dir
   return { cwd: dir, env };
 }
 
-function launch(layers) {
-  const run = spawnOptions();
-  if (run.cwd !== path.dirname(SERVER)) debug('starting llama-server with the CUDA pack in', run.cwd);
-  const child = spawn(SERVER, [
+/**
+ * llama-server's arguments for `layers` on the GPU: the model, the port, the window and cache, and the
+ * revise adapter. Low-memory mode (`low`) swaps the window and the KV types and adds --no-repack.
+ */
+function serverArgs(layers, low = lowMemory.on) {
+  return [
     '-m', MODEL, '--mmproj', MMPROJ,
     '--host', '127.0.0.1', '--port', String(PORT),
     '-ngl', String(layers),
     // Low memory with no measurable quality change (2026-10-05): 8-bit KV cache and smaller
-    // micro-batches. The window is CONTEXT, above.
-    '-c', String(CONTEXT), '-ctk', 'q8_0', '-ctv', 'q8_0', '-ub', '256', '-np', '1',
+    // micro-batches. The window is CONTEXT_FULL, above; low-memory mode's is LOW_CONTEXT.
+    ...(low ? ['-c', String(LOW_CONTEXT), ...LOW_ARGS] : ['-c', String(CONTEXT_FULL), '-ctk', 'q8_0', '-ctv', 'q8_0']),
+    '-ub', '256', '-np', '1',
     '--cache-ram', '0',                           // no host prompt cache: every dictation is new audio
     // The built-in warm-up reserves ~550 MB for a 30 s audio window that a dictation never
     // needs at once; the self-test (or the silent request) warms it instead (1.76 -> 1.35 GB).
     '--no-warmup',
     '--no-webui',
+    // The eval tools and the bench share the machine: TYPD_LLAMA_THREADS caps the server's threads.
+    ...(/^\d+$/.test(process.env.TYPD_LLAMA_THREADS || '') ? ['-t', process.env.TYPD_LLAMA_THREADS, '-tb', process.env.TYPD_LLAMA_THREADS] : []),
     ...(adapter ? ['--lora', adapter.file, '--lora-init-without-apply'] : [])
-  ], { windowsHide: true, cwd: run.cwd, env: run.env, stdio: ['ignore', 'ignore', process.env.TYPD_DEBUG ? 'inherit' : 'ignore'] });
+  ];
+}
+
+/*
+ * The audio encoder's conv front end one 100-frame chunk at a time (Typd's llama.cpp patch,
+ * patches/llama.cpp/, built by scripts/build-mtmd.js): its compute buffer 554 -> 21 MiB on the light model
+ * (148 -> 21 MiB of VRAM for the 1.7B's encoder on CUDA). On the processor the output is identical (the same
+ * float operations, chunk by chunk). On CUDA it is not: smaller batches take other kernels, the encoder's
+ * numbers move in the last bits, and 15 of 40 AASR clips of the full model came out worded a little
+ * differently (dictation-research results/small/conv_gpu_encoder_check.log, 2026-10-18). So the full model
+ * on the GPU keeps the stock graph, as before; the patch runs in low-memory mode (where every lever is
+ * measured as one) and whenever the server runs on the processor (layers '0'). A llama.cpp without the
+ * patch ignores the variable. TYPD_CONV_GROUP overrides it (0: the stock graph; N: groups of N).
+ */
+function serverEnv(base, layers = '0', low = lowMemory.on) {
+  const g = process.env.TYPD_CONV_GROUP;
+  const env = { ...base };
+  delete env.MTMD_QWEN3A_CONV_GROUP;
+  if (g === '0') return env;
+  if (g && /^\d+$/.test(g)) env.MTMD_QWEN3A_CONV_GROUP = g;
+  else if (low || String(layers) === '0') env.MTMD_QWEN3A_CONV_GROUP = '1';
+  return env;
+}
+
+function launch(layers) {
+  const run = spawnOptions();
+  if (run.cwd !== path.dirname(SERVER)) debug('starting llama-server with the CUDA pack in', run.cwd);
+  const child = spawn(SERVER, serverArgs(layers), { windowsHide: true, cwd: run.cwd, env: serverEnv(run.env, gpuBackend() ? layers : '0'), stdio: ['ignore', 'ignore', process.env.TYPD_DEBUG ? 'inherit' : 'ignore'] });
   child.on('exit', (code) => {
     debug('server exited', code);
     if (proc === child) proc = null;
@@ -459,8 +569,12 @@ function warm() {
     const lora = LORA && fs.existsSync(LORA) ? LORA : null;
     if (LORA && !lora) debug('revise adapter missing at', LORA, '- revise runs on the base model');
 
+    lowMemory = decideLowMemory();
+    debug('low-memory mode', lowMemory.on ? 'ON' : 'off', '(' + lowMemory.why + ')');
+
     // A server left behind by a crashed run would hold the port; reuse it
     // rather than fail, since it is serving the same files.
+    device = null;
     if (await health()) {
       if (lora) adapter = await loadedAdapter(lora);
       debug('reusing server on', PORT, '(left by an earlier run; not self-tested)' + (adapter ? ' with the revise adapter' : ''));
@@ -483,6 +597,7 @@ function warm() {
       enabled: process.env.TYPD_SELFTEST !== '0' && fs.existsSync(FIXTURE)
     });
     if (!r.tested) await nudge('', 30000);   // the first dictation would otherwise pay for the warm-up
+    device = gpuBackend() ? where(r.layers) : 'CPU';
     debug('model', modelId(), 'ready in', Date.now() - t0, 'ms');
   })();
   starting = run
@@ -558,7 +673,8 @@ function toWav(samples, sampleRate) {
  */
 async function* dictate(samples, sampleRate, signal, system = '', maxTokens = 1024, opts = {}) {
   const sr = sampleRate || 16000;
-  if (samples.length / sr <= long.LONG_S) {
+  await warm();   // the window, and so the piece sizes, are the running server's
+  if (samples.length / sr <= longLimits().longS) {
     yield* decodeOne(samples, sr, signal, system, maxTokens);
     return;
   }
@@ -566,11 +682,15 @@ async function* dictate(samples, sampleRate, signal, system = '', maxTokens = 10
 }
 
 /** One request's worth of audio to text, streamed, then the dictionary check (vocab.js). */
-async function* decodeOne(samples, sr, signal, system, maxTokens) {
+async function* decodeOne(samples, sr, signal, system, maxTokens, opts = {}) {
   const parts = [toWav(samples, sr).toString('base64')];
-  const info = {};
+  const info = opts.info || {};
   let text = '';
-  for await (const t of dictateParts(parts, signal, system, maxTokens, false, { info })) {
+  // The first word comes after the encoder and the prompt: on a slow processor a 40-70 s piece takes a
+  // while, so the watchdog waits 30 s plus half a second per second of audio before calling it stuck.
+  const firstWordMs = 30000 + Math.round(500 * (samples.length / sr));
+  // opts.prefill: the answer so far (work while you talk), which the model continues.
+  for await (const t of dictateParts(parts, signal, system, maxTokens, false, { info, firstWordMs, prefill: opts.prefill })) {
     text = t;
     yield t;
   }
@@ -588,11 +708,11 @@ const seamKey = (c) => 'seam:' + c.seamFrom + ':' + c.from + ':' + c.to + ':' + 
  * written here, after anything still in flight (one request on the server at a time). Seam i is
  * written before piece i + 1, as the pieces arrive.
  */
-async function* dictateLong(samples, sr, signal, system, cache, hooks) {
-  const { pieces, cuts } = long.splitLong(samples, sr);
+async function* dictateLong(samples, sr, signal, system, cache, hooks, limits = longLimits()) {
+  const { pieces, cuts } = long.splitLong(samples, sr, limits);
   let waited = false;
   // Yields partial text while it writes; its last value is the whole text.
-  async function* textOf(key, kind, index, audio) {
+  async function* textOf(key, kind, index, audio, prefill = null) {
     const job = cache && cache.take(key, system);
     if (job) {
       const r = await job;
@@ -602,7 +722,7 @@ async function* dictateLong(samples, sr, signal, system, cache, hooks) {
     if (cache && !waited) { await cache.idle(); waited = true; }
     const t0 = Date.now();
     let text = '';
-    for await (const t of decodeOne(audio, sr, signal, system, dictationBudget(audio, sr))) { text = t; yield t; }
+    for await (const t of decodeOne(audio, sr, signal, system, dictationBudget(audio, sr), { prefill })) { text = t; yield t; }
     if (cache) cache.timings.push({ kind, index, phase: 'finish', ms: Date.now() - t0 });
     if (!text) yield '';
   }
@@ -618,8 +738,12 @@ async function* dictateLong(samples, sr, signal, system, cache, hooks) {
     }
     // Partials are progress for the pill only; the joins are made once each piece is whole.
     const key = p < cuts.length ? pieceKey(cuts[p]) : 'piece:last';
+    // The last piece continues what was written of it while the user talked (openLong, talk steps).
+    const lastStart = p ? cuts[p - 1].next : 0;
+    const cont = cache && cache.prefill && p === cuts.length && cache.prefill.start === lastStart ? cache.prefill.text : null;
+    const fin = cache && cache.final && p === cuts.length && cache.final.start === lastStart ? cache.final.text : null;
     let part = '';
-    for await (const t of textOf(key, 'piece', p, pieces[p])) {
+    for await (const t of (fin !== null ? [fin] : textOf(key, 'piece', p, pieces[p], cont))) {
       part = t;
       yield done ? done + ' ' + part : part;
     }
@@ -650,6 +774,15 @@ async function* dictateLong(samples, sr, signal, system, cache, hooks) {
  * whatever it cannot find. Nothing is pasted until finish() has joined everything; a cancelled
  * session's signal stops the request in flight and every one after it.
  *
+ * Work while you talk (0.2.10, the full model): the last piece -- for most dictations the whole of
+ * it -- is written while the user talks too, without cutting it. From TALK_FROM_S on, at a pause,
+ * a step writes everything said so far in the piece, continuing from the words the last two steps
+ * wrote alike (talkCommit); on release one request with the whole piece continues from there, so only
+ * the words after it are left to write -- or none at all: a step that already heard all the speech
+ * (only silence after its end, as when the user stops talking and then lets go) is the answer, waited
+ * for if still running. The text is the model's own answer for the whole recording, as before: one
+ * answer, no cut, no seam. A dictation that ends before the first step is written exactly as before.
+ *
  * @param {AbortSignal} signal   the session's
  * @param {() => string} system  the prompt, read when each piece is sent
  */
@@ -657,15 +790,113 @@ function openLong(signal, system) {
   let buf = new Float32Array(SR * 90);
   let len = 0;
   let closed = false;
-  const splitter = new long.Splitter(SR);
+  // The pieces must be the ones dictateLong() cuts at the end: the same limits (the server's window
+  // does not change during a session; a switch waits until no dictation is in progress).
+  const limits = longLimits();
+  const splitter = new long.Splitter(SR, limits);
   const jobs = new Map();
   const timings = [];
   let chain = Promise.resolve();
+  let busy = 0;   // pieces and seams queued or running
+
+  // Work while you talk: the steps. One at a time, only while no piece or seam is waiting.
+  const talk = talkOn();
+  let energy = new Float64Array(0), frames = 0;   // 20 ms frames, for the pauses
+  let step = null;      // the step in flight
+  let done = [];        // the steps written for the last piece, in order: {start, end, raw, sys}
+  let steps = 0;
+  let plan = null;
+  if (signal) signal.addEventListener('abort', () => { if (step) step.ctl.abort(); }, { once: true });
+
+  /**
+   * The latest pause of TALK_PAUSE_FRAMES+ in frames [lo, frames): {at (a sample just inside it, or -1),
+   * trailing (quiet frames at the very end), loud (a frame of speech: a third of the median frame, and
+   * never under the pause threshold -- a click or a breath stays under it or is over in < 100 ms)}.
+   */
+  function pauseAfter(lo) {
+    const f = TALK_FRAME, n = Math.floor(len / f);
+    if (n > energy.length) {
+      const grown = new Float64Array(Math.max(n, energy.length * 2, 4096));
+      grown.set(energy.subarray(0, frames));
+      energy = grown;
+    }
+    for (let j = frames; j < n; j++) {
+      let s = 0;
+      for (let k = j * f, end = k + f; k < end; k++) s += buf[k] * buf[k];
+      energy[j] = s;
+    }
+    frames = n;
+    if (lo >= n) return { at: -1, trailing: 0, loud: 0 };
+    // long.js's pause: under 1/30 of the median frame, or 3x the 10th percentile in a noisy room.
+    const sorted = Float64Array.from(energy.subarray(0, n)).sort();
+    const quiet = Math.max(sorted[Math.floor(n / 2)] / 30, 3 * sorted[Math.floor(n / 10)]);
+    let run = 0, at = -1;
+    for (let j = lo; j < n; j++) {
+      run = energy[j] < quiet ? run + 1 : 0;
+      if (run === TALK_PAUSE_FRAMES) at = (j - TALK_PAUSE_FRAMES + 1 + TALK_PAUSE_FRAMES / 2) * f;
+    }
+    return { at, trailing: run, loud: Math.max(quiet, sorted[Math.floor(n / 2)] / 3) };
+  }
+
+  /** What the last two steps of the piece from `start` wrote alike with prompt `sys`: the next opening, or null. */
+  function agreed(start, sys) {
+    const mine = done.filter((d) => d.start === start && d.sys === sys);
+    return mine.length >= 2 ? talkCommit(mine[mine.length - 1].raw, mine[mine.length - 2].raw) : null;
+  }
+
+  function maybeStep() {
+    if (!talk || closed || step || busy || (signal && signal.aborted) || len < TALK_FROM_S * SR) return;
+    const start = splitter.start;
+    done = done.filter((d) => d.start === start);   // a piece cut off since: only the new last piece's
+    const last = done[done.length - 1];
+    const from = last ? last.end : start;
+    if (len - from < TALK_LAST_S * SR || (len - start) / SR > limits.longS) return;
+    // A pause TALK_STEP_S after the last step; or, a second after it, a pause still going on at
+    // TALK_DONE_FRAMES (the user may be done: that step would be the answer).
+    const p = pauseAfter(Math.ceil((from + TALK_LAST_S * SR) / TALK_FRAME));
+    const end = p.at >= from + TALK_STEP_S * SR || (p.at >= 0 && p.trailing >= TALK_DONE_FRAMES) ? p.at : -1;
+    if (end < 0) return;
+    const sys = system();
+    const s = { start, end, sys, loud: p.loud, ctl: new AbortController(), t0: Date.now(), prefill: agreed(start, sys), writing: false };
+    const t = { kind: 'step', index: steps++, phase: 'early', availableS: len / SR, startS: len / SR, audioS: Math.round((end - start) / SR * 10) / 10, ms: null, prefill: s.prefill ? s.prefill.length : 0 };
+    timings.push(t);
+    const audio = buf.subarray(start, end);
+    const stopped = new Promise((resolve) => s.ctl.signal.addEventListener('abort', () => resolve(null), { once: true }));
+    const run = (async () => {
+      const info = {};
+      try {
+        const parts = [toWav(audio, SR).toString('base64')];
+        let text = '';
+        for await (const x of dictateParts(parts, s.ctl.signal, sys, dictationBudget(audio, SR), false, { info, prefill: s.prefill })) {
+          text = x;
+          // Past the opening it was given: the audio is read, the rest is writing.
+          if (info.raw && info.raw.length > (s.prefill ? s.prefill.length : 0)) s.writing = true;
+        }
+        // Only a whole answer counts: not one cut short by the budget, a loop or the watchdog.
+        if (s.ctl.signal.aborted || info.finish !== 'stop' || !text) return null;
+        return { start, end, raw: info.raw, sys, loud: s.loud, audio };
+      } catch {
+        return null;
+      }
+    })();
+    s.promise = Promise.race([run, stopped]).then((r) => {
+      t.ms = Date.now() - s.t0;
+      if (!r) t.error = s.ctl.signal.aborted ? 'dropped' : 'failed';
+      if (r && r.start === splitter.start) done.push(r);
+      if (step === s) step = null;
+      maybeStep();
+      return r;
+    });
+    if (signal && signal.aborted) s.ctl.abort();
+    step = s;
+    chain = chain.then(() => s.promise);   // a piece cut off now waits for it
+  }
 
   function schedule(key, kind, index, audio) {
     const sys = system();
     const t = { kind, index, phase: 'early', availableS: len / SR, ms: null };
     timings.push(t);
+    busy++;
     const promise = chain.then(async () => {
       if (signal && signal.aborted) { t.ms = 0; return { error: 'cancelled' }; }
       const t0 = Date.now();
@@ -683,6 +914,7 @@ function openLong(signal, system) {
     });
     chain = promise;
     jobs.set(key, { sys, promise });
+    promise.then(() => { busy--; maybeStep(); });
   }
 
   return {
@@ -697,26 +929,83 @@ function openLong(signal, system) {
       }
       buf.set(samples, len);
       len += samples.length;
-      if (len <= long.LONG_S * SR) return;
-      for (const c of splitter.feed(buf, len)) {
-        const i = splitter.cuts.length - 1;
-        debug('early: cut', i, 'settled at', (len / SR).toFixed(1), 's; piece', (c.start / SR).toFixed(1), '-', (c.end / SR).toFixed(1), 's');
-        schedule(pieceKey(c), 'piece', i, buf.subarray(c.start, c.end));
-        schedule(seamKey(c), 'seam', i, long.seamAudio(buf, SR, c));
+      if (len > limits.longS * SR) {
+        for (const c of splitter.feed(buf, len)) {
+          const i = splitter.cuts.length - 1;
+          debug('early: cut', i, 'settled at', (len / SR).toFixed(1), 's; piece', (c.start / SR).toFixed(1), '-', (c.end / SR).toFixed(1), 's');
+          if (step) step.ctl.abort();   // a step of the piece just cut off: no longer the last piece
+          schedule(pieceKey(c), 'piece', i, buf.subarray(c.start, c.end));
+          schedule(seamKey(c), 'seam', i, long.seamAudio(buf, SR, c));
+        }
       }
+      maybeStep();
     },
 
     /** Finished text for the whole recording: `samples` is the complete capture. */
     async* finish(samples, sampleRate, sig, sys, maxTokens = 1024) {
       closed = true;
+      // What was written early must be of this very audio: the capture is the chunks, in order.
+      let same = sampleRate === SR && samples.length >= len;
+      for (let i = 0; same && i < len; i++) if (samples[i] !== buf[i]) same = false;
+      plan = { steps, waited: false, dropped: false, final: false };
+      const start = splitter.start;
+      const fits = (x) => same && x && x.sys === sys && x.start === start;
+      // No speech in the capture after `end`: never TALK_SOUND_FRAMES in a row as loud as speech (the
+      // key's click as it is let go, a breath, are not).
+      const silentAfter = (end, loud) => {
+        const f = TALK_FRAME;
+        let run = 0;
+        for (let j = Math.ceil(end / f); (j + 1) * f <= samples.length; j++) {
+          let e = 0;
+          for (let k = j * f, stop = k + f; k < stop; k++) e += samples[k] * samples[k];
+          run = e < loud ? 0 : run + 1;
+          if (run >= TALK_SOUND_FRAMES) return false;
+        }
+        return true;
+      };
+      let answer = null;   // a step that heard all the speech: its answer is the piece's
+      if (step) {
+        const s = step;
+        if (fits(s) && silentAfter(s.end, s.loud)) {
+          plan.waited = true;
+          answer = await s.promise;
+        } else {
+          // A step that has read its audio and is writing: whatever it writes, release would have to
+          // write too, and it has read it already -- wait. One still reading: stop it.
+          if (!same || s.sys !== sys || !s.writing) { s.ctl.abort(); plan.dropped = true; } else plan.waited = true;
+          await s.promise;
+        }
+      }
+      const latest = done[done.length - 1];
+      if (!answer && fits(latest) && silentAfter(latest.end, latest.loud)) answer = latest;
+      const text = same && !answer ? agreed(start, sys) : null;
+      const cont = text ? { start, text } : null;
+      const mine = done.filter((d) => d.start === start && d.sys === sys);
+      plan.fromS = Math.round((start / SR) * 10) / 10;
+      plan.final = Boolean(answer);
+      plan.agreedChars = text ? text.length : 0;
+      plan.lastStepS = mine.length ? Math.round(((mine[mine.length - 1].end - start) / SR) * 10) / 10 : 0;
+      let final = null;
+      if (answer) {
+        // Its text, as decodeOne() would give it: the tag off, then the dictionary check.
+        const own = answer.raw.replace(/^\s*language \w+<asr_text>/, '').replace(/^\s+/, '');
+        final = { start, text: await checkTerms([toWav(answer.audio, SR).toString('base64')], sys, { raw: answer.raw }, own, sig) };
+        if (sig && sig.aborted) return;
+      }
+      if (steps) debug('talk:', steps, 'steps while talking; the last to', plan.lastStepS, 's;', final ? 'it heard everything: its answer' : cont ? plan.agreedChars + ' characters agreed' : 'nothing agreed', plan.waited ? '(waited for the last)' : plan.dropped ? '(the last dropped)' : '');
       if (!jobs.size || sampleRate !== SR) {
         await chain;
+        if (final && final.start === 0 && samples.length / SR <= limits.longS) {
+          yield final.text;
+          return;
+        }
+        if (cont && cont.start === 0 && samples.length / SR <= limits.longS) {
+          yield* decodeOne(samples, SR, sig, sys, maxTokens, { prefill: cont.text });
+          return;
+        }
         yield* dictate(samples, sampleRate, sig, sys, maxTokens);
         return;
       }
-      // What was written early must be of this very audio: the capture is the chunks, in order.
-      let same = samples.length >= len;
-      for (let i = 0; same && i < len; i++) if (samples[i] !== buf[i]) same = false;
       if (!same) debug('early: the capture differs from the chunks; writing it all now');
       debug('early:', jobs.size, 'requests settled while talking;', ((samples.length - splitter.start) / SR).toFixed(1), 's after the last cut');
       const cache = {
@@ -725,15 +1014,59 @@ function openLong(signal, system) {
           return j && j.sys === prompt ? j.promise : null;
         },
         idle: () => chain,
-        timings
+        timings,
+        prefill: cont,
+        final
       };
-      yield* dictateLong(samples, SR, sig, sys, cache, null);
+      yield* dictateLong(samples, SR, sig, sys, cache, null, limits);
     },
 
     /** Every request's timing so far -- for the bench and the replay. */
     get timings() { return timings.map((t) => ({ ...t })); },
-    get cuts() { return splitter.cuts.map((c) => c.end); }
+    get cuts() { return splitter.cuts.map((c) => c.end); },
+    /** At release: {steps, waited, dropped (the step in flight), final (a step's answer used), fromS (the last piece), lastStepS, agreedChars}. */
+    get plan() { return plan && { ...plan }; }
   };
+}
+
+/*
+ * Work while you talk (0.2.10). Steps start TALK_FROM_S into a dictation -- shorter ones are untouched --
+ * at a pause of TALK_PAUSE_FRAMES x 20 ms, once TALK_STEP_S of audio has come since the last (TALK_LAST_S
+ * for a pause that lasts TALK_DONE_FRAMES: the user may have stopped). Each, and
+ * the request at release, continues from the words the last two steps wrote alike (local agreement, as
+ * streaming recognisers do): a word is kept once two answers written with different amounts of the
+ * audio after it agree on it; anything after the first difference, and always the last TALK_OPEN_WORDS
+ * of the newer answer, is written again with all the audio there is. Measured on the user's 41 s
+ * dictation: the whole text, continued from its first 33 s less 3 words, came back word for word as
+ * the model wrote it in one go, with 23 new tokens instead of 84; keeping every word but the last 3
+ * changed a few words elsewhere on his longer recordings ("in first principles" -> "there are four
+ * principles"), which agreement keeps open (dictation-research LOG.md, 2026-10-20). Off in low-memory
+ * mode, on a server on the processor (every step reads all the audio again) and with TYPD_TALK=0.
+ */
+const TALK_FROM_S = 20, TALK_STEP_S = 3, TALK_LAST_S = 1, TALK_PAUSE_FRAMES = 8, TALK_DONE_FRAMES = 20, TALK_FRAME = 320;
+// Agreement never keeps the newer answer's last TALK_OPEN_WORDS; TALK_SOUND_FRAMES x 20 ms in a row as loud
+// as speech after a step's end is speech it did not hear (on the user's recordings the key's click and
+// breaths after the last word stay at 4 or fewer; words run far longer: LOG.md, 2026-10-21).
+const TALK_OPEN_WORDS = 2, TALK_SOUND_FRAMES = 5;
+function talkOn() {
+  return !lowMemory.on && device !== 'CPU' && process.env.TYPD_TALK !== '0';
+}
+
+/**
+ * The opening two answers agree on, word for word from the start, less at least TALK_OPEN_WORDS of
+ * `raw` (the newer), up to the end of a word; null when that leaves fewer than 3 words of text.
+ */
+function talkCommit(raw, prev) {
+  if (typeof raw !== 'string' || typeof prev !== 'string') return null;
+  const a = [...raw.matchAll(/\S+/g)], b = [...prev.matchAll(/\S+/g)];
+  let n = 0;
+  while (n < a.length && n < b.length && a[n][0] === b[n][0]) n++;
+  n = Math.min(n, a.length - TALK_OPEN_WORDS);
+  if (n <= 0) return null;
+  const end = a[n - 1].index + a[n - 1][0].length;
+  const tag = raw.indexOf('<asr_text>');
+  const text = raw.slice(tag < 0 ? 0 : tag + '<asr_text>'.length, end);
+  return (text.match(/\S+/g) || []).length >= 3 ? raw.slice(0, end) : null;
 }
 
 /* ------------------------------------------------------- the dictionary check */
@@ -790,7 +1123,7 @@ async function checkTerms(parts, system, info, text, signal) {
     if (signal && signal.aborted) return text;
     const before = (echoed ? '' : PREFILL) + raw.slice(0, lead + occ.index).replace(/\s+$/, '');
     const t0 = Date.now();
-    const first = await complete(body(parts, system, { max_tokens: 1, logprobs: true, top_logprobs: 10 }, false, before), signal);
+    const first = await complete(body(parts, system, { max_tokens: 1, logprobs: true, top_logprobs: 10 }, false, before, false), signal);
     const lp = first && first.choices && first.choices[0] && first.choices[0].logprobs && first.choices[0].logprobs.content && first.choices[0].logprobs.content[0];
     if (!lp || typeof lp.id !== 'number') { debug('vocab:', occ.term, 'no token probabilities; kept'); continue; }
     const tok = String(lp.token || '').trim().toLowerCase();
@@ -808,7 +1141,7 @@ async function checkTerms(parts, system, info, text, signal) {
         .sort((x, y) => y.logprob - x.logprob)[0];
       if (other) {
         const n = occ.term.split(/\s+/).length;
-        const second = await complete(body(parts, system, { max_tokens: 6 + 3 * n }, false, before + other.token), signal);
+        const second = await complete(body(parts, system, { max_tokens: 6 + 3 * n }, false, before + other.token, false), signal);
         let content = second && second.choices && second.choices[0] && second.choices[0].message && second.choices[0].message.content;
         // llama-server answers with the opening it was given and then its own tokens (the first
         // real run took that echo, "language English<asr_text>...", for the other word).
@@ -914,12 +1247,47 @@ function ping(system = '') {
   if (!starting) nudge(system);   // a server that is not up just refuses the connection
 }
 
+/*
+ * The language guard. A model that names the language itself ("prefill": "") can pick one the
+ * user does not speak: P2d, trained from stock Qwen3-ASR, wrote three short accented English clips
+ * in Japanese ("20年。", and twice Japanese under an English tag: "ピアノ。かっこいい？",
+ * "わからない。"), and with screen context it sometimes opened its answer with "active_application"
+ * in place of the tag (23 of 320 gold_eval_ctx items), which would be pasted. So a dictation's
+ * request carries a llama-server grammar: the answer opens with "language English<asr_text>" or
+ * "language Turkish<asr_text>", and its text has no letter of the other scripts the base model
+ * writes (Han and kana, Hangul, Cyrillic, Arabic, Devanagari, Thai). Emoji, symbols, Greek and
+ * every Latin letter stay allowed. The server checks only the token the model picked and resamples
+ * under the grammar when that token breaks it, so an answer that keeps to it is token for token
+ * the unguarded one. A request that continues an answer already holding its tag (work while you
+ * talk) gets the text rule alone. Revise, the dictionary check and models given their tag (older
+ * than round 11) send what they always sent. TYPD_LANG_GUARD=0 turns it off; a server that
+ * refuses the grammar gets the request again without it, and no grammar from then on (ask()).
+ */
+const GUARD_LANGUAGES = ['English', 'Turkish'];
+// Every range spans whole UTF-8 lead bytes where it matters: llama.cpp rejects a token that ends
+// inside a character when any character it could complete to is excluded.
+const GUARD_SCRIPTS = '\\u0400-\\u052F\\u0600-\\u06FF\\u0750-\\u077F\\u08A0-\\u08FF\\u0900-\\u097F' +
+  '\\u0E00-\\u0E7F\\u3000-\\u9FFF\\uAC00-\\uD7AF';
+const GUARD_TEXT = `text ::= [^${GUARD_SCRIPTS}]*`;
+const GUARD_OPEN = `root ::= "language " (${GUARD_LANGUAGES.map((l) => `"${l}"`).join(' | ')}) "<asr_text>" text\n${GUARD_TEXT}`;
+const GUARD_REST = `root ::= text\n${GUARD_TEXT}`;
+let guardRefused = false;
+
+/** The grammar for a request whose answer opens with `assistant`, or null (none sent). */
+function guardGrammar(assistant, asRevise) {
+  if (asRevise || PREFILL !== '' || guardRefused || process.env.TYPD_LANG_GUARD === '0') return null;
+  if (!assistant) return GUARD_OPEN;
+  return /^\s*language (?:English|Turkish)<asr_text>/.test(assistant) ? GUARD_REST : null;
+}
+
 /**
  * The request body for audio in one or more pieces (base64 WAVs, in order). Every request
  * goes through here. With a revise adapter loaded it names the adapter's scale: on only when
- * `asRevise` (see `adapter`); without one the body is what it always was.
+ * `asRevise` (see `adapter`); without one the body is what it always was. `guard` false: no
+ * language guard (the dictionary check, which reads the model's own probabilities).
  */
-function body(parts, system, extra, asRevise = false, assistant = PREFILL) {
+function body(parts, system, extra, asRevise = false, assistant = PREFILL, guard = true) {
+  const grammar = guard ? guardGrammar(assistant, asRevise) : null;
   return JSON.stringify({
     messages: [
       { role: 'system', content: system || '' },
@@ -931,6 +1299,7 @@ function body(parts, system, extra, asRevise = false, assistant = PREFILL) {
     temperature: 0,
     cache_prompt: true,
     ...(adapter ? { lora: [{ id: adapter.id, scale: asRevise ? 1 : 0 }] } : {}),
+    ...(grammar ? { grammar } : {}),
     ...extra
   });
 }
@@ -953,7 +1322,10 @@ async function* ask(parts, signal, system = '', maxTokens = 1024, asRevise = fal
   // A request for a session already cancelled would still run to the end on the server (the abort
   // listener below only fires on a change), holding the GPU from the next one.
   if (signal && signal.aborted) return;
-  const payload = body(parts, system, { stream: true, max_tokens: maxTokens }, asRevise);
+  // opts.prefill (work while you talk): the answer's opening, which the server streams back first.
+  const prefill = typeof opts.prefill === 'string' && opts.prefill ? opts.prefill : null;
+  const guarded = !!guardGrammar(prefill || PREFILL, asRevise);
+  const payload = body(parts, system, { stream: true, max_tokens: maxTokens }, asRevise, prefill || PREFILL);
 
   const queue = [];
   let done = false;
@@ -977,6 +1349,7 @@ async function* ask(parts, signal, system = '', maxTokens = 1024, asRevise = fal
         res.on('end', () => {
           debug('status', res.statusCode, body.slice(0, 400));
           failure = new Error('The dictation model refused the audio (' + res.statusCode + ')');
+          failure.grammar = guarded && /grammar/i.test(body);
           done = true;
           poke();
         });
@@ -1035,6 +1408,9 @@ async function* ask(parts, signal, system = '', maxTokens = 1024, asRevise = fal
       text += queue.join('');
       queue.length = 0;
       last = Date.now();
+      // A prefilled answer: the server streams the opening back, then the rest. One that would not
+      // echo it gets it put in front, so the text is always the whole answer.
+      if (prefill && !text.startsWith(prefill) && !prefill.startsWith(text)) text = prefill + text;
       info.raw = text;
       // The server may echo the prefilled tag on some builds; never show it.
       // A model that names the language itself streams the tag first; show nothing
@@ -1056,7 +1432,17 @@ async function* ask(parts, signal, system = '', maxTokens = 1024, asRevise = fal
       yield shown;
       continue;
     }
-    if (failure) throw failure;
+    if (failure) {
+      // A llama-server that cannot take the language guard (none known): the same request without
+      // it, and no guard from then on. Nothing was shown yet: a refusal comes before any word.
+      if (failure.grammar && !guardRefused) {
+        guardRefused = true;
+        debug('the server refused the language guard; dictating without it');
+        yield* ask(parts, signal, system, maxTokens, asRevise, opts);
+        return;
+      }
+      throw failure;
+    }
     if (done) {
       if (shownSoFar.length > checkedAt) {
         const cut = loopCut(shownSoFar, opts.allow);
@@ -1146,7 +1532,8 @@ function openStream(signal, system) {
      * the pieces already sent are its prefix, so only the rest is new.
      */
     async* finish(samples, sampleRate, sig, sys, maxTokens = 1024) {
-      if (!parts.length || sampleRate !== SR || samples.length < start) {
+      // All the pieces go in one request: past what one request may hold, the long path instead.
+      if (!parts.length || sampleRate !== SR || samples.length < start || samples.length / SR > longLimits().longS) {
         yield* dictate(samples, sampleRate, sig, sys, maxTokens);
         return;
       }
@@ -1194,10 +1581,10 @@ async function* revise(samples, sampleRate, signal, span, info = {}) {
   const spanTokens = await countTokens(span);
   // The prompt: the template and instruction (~13 audio tokens a second, 20 s at most) and the span.
   const prompt = spanTokens + Math.ceil(13 * (samples.length / sr)) + 96;
-  const room = CONTEXT - prompt - 16;
+  const room = contextSize() - prompt - 16;
   if (room < spanTokens + 64) {
     info.tooLong = true;
-    debug('revise: span of', spanTokens, 'tokens does not fit the', CONTEXT, 'window');
+    debug('revise: span of', spanTokens, 'tokens does not fit the', contextSize(), 'window');
     return;
   }
   const budget = Math.min(room, Math.max(1024, Math.round(spanTokens * 1.5) + 256));
@@ -1208,6 +1595,20 @@ async function* revise(samples, sampleRate, signal, span, info = {}) {
     // ~20 ms a prompt token on a slow CPU, over the usual 30 s.
     firstWordMs: 30000 + 20 * prompt
   });
+}
+
+/**
+ * The longest selection revise() can take, in characters, and in words for the message that says so:
+ * what fits the window twice (the selection in the prompt, its rewrite in the answer) beside a 20 s
+ * instruction (~260 audio tokens) and the template. 4,096 tokens: the 6,000 characters / ~1,000 words of
+ * 0.2.3 (pipeline/index.js, which also checks it). Low-memory mode's 1,280: ~1,500 characters / ~250
+ * words (English prose runs ~4 characters a token; Turkish and code fewer, which revise() refuses by
+ * their real token count).
+ */
+function reviseLimit() {
+  if (!lowMemory.on) return { chars: 6000, words: 1000 };
+  const tokens = Math.floor((contextSize() - 96 - 16 - 13 * 20 - 64) / 2);
+  return { chars: Math.floor(tokens * 3.5 / 100) * 100, words: Math.floor(tokens * 0.6 / 50) * 50 };
 }
 
 /**
@@ -1249,7 +1650,14 @@ async function transcribe(samples, sampleRate, signal, system = '') {
 
 module.exports = {
   warm, stop, ping, dictate, revise, transcribe, openStream, openLong, dictationBudget, loopCut, contextPrompt, revisePrompt,
-  countTokens, CONTEXT, setVocabLog,
+  countTokens, setVocabLog, configure, lowMemoryStale, gpuBackend, longLimits, reviseLimit, serverArgs, serverEnv, contextChars,
+  talkCommit,
+  // The language guard, for the bench (bench/lang-guard.js).
+  guardGrammar, languageGuard: { open: GUARD_OPEN, rest: GUARD_REST, scripts: GUARD_SCRIPTS, languages: GUARD_LANGUAGES },
+  /** The server's window, in tokens: 4,096, or 1,280 in low-memory mode. */
+  get CONTEXT() { return contextSize(); },
+  /** Low-memory mode for the server now running (or about to): {on, why}. */
+  get lowMemory() { return { ...lowMemory }; },
   // long.js's, here too for the eval tools that load local.js
   splitLong: long.splitLong, readSeam: long.readSeam, joinPieces: long.joinPieces, stitch: long.stitch,
   canRevise: () => Boolean(SPEC.revise),
@@ -1272,6 +1680,10 @@ module.exports = {
    * and the update checks' version counts name.
    */
   modelVersion: () => versionOf(MODEL_DIR, { version: VERSION, modelsDir: USER_MODELS }),
+  /** Where the running server runs: 'GPU', 'CPU', or null (not started by this run, or not up yet). */
+  get device() { return device; },
+  /** The running llama-server's process id (the bench measures its memory), or null. */
+  get SERVER_PID() { return proc ? proc.pid : null; },
   /** The revise adapter the running server has loaded (a path), or null. */
   get REVISE_ADAPTER() { return adapter ? adapter.file : null; },
   BUNDLED_DIR, PORT, FIXTURE

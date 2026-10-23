@@ -148,13 +148,13 @@ check('the pill is pinned dark, whatever the system theme',
 
 /* ------------------------------------------------ the "That was wrong" window */
 
-// Sharing's one question (ask-window.js, preload/ask.js, renderer/flag.*): the same silent seams
-// as the Typd window. Since 0.2.4 there is no consent screen (public builds share unless turned
-// off in Settings; the walkthrough's first screen says so).
-section('the "That was wrong" window, and no consent screen');
+// Sharing's questions (ask-window.js, preload/ask.js, renderer/flag.* and share.*): the same silent
+// seams as the Typd window. The consent screen of 0.2.0-0.2.3 is gone; since 0.2.7 sharing is asked
+// on the walkthrough's first screen (fresh installs) or in the small share screen (once).
+section('the "That was wrong" window and the share screen; no old consent screen');
 const aMain = read('src/main/ask-window.js');
 const aPre = read('src/preload/ask.js');
-for (const page of ['flag']) {
+for (const page of ['flag', 'share']) {
   const pHtml = read('src/renderer/' + page + '.html');
   const pJs = read('src/renderer/' + page + '.js');
   const pIds = [...new Set([...pJs.matchAll(/\$\('([^']+)'\)/g)].map((m) => m[1]))];
@@ -174,35 +174,47 @@ check('every handler goes through handle(), which checks the page',
   (aMain.match(/ipcMain\.handle\(/g) || []).length === 1 && /const kind = pageOf\(e\);\s*return kind \? fn\(kind/.test(aMain));
 const aEvents = (aPre.match(/const EVENTS = \[([^\]]+)\]/) || [, ''])[1];
 const aSent = [...new Set([...aMain.matchAll(/send\('([a-z]+:[a-z-]+)'/g)].map((m) => m[1]))];
-const aListened = [...new Set(['flag'].flatMap((p) => [...read('src/renderer/' + p + '.js').matchAll(/api\.on\('([^']+)'/g)].map((m) => m[1])))];
+const aListened = [...new Set(['flag', 'share'].flatMap((p) => [...read('src/renderer/' + p + '.js').matchAll(/api\.on\('([^']+)'/g)].map((m) => m[1])))];
 const aNotAllowed = [...aSent, ...aListened].filter((c) => !aEvents.includes("'" + c + "'"));
 check('every event sent or listened for is allowed by preload/ask.js', !aNotAllowed.length, aNotAllowed.join(', '));
 
 check('flag: asks "Share this one dictation so it can be fixed?"', /Share this one dictation so it can be fixed\?/.test(read('src/renderer/flag.html')));
-check('no consent screen: no page, no window kind, nothing in main opens one',
+check('no old consent screen: no page, no window kind, nothing in main opens one',
   !fs.existsSync(path.join(__dirname, '..', 'src', 'renderer', 'consent.html')) && !fs.existsSync(path.join(__dirname, '..', 'src', 'renderer', 'consent.js')) &&
   !/consent\.html/.test(aMain) && !/ask:consent/.test(aMain + aPre) && !/ask\.open\('consent'\)/.test(main) && !/needsConsent|askConsent/.test(main + read('src/main/home-window.js')));
 check('main queues a dictation only through sharing.add', /sharing\.add\(current, event\.text\)/.test(main) && !/collect\.add\(/.test(main));
+const notPasted = (main.match(/if \(!result\.ok\) \{[\s\S]*?\n {8}\}/) || [''])[0];
+check('a dictation not pasted is shared too (pasted: false), only when it was copied or offered in the copy pop-up',
+  /if \(result\.copied \|\| result\.offered\) sharing\.add\(current, event\.text, \{ pasted: false \}\);/.test(notPasted) && (main.match(/sharing\.add\(/g) || []).length === 2);
 
-// Sharing on by default in public builds (0.2.4), and how it is said and undone.
-section('sharing on by default (public builds)');
+// Sharing in public builds, asked since 0.2.7 (settings.js shareRule; bench/first-launch.js runs it).
+section('sharing asked (public builds, 0.2.7)');
 const sSrc = read('src/main/settings.js'), shSrc = read('src/main/sharing.js'), hwSrc = read('src/main/home-window.js');
-check("settings: 'share' defaults to 'on'", /\n\s*share: 'on',/.test(sSrc.replace(/\r\n/g, '\n')));
-check("settings: a saved '' (never answered) or no value reads 'on'; 'off' is kept; anything else is 'off'",
-  /cache\.share = shareFrom\(saved\);/.test(sSrc) && /saved\.share === '' \|\| saved\.share === 'on'\) return 'on';\s*return 'off';/.test(sSrc));
-check("settings: only 'on' or 'off' can be set", /if \(key === 'share' && !\['on', 'off'\]\.includes\(value\)\) return false;/.test(sSrc));
-check("sharing: only 'off' is off for a public build; a tester build keeps its key and pause",
-  /const sharingOn = \(\) => \(mode === 'tester' \? !paused\(\) : choice\.get\(\) !== 'off'\);/.test(shSrc));
+check("settings: 'share' and 'shareAsk' decided once by shareRule (fresh install, the cutoff, an explicit off)",
+  /const sh = shareRule\(saved, \{ fresh: \(\) => decideFresh\(\), firstLaunch: firstLaunchAt \}\);/.test(sSrc) &&
+  /const SHARE_CUTOFF = Date\.parse\('2026-10-18T15:00:00Z'\);/.test(sSrc) && /if \(sh\.decided && !firstRun\) write\(cache\);/.test(sSrc));
+check("settings: only 'on' or 'off' can be set ('ask' is never set back)", /if \(key === 'share' && !\['on', 'off'\]\.includes\(value\)\) return false;/.test(sSrc));
+check("sharing: only 'on' is on for a public build ('ask' and 'off' share nothing); a tester build keeps its key and pause",
+  /const sharingOn = \(\) => \(mode === 'tester' \? !paused\(\) : choice\.get\(\) === 'on'\);/.test(shSrc));
+check("every answer goes through sharing.answer (Don't share deletes what 0.2.6's default shared)",
+  /const r = await s\.answer\(share \? 'on' : 'off'\);/.test(main) && !/s\.choose\(/.test(main));
 check('Settings: the switch works at once both ways (no window in between)',
   /handle\('sharing:set', async \(on\) => \{[\s\S]*?const r = await deps\.chooseSharing\(on\);/.test(hwSrc) && !/sharing:about/.test(hwSrc + read('src/preload/home.js')));
 const rowAt = hHtml.indexOf('id="betaRow"'), recAt = hHtml.indexOf('id="recTitle"'), modelAt = hHtml.indexOf('id="modelRow"');
 check('Settings: "Share dictations" sits right after "Keep recordings", before the model rows', recAt > 0 && rowAt > recAt && rowAt < modelAt);
 check('Settings: "What\u2019s shared" opens the list in place, with what is never shared and the update-check line',
   /id="betaWhat" hidden/.test(hHtml) && /\$\('betaWhat'\)\.hidden = !open;/.test(hJs) && /Never shared: what\u2019s on your screen, text you had selected, window titles, or anything when you\u2019re not dictating\./.test(hHtml));
-const LINE = 'Help improve Typd: your dictations are shared to train the model. Turn off anytime in Settings.';
-check('walkthrough: the line, word for word, on step 1 only, in a public build with sharing on',
-  hJs.includes("var SHARE_LINE = '" + LINE + "';") && /var note = step === 1 && publicSharing\(\) \? SHARE_LINE : '';/.test(hJs) &&
-  /return Boolean\(sh && sh\.mode === 'beta' && sh\.state === 'on'\);/.test(hJs) && /id="walkNote" hidden/.test(hHtml));
+const Q = 'Help make Typd better?', LINE = 'Share your dictations (audio and text) to train the model. Never sold or published. You can change this anytime in Settings.';
+const plain = (t) => t.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ');
+const sHtml = read('src/renderer/share.html');
+check('walkthrough: step 1 asks, word for word, with Share and Don’t share, neither pressed until answered, and no Next until then',
+  plain(hHtml).includes(Q + ' ' + LINE) && /id="walkShareYes" aria-pressed="false">Share</.test(hHtml) && /id="walkShareNo" aria-pressed="false">Don’t share</.test(hHtml) &&
+  /var choice = step === 1 \? publicChoice\(\) : null;/.test(hJs) && /\$\('walkNext'\)\.hidden = choice === 'ask';/.test(hJs) && !/walkNote|SHARE_LINE/.test(hJs + hHtml));
+check('the share screen: the same words and the same two buttons, the same weight (neither solid)',
+  plain(sHtml).includes(Q + ' ' + LINE) && /class="btn ghost" type="button" id="shareNo">Don’t share</.test(sHtml) && /class="btn ghost" type="button" id="shareYes">Share</.test(sHtml));
+check('index.js: the share screen once (shareAsk due -> done as it opens), never with the walkthrough due',
+  /settings\.set\('shareAsk', 'done'\);[\s\S]{0,160}ask\.open\('share'\);/.test(main) && /settings\.get\('walkthrough'\) !== 'due'/.test(main) &&
+  main.indexOf('startShareAsk(Boolean(appUpdater && appUpdater.firstStart));') > main.indexOf('startWalkthrough(Boolean(appUpdater && appUpdater.firstStart));'));
 check('TYPD_NO_SHARE=1 turns sharing off for the run (CI launches)', /if \(process\.env\.TYPD_NO_SHARE === '1'\) return main;/.test(shSrc));
 for (const f of ['scripts/mac-close-check.sh', 'scripts/mac-launch-loop.sh', 'scripts/mac-tray-close-check.sh', 'scripts/mac-first-launch-check.sh', '.github/workflows/mac.yml']) {
   const t = read(f);
@@ -257,7 +269,37 @@ check('"Show Typd in the Dock": macOS, off by default, wired to the window',
 
 /* ------------------------------------------------------------------ timing */
 
+/* -------------------------------------------------------- the copy pop-up */
+
+// The copy pop-up (0.2.10: copy-popup.js, preload/popup.js, renderer/popup.*): the same silent seams.
+section('the copy pop-up');
+const pHtml = read('src/renderer/popup.html'), pJs = read('src/renderer/popup.js'), pPre = read('src/preload/popup.js');
+const pMain = read('src/main/copy-popup.js');
+const pIds = [...new Set([...pJs.matchAll(/getElementById\('([^']+)'\)/g)].map((m) => m[1]))];
+const pMissing = pIds.filter((id) => !pHtml.includes('id="' + id + '"'));
+check('every id popup.js reads is in popup.html (' + pIds.length + ')', !pMissing.length, pMissing.join(', '));
+const pChannels = (pPre.match(/const CHANNELS = \[([^\]]+)\]/) || [, ''])[1];
+const pListens = [...new Set([...pJs.matchAll(/typdPopup\.on\('([^']+)'/g)].map((m) => m[1]))];
+const pSends = [...new Set([...pMain.matchAll(/send\('(popup:[a-z]+)'/g)].map((m) => m[1]))];
+const pNot = [...pListens, ...pSends].filter((c) => !pChannels.includes("'" + c + "'"));
+check('every channel main sends or the page listens to is allowed by preload/popup.js', !pNot.length && pSends.length >= 4, pNot.join(', '));
+const pBack = [...pPre.matchAll(/ipcRenderer\.send\('(popup:[a-z]+)'/g)].map((m) => m[1]);
+check('every message the page sends has a listener in main that checks the sender',
+  pBack.length === 3 && pBack.every((c) => new RegExp("ipcMain\\.on\\('" + c + "'").test(pMain)) && /const from = \(e\) => e\.sender === wc;/.test(pMain));
+check('the window never takes the focus: focusable false, shown inactive, click-through but the card, a panel on a Mac',
+  /focusable: false/.test(pMain) && /win\.showInactive\(\)/.test(pMain) && !/\.show\(\)|\.focus\(\)/.test(pMain) &&
+  /win\.setIgnoreMouseEvents\(true\)/.test(pMain) && /type: 'panel'/.test(pMain) && !/forward: true/.test(pMain));
+check('no key is taken from other apps (no globalShortcut, no Escape) in the pop-up',
+  !/globalShortcut|Escape|keydown/.test(pMain + pJs));
+check('the pop-up page is packaged (src/**) and pinned dark like the pill', /<html[^>]*data-scheme="dark"/.test(pHtml) &&
+  JSON.parse(read('package.json')).build.files.includes('src/**/*'));
+check('index.js: the pill leaves on session:offered, which the overlay preload allows and the page handles',
+  /send\('session:offered'/.test(main) && pre.includes("'session:offered'") && /typd\.on\('session:offered'/.test(js));
+
 section('timing constants that must agree');
+const fadeJs = (pMain.match(/const FADE_MS = (\d+)/) || [])[1];
+const fadeCss = (read('src/renderer/popup.css').match(/--dur-leave:\s*(\d+)ms/) || [])[1];
+check('copy pop-up FADE_MS === --dur-leave', fadeJs && fadeJs === fadeCss, fadeJs + ' vs ' + fadeCss);
 const exitJs = (js.match(/var EXIT_MS = (\d+)/) || [])[1];
 const exitCss = (read('src/renderer/overlay.css').match(/--dur-exit:\s*(\d+)ms/) || [])[1];
 check('EXIT_MS === --dur-exit', exitJs && exitJs === exitCss, exitJs + ' vs ' + exitCss);

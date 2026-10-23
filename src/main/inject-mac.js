@@ -352,7 +352,18 @@ async function focusContext() {
   const r = await read('context', 4000);
   debug('context', r && r.process, 'text=' + (r && r.text ? r.text.length : 0), (Date.now() - started) + 'ms');
   if (!r || !r.process) return null;
-  return { process: r.process, title: r.title || '', text: r.text || '' };
+  // field: whether the focused element can take a paste (fieldFacts; pasteTarget.js decides).
+  return { process: r.process, title: r.title || '', text: r.text || '', field: r.field || null };
+}
+
+/**
+ * The field facts alone, read now: the second look before a dictation is offered in the copy
+ * pop-up instead of pasted (pasteTarget.decide). Null when the screen cannot be read -- which
+ * means "unknown", and the paste goes ahead.
+ */
+async function fieldState() {
+  const r = await read('field', 1500);
+  return r && r.ok && r.field ? r.field : null;
 }
 
 /**
@@ -552,7 +563,7 @@ async function prime() {
 }
 
 module.exports = {
-  start, stop, paste, copy, maskAlt, focusedApp, focusContext, selection, selectionStillIs,
+  start, stop, paste, copy, maskAlt, focusedApp, focusContext, fieldState, selection, selectionStillIs,
   isReady: () => keys.ready,
   listenAccess, requestListen, prime
 };

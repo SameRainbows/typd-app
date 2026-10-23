@@ -5,24 +5,25 @@ const { app, BrowserWindow, ipcMain, nativeTheme } = require('electron');
 const brand = require('./brand');
 
 /**
- * The one question sharing asks (sharing.js), in one small window:
+ * The questions sharing asks (sharing.js), each in one small window:
  *
  *   flag      "That was wrong" on the last dictation, with an optional one-line note. If it was
  *             never shared, it asks first: "Share this one dictation so it can be fixed?"
- *
- * (Until 0.2.3 a consent screen lived here too. Since 0.2.4 public builds share unless turned
- * off in Settings, and the walkthrough's first screen says so: there is no consent screen.)
+ *   share     "Help make Typd better?" -- Share / Don't share, nothing preselected (0.2.7). Once, on
+ *             an install first started after the cutoff that 0.2.4-0.2.6 never asked (index.js
+ *             startShareAsk); a fresh install is asked on the walkthrough's first screen instead.
+ *             The answer goes through sharing.answer (index.js chooseSharing).
  *
  * Like the Typd window, it exists only while open, and every call from its page is named,
  * checked to come from that window's own page, and validated here.
  */
 
-const PAGES = { flag: 'flag.html' };
-const SIZE = { flag: [460, 360] };
+const PAGES = { flag: 'flag.html', share: 'share.html' };
+const SIZE = { flag: [460, 360], share: [440, 210] };
 const SURFACE = { dark: '#17191E', light: '#FBFBFC' };
 const MAC = process.platform === 'darwin';
 
-const wins = { flag: null };
+const wins = { flag: null, share: null };
 let deps = null;
 
 /** Which of our windows sent this, if it came from that window's own page; else null. */
@@ -69,6 +70,7 @@ function flagState() {
  * @param {object} d
  * @param {() => object|null} d.sharing             sharing.get()
  * @param {(result: object) => void} d.flagged       a flag went through (the pill says so)
+ * @param {(share: boolean) => Promise<object>} d.answer   the share screen's answer (index.js chooseSharing)
  */
 function register(d) {
   deps = d;
@@ -88,10 +90,19 @@ function register(d) {
     return r;
   });
 
+  // "Help make Typd better?": true = Share, false = Don't share. Stored (and, for Don't share on an
+  // install that shared under 0.2.6's default, what it shared deleted), then the window closes.
+  handle('ask:share', async (kind, share) => {
+    if (kind !== 'share' || typeof share !== 'boolean' || !deps.answer) return null;
+    const r = await deps.answer(share);
+    close('share');
+    return r;
+  });
+
   handle('ask:close', (kind) => { close(kind); return true; });
 }
 
-/** Open (or bring forward) the window: 'flag'. */
+/** Open (or bring forward) the window: 'flag' or 'share'. */
 function open(kind) {
   if (!PAGES[kind] || !deps) return;
   const existing = wins[kind];
@@ -105,8 +116,9 @@ function open(kind) {
   const w = new BrowserWindow({
     width, height, useContentSize: true, resizable: false, minimizable: false, maximizable: false,
     fullscreenable: false, show: false, autoHideMenuBar: true, title: 'Typd',
-    // The flag answers a key pressed in another app: keep it above that app until answered.
-    alwaysOnTop: kind === 'flag',
+    // The flag answers a key pressed in another app, and the share question comes at launch while
+    // another app may be in front: keep each above it until answered or closed.
+    alwaysOnTop: true,
     backgroundColor: nativeTheme.shouldUseDarkColors ? SURFACE.dark : SURFACE.light,
     icon: brand.windowIcon(),
     webPreferences: {

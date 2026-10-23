@@ -5,12 +5,13 @@
  * (it finds a server already up on TYPD_LLAMA_PORT and reuses it). Every request's audio is
  * decoded back to samples and handed to `answer`, which says what the "model" writes.
  *
- *   const fake = await fakeLlama({ answer: (req) => ({ text, logprobs }), msPerAudioSecond })
+ *   const fake = await fakeLlama({ answer: (req) => ({ text, logprobs }), msPerAudioSecond, msPerWord })
  *   fake.port, fake.requests (every body, parsed, with its audio), fake.maxInFlight, fake.close()
  *
  * `req` = {body, system, assistant (the answer's opening, if any), audio (Float32Array, 16 kHz),
- * seconds}. `answer` may return a string or {text, logprobs, finish}. Streamed requests get the
- * text in word-sized chunks; one-shot requests one JSON reply (with `logprobs` when given).
+ * seconds}; once answered, `reply` (the text written). `answer` may return a string or {text,
+ * logprobs, finish}. Streamed requests get the text in word-sized chunks; one-shot requests one
+ * JSON reply (with `logprobs` when given).
  */
 
 const http = require('http');
@@ -24,7 +25,7 @@ function readWav(buf) {
   return s;
 }
 
-function fakeLlama({ answer, msPerAudioSecond = 0, tokenChars = 4 } = {}) {
+function fakeLlama({ answer, msPerAudioSecond = 0, msPerWord = 0, tokenChars = 4 } = {}) {
   const fake = { requests: [], inFlight: 0, maxInFlight: 0 };
   fake.server = http.createServer((req, res) => {
     if (req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end('{"status":"ok"}'); }
@@ -63,6 +64,7 @@ function fakeLlama({ answer, msPerAudioSecond = 0, tokenChars = 4 } = {}) {
       try {
         let out = answer ? await answer(r) : 'Fine.';
         if (typeof out === 'string') out = { text: out };
+        r.reply = out.text;
         const wait = msPerAudioSecond * r.seconds;
         if (wait > 0 && body.max_tokens !== 1) await new Promise((ok) => setTimeout(ok, wait));
         if (aborted) return;
@@ -71,8 +73,15 @@ function fakeLlama({ answer, msPerAudioSecond = 0, tokenChars = 4 } = {}) {
           return res.end(JSON.stringify({ choices: [{ index: 0, finish_reason: out.finish || 'stop', message: { role: 'assistant', content: out.text }, ...(out.logprobs ? { logprobs: { content: out.logprobs } } : {}) }] }));
         }
         res.writeHead(200, { 'Content-Type': 'text/event-stream' });
-        const pieces = String(out.text).match(/\s*\S+/g) || [];
-        for (const p of pieces) res.write('data: ' + JSON.stringify({ choices: [{ index: 0, delta: { content: p }, finish_reason: null }] }) + '\n\n');
+        // A prefilled answer comes back first in one piece, as llama-server sends it; then word by word.
+        const text = String(out.text);
+        const echo = r.assistant && text.startsWith(r.assistant) ? r.assistant : '';
+        const pieces = (echo ? [echo] : []).concat(text.slice(echo.length).match(/\s*\S+/g) || []);
+        for (const [i, p] of pieces.entries()) {
+          if (aborted) return;
+          if (msPerWord && (i > 0 || !echo)) await new Promise((ok) => setTimeout(ok, msPerWord));
+          res.write('data: ' + JSON.stringify({ choices: [{ index: 0, delta: { content: p }, finish_reason: null }] }) + '\n\n');
+        }
         res.write('data: ' + JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: out.finish || 'stop' }] }) + '\n\n');
         res.end('data: [DONE]\n\n');
       } finally {
