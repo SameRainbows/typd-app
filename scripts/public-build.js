@@ -34,6 +34,10 @@
  *   cuda_ok             Windows: resources/llama/cuda.json names the CUDA backend and its pack, and
  *                       either every file it names is there (bundled_cuda) or none is (the CUDA pack
  *                       is fetched: the default since 0.2.5). --expect-cuda yes|no makes the kind a check.
+ *   patched_mtmd        since 0.2.7: llama.cpp's mtmd library in the app (mtmd.dll, libmtmd.0.dylib) is Typd's
+ *                       patched build (scripts/build-mtmd.js: it carries MTMD_QWEN3A_CONV_GROUP), so the audio
+ *                       encoder runs one conv chunk at a time (src/main/pipeline/local.js). The stock one would
+ *                       still work, with a ~0.5 GB bigger encoder buffer; a public build must not ship it.
  *   known keys          every key this machine knows -- tester*.json in this checkout and the main one,
  *                       this machine's model-updates.json reader key, dictation-research's admin key,
  *                       $TYPD_COLLECT_ADMIN_KEY -- is searched for, byte for byte, in every file of
@@ -271,6 +275,16 @@ function verify({ app, platform, installer, expectModel = null, expectCuda = nul
     if (expectCuda && cudaDesc && (expectCuda === 'yes') !== checks.bundled_cuda) {
       problems.push(expectCuda === 'yes' ? 'expected the CUDA backend in the app; it has none' : 'expected no CUDA backend in the app (the CUDA pack); it has ' + present.join(', '));
     }
+  }
+
+  // 3c. the patched audio encoder (scripts/build-mtmd.js)
+  {
+    const lib = path.join(path.dirname(server), mac ? 'libmtmd.0.dylib' : 'mtmd.dll');
+    let buf = null;
+    try { buf = fs.readFileSync(lib); } catch { /* below */ }
+    checks.patched_mtmd = Boolean(buf && buf.includes(Buffer.from('MTMD_QWEN3A_CONV_GROUP')));
+    if (!buf) problems.push(path.basename(lib) + ' is missing beside llama-server');
+    else if (!checks.patched_mtmd) problems.push(path.basename(lib) + ' is the stock build: run scripts/build-mtmd.js (Windows) / scripts/fetch-llama-mac.js on a Mac');
   }
 
   // 4. every key this machine knows, byte for byte, in every file

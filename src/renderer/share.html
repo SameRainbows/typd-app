@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:" />
+  <title>Typd</title>
+  <link rel="stylesheet" href="ask.css" />
+</head>
+<body>
+  <!-- Sharing, asked once (main/ask-window.js 'share', main/index.js startShareAsk): the same words and
+       two buttons as the walkthrough's first screen. Neither is preselected or focused; closing the
+       window answers nothing, and sharing stays off. -->
+  <h1 id="shareQ">Help make Typd better?</h1>
+  <p id="shareText">Share your dictations (audio and text) to train the model. Never sold or published. You can change this anytime in Settings.</p>
+
+  <p class="error" id="error" hidden></p>
+
+  <div class="actions" role="group" aria-labelledby="shareQ">
+    <button class="btn ghost" type="button" id="shareNo">Don’t share</button>
+    <button class="btn ghost" type="button" id="shareYes">Share</button>
+  </div>
+
+  <script src="share.js"></script>
+</body>
+</html>

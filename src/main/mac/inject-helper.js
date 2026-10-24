@@ -23,6 +23,7 @@
 //   2 context
 //   3 selection
 //   4 copysel
+//   5 field
 
 ObjC.import('Foundation');
 try { ObjC.import('AppKit'); } catch (e) { /* no NSPasteboard or NSWorkspace: the commands say so */ }
@@ -493,19 +494,79 @@ function focus() {
   return out;
 }
 
+// The front app's bundle id, and whether it is built on a web engine (Chromium, Electron, CEF):
+// read from the app's own Frameworks folder, no Apple event. Cached per bundle path.
+const webCache = {};
+function frontBundle() {
+  const out = { bundle: '', web: false };
+  try {
+    const app = $.NSWorkspace.sharedWorkspace.frontmostApplication;
+    if (isNil(app)) return out;
+    out.bundle = str(app.bundleIdentifier);
+    const url = app.bundleURL;
+    const root = isNil(url) ? '' : str(url.path);
+    if (!root) return out;
+    if (!(root in webCache)) {
+      let web = false;
+      try {
+        const list = ObjC.deepUnwrap($.NSFileManager.defaultManager.contentsOfDirectoryAtPathError($(root + '/Contents/Frameworks'), null)) || [];
+        web = list.some(function (n) { return /^(Electron Framework|Chromium Embedded Framework|.*(Chrome|Chromium|Edge|Brave|Opera|Vivaldi|Arc).* Framework)\.framework$/i.test(String(n)); });
+      } catch (e) { /* no Frameworks folder: not a web-engine app */ }
+      webCache[root] = web;
+    }
+    out.web = webCache[root];
+  } catch (e) { /* unknown: the classifier treats missing facts as "paste" */ }
+  return out;
+}
+
+// Can the focused element take a paste? Facts only (src/main/pasteTarget.js decides, tested in
+// bench/copy-popup.js): its role and subrole, whether its AXValue is settable, the front app's
+// bundle id and web engine. Never its text. `el` is the AXFocusedUIElement already read, or null.
+function fieldFacts(el) {
+  const f = frontBundle();
+  f.focused = Boolean(el);
+  f.role = ''; f.subrole = ''; f.settable = null;
+  if (!el) return f;
+  const role = attr(el, 'AXRole');
+  f.role = typeof role === 'string' ? role : '';
+  const sub = attr(el, 'AXSubrole');
+  f.subrole = typeof sub === 'string' ? sub : '';
+  if (!/^AX(TextField|TextArea|ComboBox|SearchField)$/.test(f.role)) {
+    try { f.settable = Boolean(el.attributes.byName('AXValue').settable()); } catch (e) { if (fatal(e)) throw e; f.settable = null; }
+  }
+  return f;
+}
+
+// field: the facts alone, for the second look just before a dictation would be offered instead
+// of pasted (the focus may have moved into a text field while the user talked).
+function field() {
+  const out = { ok: true, field: null };
+  try {
+    const p = frontProcess();
+    const el = p ? attr(p, 'AXFocusedUIElement') : null;
+    out.field = fieldFacts(el || null);
+  } catch (e) {
+    blocked(out, e);
+    out.field = { error: out.denied || 'error' };
+  }
+  return out;
+}
+
 // The focused control's text, the way inject.ps1's Get-FocusText and
 // Get-Context take it: the top of the document, or -- when there is a caret --
 // the window immediately before it, which is what the speaker is actually
 // looking at and dictating into. Then the last LIMIT characters of that.
 function context() {
-  const out = { ok: true, process: '', title: '', text: '' };
+  const out = { ok: true, process: '', title: '', text: '', field: null };
   try {
     const p = frontProcess();
-    if (!p) { out.process = frontName(); return out; }
+    if (!p) { out.process = frontName(); out.field = fieldFacts(null); return out; }
     out.process = processName(p);
     out.title = windowTitle(p);
 
     const el = attr(p, 'AXFocusedUIElement');
+    // Whether a paste can land there (pasteTarget.js), from the same element: a few Apple events more.
+    try { out.field = fieldFacts(el || null); } catch (e) { if (fatal(e)) throw e; out.field = { error: 'error' }; }
     const value = el ? attr(el, 'AXValue') : undefined;
     if (typeof value === 'string' && value) {
       let text = value.slice(0, LIMIT);
@@ -637,6 +698,7 @@ const COMMANDS = {
   access: function () { return { ok: true, listen: listenAccess() }; },
   focus: focus,
   context: context,
+  field: field,
   selection: selection,
   prime: prime,
   'request-listen': requestListen

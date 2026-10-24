@@ -95,7 +95,9 @@
     });
   }
 
+  var lastPerms = [];
   function renderStatus(status, perms) {
+    lastPerms = perms || [];
     var card = $('statusCard');
     card.setAttribute('data-state', status.state);
     withKeys($('statusLine'), status.card, S.hotkey.parts);
@@ -144,10 +146,20 @@
       row.appendChild(el('span', 'tick', isOff ? '○' : '✓'));
       row.appendChild(el('span', 'what', PERMS[k][0] + ' — ' + PERMS[k][1]));
       if (isOff) {
-        var b = el('button', 'btn', 'Open System Settings');
+        // The microphone never answered (macOS has no entry for Typd yet): macOS's own prompt, not the
+        // pane -- the pane's list has no Typd to turn on until macOS has asked (permissions-mac.js).
+        var unasked = k === 'microphone' && (S.mic === 'not-determined' || S.mic === 'asking');
+        var b = el('button', 'btn', unasked ? (S.mic === 'asking' ? 'Ask again' : 'Allow') : 'Open System Settings');
         b.type = 'button';
         b.onclick = function () { api.pane(k); };
         row.appendChild(b);
+        // macOS says "off" but Typd may not even be in its list (no switch to turn on): ask macOS again.
+        if (k === 'microphone' && (S.mic === 'denied' || S.mic === 'restricted') && api.mic && api.mic.reset) {
+          var again = el('button', 'text', 'Not listed? Ask again');
+          again.type = 'button';
+          again.onclick = function () { again.disabled = true; api.mic.reset().then(function (r) { S.mic = (r && r.state) || S.mic; refreshPerms(); }); };
+          row.appendChild(again);
+        }
       } else {
         row.appendChild(el('span', 'dim small', 'On'));
       }
@@ -505,6 +517,7 @@
     var pk = M.pack && M.pack.line ? M.pack.line : '';
     $('modelNowLine').textContent = (M.line || '') + (pk ? ' · ' + pk : '');
     $('askBeforeModelDownload').checked = Boolean(S.settings.askBeforeModelDownload);
+    renderLowMemory();
     var p = M.pending;
     $('modelAsk').hidden = !p;
     if (p) {
@@ -512,6 +525,20 @@
         (p.why === 'metered' ? ' — this connection is metered.' : p.why === 'unknown' ? ' — this connection may be metered.' : '.');
       $('modelLater').hidden = Boolean(p.later);
     }
+  }
+
+  // Low-memory mode (0.2.6): Automatic / On / Off, under the model; Automatic says what it does now.
+  function renderLowMemory() {
+    var row = $('lowMemoryRow');
+    if (!row) return;
+    row.hidden = $('modelRow').hidden;
+    var s = S.settings.lowMemory || 'auto';
+    $('lowMemory').value = s;
+    var now = S.settings.lowMemoryNow;
+    $('lowMemory').options[0].textContent = now ? 'Automatic (' + (now.on ? 'on' : 'off') + ')' : 'Automatic';
+    var help = 'Uses about half the memory, with the same accuracy. Long dictations are written in shorter pieces, and you can revise up to ~250 words at a time.';
+    if (s === 'auto') help += ' Automatic turns it on for the Light model and on computers with less than 8 GB of memory' + (now && now.why ? ' (now: ' + now.why + ').' : '.');
+    $('lowMemoryHelp').textContent = help;
   }
 
   /* ---------------------------------------------------------- updates */
@@ -554,6 +581,17 @@
       S.settings.modelVariant = v;
       toast(v === 'auto' ? 'Typd picks the model for this ' + S.platform.machine : variantName(v) + ' model chosen. Typd switches when it is ready');
       setTimeout(loadModel, 400);
+    });
+  });
+  $('lowMemory').addEventListener('change', function (e) {
+    var v = e.target.value;
+    api.settings.set('lowMemory', v).then(function (ok) {
+      if (!ok) { failSettings("Couldn't change that setting."); renderLowMemory(); return; }
+      S.settings.lowMemory = v;
+      toast('Low-memory mode: ' + (v === 'auto' ? 'automatic' : v) + '. The model restarts in a moment');
+      setTimeout(function () {
+        api.settings.state().then(function (st) { if (st) { S.settings.lowMemoryNow = st.lowMemoryNow; renderLowMemory(); } }).catch(function () {});
+      }, 6000);
     });
   });
   $('askBeforeModelDownload').addEventListener('change', function (e) {
@@ -622,8 +660,9 @@
 
   /* ------------------------------------------------------ sharing, public builds */
 
-  // Sharing in a public build (sharing.js, mode 'beta'): on by default since 0.2.4, and the
-  // walkthrough's first screen says so. The switch takes effect at once, either way.
+  // Sharing in a public build (sharing.js, mode 'beta'): asked since 0.2.7 (the walkthrough's first
+  // screen, or the small screen); not answered yet ('ask') shows as off. The switch takes effect at
+  // once, either way, and stores 'on' or 'off'.
   function renderBeta() {
     var s = S.settings, sh = s.sharing, m = S.platform.machine;
     var beta = Boolean(sh && sh.mode === 'beta');
@@ -635,7 +674,9 @@
       ? 'Stopped: the server no longer accepts this ' + m + '. Turn sharing off and on again to start over.'
       : on
         ? 'On: each dictation’s audio and text go to the developer to train Typd’s model. Never your screen, selections or window titles. Dictating itself works offline.'
-        : 'Off: what you dictate stays on this ' + m + '.';
+        : sh.choice === 'ask'
+          ? 'Off until you choose: what you dictate stays on this ' + m + '. Turn it on to share your dictations (audio and text) to train the model.'
+          : 'Off: what you dictate stays on this ' + m + '.';
     $('betaDelete').hidden = !(sh.shared || on);
     $('betaId').hidden = !sh.id;
     $('betaId').textContent = sh.id ? 'Anonymous ID ' + sh.id : '';
@@ -969,8 +1010,6 @@
     var step = 0;
     var SAMPLE = 'Hi Sam, I just wanted to quickly reach out and let you know that I will most likely be running a little bit late to our meeting tomorrow morning, so sorry about that.';
 
-    var SHARE_LINE = 'Help improve Typd: your dictations are shared to train the model. Turn off anytime in Settings.';
-
     function sharing() {
       var sh = S.settings && S.settings.sharing;
       if (!sh) return false;
@@ -978,10 +1017,31 @@
       return sh.state === 'on';
     }
 
-    /** A public build (not a tester's) with sharing on: the first screen says so. */
-    function publicSharing() {
+    /**
+     * A public build (not a tester's): the first screen asks (0.2.7). 'ask' (not answered yet), 'on'
+     * or 'off'; null in a tester build or one without sharing.
+     */
+    function publicChoice() {
       var sh = S.settings && S.settings.sharing;
-      return Boolean(sh && sh.mode === 'beta' && sh.state === 'on');
+      if (!sh || sh.mode !== 'beta') return null;
+      return sh.choice || (sh.state === 'on' ? 'on' : 'off');
+    }
+
+    /** The first screen's answer: stored at once (Settings' own call), then on to step 2. */
+    var answering = false;
+    function answerShare(share) {
+      if (answering) return;
+      answering = true;
+      $('walkShareYes').disabled = true;
+      $('walkShareNo').disabled = true;
+      api.sharing.set(share).then(function (r) {
+        answering = false;
+        $('walkShareYes').disabled = false;
+        $('walkShareNo').disabled = false;
+        if (r && r.settings) { S.settings = r.settings; renderRecordings(); }
+        if (!r) { render(); return; }
+        if (step === 1) go(2);
+      });
     }
 
     function flagParts() {
@@ -1008,15 +1068,20 @@
       }
       $('walkBack').hidden = step === 1;
       $('walkNext').textContent = step === STEPS ? 'Done' : 'Next';
+      // Step 1 in a public build: Share or Don't share, nothing preselected. Not answered yet, there
+      // is no Next: the walkthrough goes on with an answer (Skip or Esc closes it, sharing still off).
+      var choice = step === 1 ? publicChoice() : null;
+      $('walkShare').hidden = !choice;
+      $('walkShareYes').setAttribute('aria-pressed', String(choice === 'on'));
+      $('walkShareNo').setAttribute('aria-pressed', String(choice === 'off'));
+      $('walkNext').hidden = choice === 'ask';
       $('walkSkip').hidden = step === STEPS;
       $('walkTry').hidden = step !== 2 && step !== 3;
       var title, body, parts = h.parts;
-      // Step 1 in a public build with sharing on: the one line about sharing, word for word.
-      var note = step === 1 && publicSharing() ? SHARE_LINE : '';
       if (step === 1) {
         title = 'Typd writes what you say';
         body = 'Talk, and finished text lands wherever you were typing, punctuation and all. It runs on this ' + p.machine +
-          (note ? '.' : sharing() ? '; your dictations are also shared to improve Typd, as you chose (Settings changes that).' : ', so nothing you say is sent anywhere.');
+          (choice ? '.' : sharing() ? '; your dictations are also shared to improve Typd, as you chose (Settings changes that).' : ', so nothing you say is sent anywhere.');
       } else if (step === 2) {
         title = 'Try a dictation';
         body = 'Click in the box, ' + h.verb + ' {key} and say a sentence, then ' + h.verb + ' {key} again.';
@@ -1042,11 +1107,42 @@
       }
       $('walkTitle').textContent = title;
       withKeys($('walkBody'), body, parts);
-      $('walkNote').textContent = note;
-      $('walkNote').hidden = !note;
       if (step !== 2 && step !== 3) hint('');
       else if (S.needed) hint(WAIT_HINT);
       renderModel();
+      renderMic();
+    }
+
+    // macOS: the microphone, on every step until macOS has allowed it. S.mic is permissions-mac.js's
+    // micState(): 'granted', 'denied', 'restricted', 'not-determined' (never answered: Typd is not in
+    // macOS's Microphone list yet) or 'asking' (macOS's prompt is up).
+    var hadMic = false;
+    var micNote = '';   // what "Ask macOS again" found, when macOS still says no
+    function renderMic() {
+      var box = $('walkMic'), btn = $('walkMicAllow'), m = S.mic;
+      $('walkMicReset').hidden = !(m === 'denied' || m === 'restricted');
+      if (!S.platform.mac || !m || m === 'unknown') { box.hidden = true; return; }
+      box.classList.remove('done');
+      if (m === 'granted') {
+        btn.hidden = true;   // allowed: no "Ask again" next to the tick
+        box.hidden = !hadMic;
+        if (hadMic) { box.classList.add('done'); $('walkMicText').textContent = '✓ Microphone allowed.'; }
+        return;
+      }
+      hadMic = true;
+      box.hidden = false;
+      btn.hidden = false;
+      btn.disabled = false;
+      if (m === 'asking') {
+        $('walkMicText').textContent = 'macOS is asking: click Allow in its dialog. Can’t see it? Ask again.';
+        btn.textContent = 'Ask again';
+      } else if (m === 'denied' || m === 'restricted') {
+        $('walkMicText').textContent = micNote || 'The microphone is off for Typd. Turn on Typd in System Settings › Privacy & Security › Microphone.';
+        btn.textContent = 'Open System Settings';
+      } else {
+        $('walkMicText').textContent = 'Typd needs your microphone to hear you. macOS asks once.';
+        btn.textContent = 'Allow microphone';
+      }
     }
 
     // No speech model yet: what the download is doing, and the one thing it may need from the
@@ -1100,18 +1196,41 @@
       $('walk').hidden = false;
       go(n || 1);
       api.walkthrough.done();
+      refreshMic();
     }
 
     function close() {
       $('walk').hidden = true;
       step = 0;
       api.walkthrough.practice(false);
+      if (api.walkthrough.closed) api.walkthrough.closed();   // main: a Mac's switches dialog may come now
     }
 
     $('walkNext').addEventListener('click', function () { go(step + 1); });
+    $('walkShareYes').addEventListener('click', function () { answerShare(true); });
+    $('walkShareNo').addEventListener('click', function () { answerShare(false); });
     $('walkModelNow').addEventListener('click', function () {
       $('walkModelNow').disabled = true;
       api.model.now().then(function () { $('walkModelNow').disabled = false; refreshNeeded(); });
+    });
+    $('walkMicAllow').addEventListener('click', function () {
+      if (!api.mic) return;
+      $('walkMicAllow').disabled = true;
+      S.mic = S.mic === 'denied' || S.mic === 'restricted' ? S.mic : 'asking';
+      renderMic();
+      api.mic.request().then(function (state) { S.mic = state || S.mic; renderMic(); refreshPerms(); });
+    });
+    $('walkMicReset').addEventListener('click', function () {
+      if (!api.mic || !api.mic.reset) return;
+      $('walkMicReset').disabled = true;
+      S.mic = 'asking'; micNote = '';
+      renderMic();
+      api.mic.reset().then(function (r) {
+        $('walkMicReset').disabled = false;
+        if (r && r.state === 'restarting') { micNote = 'Typd is starting again so that macOS asks afresh…'; S.mic = 'denied'; renderMic(); return; }
+        S.mic = (r && r.state) || S.mic;
+        renderMic(); refreshPerms();
+      });
     });
     $('walkBack').addEventListener('click', function () { go(step - 1); });
     $('walkSkip').addEventListener('click', close);
@@ -1131,6 +1250,7 @@
       open: open,
       close: close,
       model: function () { if (step) renderModel(); },
+      mic: function () { if (step) renderMic(); },
       get step() { return step; },
       /** The key was heard here, outside the box: say where to click. */
       heard: function () {
@@ -1176,6 +1296,21 @@
     renderStatus(p.status, p.perms);
   });
 
+  // macOS: the microphone's state moved (macOS's prompt went up, or was answered).
+  api.on('home:mic', function (p) {
+    if (!S || !p || !p.state) return;
+    S.mic = p.state;
+    walk.mic();
+    refreshPerms();
+  });
+  function refreshMic() {
+    if (!api.mic || !S || !S.platform.mac) return;
+    api.mic.get().then(function (state) { if (!S || !state) return; S.mic = state; walk.mic(); refreshPerms(); });
+  }
+  function refreshPerms() {
+    if (S && S.status) renderStatus(S.status, lastPerms);
+  }
+
   /* -------------------------------------------------------------------- boot */
 
   function boot() {
@@ -1197,6 +1332,7 @@
       if (q.get('walkthrough') === '1') walk.open(1);
       if (q.get('updates') === '1') { scrollToUpdates = true; loadUpdates(); }
       refreshNeeded();
+      refreshMic();
     });
   }
 

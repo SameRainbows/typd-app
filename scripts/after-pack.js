@@ -25,8 +25,9 @@
  *     privacy switches across updates (docs/MAC.md "Code signing"); without it, ad hoc
  *     (`--sign -`: a local build). The loose Mach-O files in Resources (llama-server, its dylibs,
  *     native .node modules) are signed one by one first, because `--deep` only descends into
- *     nested bundles and frameworks, then the app as a whole with --deep. No hardened runtime and
- *     no entitlements, as before. Only possible on a Mac; elsewhere it warns, and that .app will
+ *     nested bundles and frameworks, then the app as a whole with --deep, with the microphone
+ *     entitlement (scripts/mac-entitlements.plist; 0.2.7) and the helpers' NSMicrophoneUsageDescription.
+ *     No hardened runtime, as before. Only possible on a Mac; elsewhere it warns, and that .app will
  *     not open on Apple Silicon.
  *
  * Neither is Developer ID: Gatekeeper still blocks the first open of a downloaded copy the same
@@ -87,6 +88,33 @@ function signArgs(env = process.env) {
   if (!/^[0-9A-Fa-f]{40}$/.test(id)) throw new Error('TYPD_MAC_SIGN_IDENTITY must be the certificate\'s SHA-1 (40 hex digits)');
   const kc = (env.TYPD_MAC_SIGN_KEYCHAIN || '').trim();
   return { args: ['--sign', id, '--timestamp=none', ...(kc ? ['--keychain', kc] : [])], label: 'with Typd\'s certificate ' + id.slice(0, 8) };
+}
+
+/**
+ * `--entitlements <scripts/mac-entitlements.plist>`: the microphone entitlement, for the app bundle and
+ * its helpers (not the loose Mach-O files in Resources). Shared with scripts/app-update-package.js,
+ * whose re-sign of the outer app would otherwise drop the main executable's.
+ */
+const ENTITLEMENTS = path.join(__dirname, 'mac-entitlements.plist');
+function entitlementArgs() {
+  if (!fs.existsSync(ENTITLEMENTS)) throw new Error('missing ' + ENTITLEMENTS);
+  return ['--entitlements', ENTITLEMENTS];
+}
+
+/**
+ * The helper apps (Frameworks/*.app) get the main app's NSMicrophoneUsageDescription. Chromium opens
+ * the microphone in a helper process (its audio service); macOS asks on behalf of the app responsible
+ * for it, Typd, whose Info.plist has the key -- but a helper that ever asks for itself must not be
+ * the one bundle without it (macOS ends a process that asks without a usage string).
+ */
+function helperUsageStrings(app) {
+  const main = path.join(app, 'Contents', 'Info.plist');
+  const text = run('plutil', ['-extract', 'NSMicrophoneUsageDescription', 'raw', '-o', '-', main]).trim();
+  if (!text) throw new Error(main + ' has no NSMicrophoneUsageDescription');
+  const fw = path.join(app, 'Contents', 'Frameworks');
+  const helpers = fs.existsSync(fw) ? fs.readdirSync(fw).filter((n) => n.endsWith('.app')) : [];
+  for (const h of helpers) run('plutil', ['-replace', 'NSMicrophoneUsageDescription', '-string', text, path.join(fw, h, 'Contents', 'Info.plist')]);
+  return helpers.length;
 }
 
 /** `codesign -d -r-`: the designated requirement, the code identity macOS privacy settings remember. */
@@ -176,11 +204,16 @@ async function afterPack(context) {
     return;
   }
 
+  // The helpers' usage strings first: their Info.plists are sealed by the signature below.
+  const helpers = helperUsageStrings(app);
+  console.log(`  • typd: NSMicrophoneUsageDescription in ${helpers} helper apps too`);
   // Extended attributes (quarantine, Finder info) make codesign refuse the bundle.
   try { run('xattr', ['-cr', app]); } catch { /* nothing to clear */ }
   const how = signArgs();
   for (const f of machos) run('codesign', ['--force', ...how.args, f]);
-  run('codesign', ['--force', '--deep', ...how.args, app]);
+  // The bundle and, through --deep, its helpers and frameworks: with the microphone entitlement. Still
+  // no hardened runtime (no --options runtime): see scripts/mac-entitlements.plist.
+  run('codesign', ['--force', '--deep', ...how.args, ...entitlementArgs(), app]);
   run('codesign', ['--verify', '--deep', '--strict', app]);
   const dr = designatedRequirement(app);
   const id = (process.env.TYPD_MAC_SIGN_IDENTITY || '').trim().toLowerCase();
@@ -195,3 +228,4 @@ module.exports = afterPack;
 module.exports.default = afterPack;
 module.exports.signArgs = signArgs;
 module.exports.designatedRequirement = designatedRequirement;
+module.exports.entitlementArgs = entitlementArgs;
