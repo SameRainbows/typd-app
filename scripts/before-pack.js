@@ -62,6 +62,12 @@ module.exports = async function beforePack(context) {
   const src = path.join(projectDir, 'models', 'typd-dictate');
   const dst = path.join(projectDir, STAGE);
   if (context.electronPlatformName === 'win32') stageLlama(projectDir);
+  // macOS: the app icon (build.mac.icon = build/icon.icns) is made by Apple's iconutil
+  // (scripts/build-mac-icon.sh); the Mac CI makes it before packaging, a local Mac build here.
+  if ((context.electronPlatformName === 'darwin' || context.electronPlatformName === 'mas') && !fs.existsSync(path.join(projectDir, 'build', 'icon.icns'))) {
+    if (process.platform !== 'darwin') throw new Error('build/icon.icns is missing: make it on a Mac with bash scripts/build-mac-icon.sh');
+    require('child_process').execFileSync('bash', [path.join(projectDir, 'scripts', 'build-mac-icon.sh')], { cwd: projectDir, stdio: 'inherit' });
+  }
 
   if (process.env.TYPD_NO_BUNDLED_MODEL === '1') {
     fs.rmSync(dst, { recursive: true, force: true });

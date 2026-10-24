@@ -451,7 +451,7 @@ function walkthroughTests() {
   check('never with --stub, --preview, TYPD_NO_WALKTHROUGH=1 or the CI window test', /stub \|\| preview/.test(due) && /TYPD_NO_WALKTHROUGH === '1'/.test(due) && /TYPD_TEST_CLOSE_HOME/.test(due));
   check("never after an app update: no path in startWalkthrough waits for one", !/whenUserActive/.test(start));
   check('started with afterUpdate = the first start after an app update', /startWalkthrough\(Boolean\(appUpdater && appUpdater\.firstStart\)\)/.test(idx));
-  check('one question at a time: it waits while the Mac permission dialog is open (there is no consent screen)', !/consent/.test(start.replace(/\/\*[\s\S]*?\*\//g, '')) && /isAsking\(\)/.test(start));
+  check('one question at a time: it waits while the Mac permission dialog (or, at most 15 s, macOS\'s microphone prompt) is open (there is no consent screen)', !/consent/.test(start.replace(/\/\*[\s\S]*?\*\//g, '')) && /isAsking\(\d*\)/.test(start));
   check('marked done as it opens (closing it early does not bring it back), in the home window', /settings\.set\('walkthrough', 'done'\);\s*home\.open\('home', \{ walkthrough: true[^}]*\}\)/.test(start));
   check("the practice box: the key dictates there, and only there, in Typd's own window", /if \(session \|\| !home\.isFocused\(\) \|\| home\.isPracticing\(\)\) return false;/.test(idx));
   const hw = read('src/main/home-window.js');

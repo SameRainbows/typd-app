@@ -18,6 +18,11 @@
  *   - public builds: the daily limit holds, with room left for live dictations; the next day goes on
  *   - never while sharing is off (a tester's pause waits; a public 'off' cancels), never after
  *     "Delete what I've shared"; the server's request starts it once
+ *   - the automatic run (0.2.7, autoOnce): once, for a public install that shares and never shared,
+ *     against a server that will not list its items (403, as typd-collect answers a key it did not
+ *     ask): every recording kept before it began, not the live item that waited in the outbox, not
+ *     one kept since; decided once and remembered -- not again on the next launch, not when off, after
+ *     a delete, when the install shared before, with no recordings; waits while not answered
  */
 
 const fs = require('fs');
@@ -47,7 +52,7 @@ async function until(cond, ms = 20000) {
 
 function fakeServer() {
   const s = { items: new Map(), bodies: [], testerKeys: new Map([['tk_tester_key_0123456789', 'tester_a']]), keys: new Map(),
-    backfillFor: new Set(), uploadStatus: null, requests: [] };
+    backfillFor: new Set(), uploadStatus: null, enrollDown: false, requests: [] };
   const send = (res, status, body) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
   const who = (req) => {
     const m = /^Bearer (\S+)$/.exec(req.headers.authorization || '');
@@ -61,6 +66,7 @@ function fakeServer() {
       const body = Buffer.concat(chunks);
       s.requests.push(req.method + ' ' + req.url);
       if (req.method === 'POST' && req.url === '/v1/enroll') {
+        if (s.enrollDown) return send(res, 503, { error: 'busy' });
         const n = s.keys.size + 1, key = 'ik_' + 'k'.repeat(40) + n, id = 'i-' + String(n).padStart(20, '0');
         s.keys.set(key, id);
         return send(res, 201, { key, id });
@@ -274,6 +280,96 @@ const backfilled = (server) => [...server.items.values()].filter((m) => m.backfi
     check('... not from Settings either', !after.ok && after.state === 'never');
     check('... nor the server', !(await bf.request('server')).ok);
     check('nothing of these went', !backfilled(server).some((m) => /^off /.test(m.output)));
+  }
+
+  section('the automatic run (0.2.7): once, for a public install that shares and never shared');
+  {
+    const S = setup('auto', { tester: false });
+    const OLD = T0 + 6 * 86400e3;
+    for (let i = 0; i < 4; i++) keep(S.recDir, OLD + i * 30e3, baseMeta({ output: 'auto ' + i }));
+    keep(S.recDir, OLD + 200e3, baseMeta({ mode: 'revise', guard: 'deleted too much', output: 'refused' }));
+    // 0.2.6 queued one live dictation that never went (no key yet: it never reached the server).
+    const a = S.make({ endpoint: 'http://127.0.0.1:9' });
+    const liveAt = Date.now() - 1500;
+    const liveName = keep(S.recDir, liveAt, baseMeta({ output: 'live, waiting' }));
+    a.sharing.add({ samples: new Float32Array(16000), sampleRate: 16000, text: 'live, waiting', mode: 'dictate', endedAt: liveAt - 400, pastedAt: liveAt + 300 });
+    await until(async () => (await a.sharing.pending()) === 1);
+    a.bf.stop();
+    const before = server.items.size;
+
+    // The first launch of 0.2.7.
+    const b = S.make(server);
+    check('never shared (no key): it is for this install', b.sharing.autoBackfillWhy() === null);
+    const r = await b.bf.autoOnce(() => b.sharing.autoBackfillWhy());
+    check('decided and started: by itself, 6 kept recordings', r.decided && r.ran && r.recordings === 6 && b.bf.status().state === 'running' && b.bf.status().by === 'auto', r);
+    // Kept after it began: shared live, so never by the run.
+    const lateName = keep(S.recDir, Date.now() + 5000, baseMeta({ output: 'kept after the start' }));
+    await until(() => b.bf.status().state === 'done', 30000);
+    await until(async () => (await b.sharing.pending()) === 0, 20000);
+    await sleep(300);
+    const got = backfilled(server).filter((m) => /^auto \d$/.test(m.output) || m.output === 'live, waiting' || m.output === 'kept after the start');
+    check('the server would not list its items (403), and the run went on: all 4 past dictations went', got.filter((m) => /^auto /.test(m.output)).length === 4, got.map((m) => m.output));
+    check('not the live item that waited in the outbox (it went live, once), not the one kept since, not the refused revision',
+      !got.some((m) => m.output === 'live, waiting' || m.output === 'kept after the start') &&
+      [...server.items.values()].filter((m) => m.output === 'live, waiting').length === 1 && !backfilled(server).some((m) => m.output === 'refused'),
+      [...server.items.values()].map((m) => m.output + (m.backfill ? ' (backfill)' : '')));
+    check('each with consent all, backfill true, its keptAt', got.every((m) => m.consent === 'all' && m.backfill === true && m.keptAt), got[0]);
+    check('enrolled once (by the run), nothing else new on the server', [...server.keys.values()].length >= 1 && server.items.size === before + 5, server.items.size - before);
+    const led = JSON.parse(fs.readFileSync(path.join(S.userData, 'backfill.json'), 'utf8'));
+    check('the ledger remembers it: auto ran, done', led.auto && led.auto.ran === true && led.state === 'done' && led.by === 'auto', led.auto);
+    void liveName; void lateName;
+
+    // The next launch: never again.
+    const c = S.make(server);
+    const r2 = await c.bf.autoOnce(() => c.sharing.autoBackfillWhy());
+    await sleep(300);
+    check('the second launch: decided before, nothing new', !r2.decided && c.bf.status().state === 'done' && server.items.size === before + 5, r2);
+  }
+  {
+    const cases = [
+      ['sharing off', (S) => { S.state.share = 'off'; }, 'sharing is off'],
+      ['the install shared before (a key at launch)', async (S, server) => { const x = S.make(server); await x.sharing.choose('on'); x.bf.stop(); }, 'this install has shared before'],
+      ['"Delete what I\'ve shared" before', async (S, server) => { const x = S.make(server); await x.sharing.deleteShared(); x.bf.stop(); S.state.share = 'on'; }, 'this install deleted what it shared'],
+      ['no kept recordings', (S) => { fs.rmSync(S.recDir, { recursive: true, force: true }); }, 'no kept recordings']
+    ];
+    for (const [label, prep, why] of cases) {
+      const S = setup('auto-no-' + label.replace(/[^a-z]+/gi, '-'), { tester: false });
+      keep(S.recDir, T0 + 7 * 86400e3, baseMeta({ output: 'never ' + label }));
+      await prep(S, server);
+      const x = S.make(server);
+      const r = await x.bf.autoOnce(() => x.sharing.autoBackfillWhy());
+      check(label + ': not run, and remembered ("' + why + '")', r.decided && !r.ran && r.why === why && x.bf.status().auto && x.bf.status().auto.ran === false, r);
+      S.state.share = 'on';
+      const y = S.make(server);
+      const r2 = await y.bf.autoOnce(() => y.sharing.autoBackfillWhy());
+      await sleep(200);
+      check(label + ': not on a later launch either, sharing on or not', !r2.decided && y.bf.status().state !== 'running' && !backfilled(server).some((m) => m.output === 'never ' + label), r2);
+      x.bf.stop(); y.bf.stop();
+    }
+  }
+  {
+    // Not answered yet (an install from after the cutoff): it waits, remembers nothing, and runs once
+    // the answer is Share.
+    const S = setup('auto-ask', { tester: false });
+    for (let i = 0; i < 2; i++) keep(S.recDir, T0 + 8 * 86400e3 + i * 30e3, baseMeta({ output: 'asked ' + i }));
+    S.state.share = 'ask';
+    const x = S.make(server);
+    const r = await x.bf.autoOnce(() => x.sharing.autoBackfillWhy());
+    check('not answered: it waits, nothing remembered, nothing queued', !r.decided && !r.ran && !x.bf.status().auto && (await x.sharing.pending()) === 0, r);
+    await x.sharing.answer('on');   // Share: enrolls now
+    const r2 = await x.bf.autoOnce(() => x.sharing.autoBackfillWhy());
+    check('answered Share: it runs (the key is from this run)', r2.decided && r2.ran, r2);
+    await until(() => x.bf.status().state === 'done', 20000);
+    await until(async () => (await x.sharing.pending()) === 0, 20000);
+    check('and its 2 past dictations went', backfilled(server).filter((m) => /^asked /.test(m.output)).length === 2);
+    const S2 = setup('auto-ask-no', { tester: false });
+    keep(S2.recDir, T0 + 9 * 86400e3, baseMeta({ output: 'refused share' }));
+    S2.state.share = 'ask';
+    const z = S2.make(server);
+    await z.sharing.answer('off');
+    const r3 = await z.bf.autoOnce(() => z.sharing.autoBackfillWhy());
+    check("answered Don't share: never", r3.decided && !r3.ran && r3.why === 'sharing is off' && !backfilled(server).some((m) => m.output === 'refused share'), r3);
+    x.bf.stop(); z.bf.stop();
   }
 
   section('a tester\'s pause waits');

@@ -7,7 +7,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 const call = (channel) => (...args) => ipcRenderer.invoke(channel, ...args);
 
 // Pushes from main the page may listen to, and nothing else.
-const EVENTS = ['home:show', 'home:changed', 'home:status', 'hotkey:heard', 'hotkey:verified'];
+const EVENTS = ['home:show', 'home:changed', 'home:status', 'home:mic', 'hotkey:heard', 'hotkey:verified'];
 
 contextBridge.exposeInMainWorld('typdHome', {
   get: call('home:get'),
@@ -61,7 +61,17 @@ contextBridge.exposeInMainWorld('typdHome', {
 
   walkthrough: {
     practice: call('walkthrough:practice'),
-    done: call('walkthrough:done')
+    done: call('walkthrough:done'),
+    closed: call('walkthrough:closed')
+  },
+
+  // macOS: the microphone's state ('granted', 'denied', 'restricted', 'not-determined', 'asking'),
+  // and macOS's own prompt for it (its answer, or 'asking' while it is still up).
+  mic: {
+    get: call('mic:get'),
+    request: call('mic:request'),
+    // "Ask macOS again": clear Typd's own microphone answer in macOS, then ask (permissions-mac.js resetMic).
+    reset: call('mic:reset')
   },
 
   news: call('news:get'),

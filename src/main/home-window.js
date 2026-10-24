@@ -39,6 +39,7 @@ const SURFACE = { dark: { bg: '#17191E', sym: '#E6E8EC' }, light: { bg: '#FBFBFC
 
 let win = null;
 let deps = null;
+let walkOn = false;   // the walkthrough is on screen in this window (permissions-mac.js keeps its dialog back)
 let verify = null;          // { binding, previous, timer } while a new key waits to be heard
 let practicing = false;     // the walkthrough's practice box has focus: the key dictates into it
 const removedWords = new Map();
@@ -124,7 +125,9 @@ function settingsState() {
     recordings: recordingsInfo(),
     // null where sharing is not in this build; {mode: 'tester', ...} or {mode: 'beta', ...} (sharing.js)
     sharing: sharing.status(),
-    flagKey: flag ? { label: hotkeyLogic.label(flag, process.platform), parts: hotkeyLogic.parts(flag, process.platform) } : null
+    flagKey: flag ? { label: hotkeyLogic.label(flag, process.platform), parts: hotkeyLogic.parts(flag, process.platform) } : null,
+    // Low-memory mode as the model server runs now: {on, why} (local.js), or null before it has started.
+    lowMemoryNow: deps && deps.lowMemoryNow ? deps.lowMemoryNow() : null
   };
 }
 
@@ -292,6 +295,11 @@ function register(d) {
       if (deps.modelChanged) deps.modelChanged(key);
       return true;
     }
+    if (key === 'lowMemory') {
+      if (!settings.set(key, value)) return false;
+      if (deps.lowMemoryChanged) deps.lowMemoryChanged();
+      return true;
+    }
     if (!['mic', 'micLabel', 'sounds', 'keepRecordings', 'sharePaused'].includes(key)) return false;
     return settings.set(key, value);
   });
@@ -310,10 +318,13 @@ function register(d) {
   // The walkthrough: its practice box takes the key while it has focus (index.js, intercept), and
   // it is shown once by itself (index.js), then only from Settings.
   handle('walkthrough:practice', (on) => { practicing = on === true; return true; });
-  handle('walkthrough:done', () => settings.set('walkthrough', 'done'));
+  // 'done' is sent as the walkthrough opens (it counts as shown then), 'closed' as it goes.
+  handle('walkthrough:done', () => { walkOn = true; settings.set('walkthrough', 'done'); });
+  handle('walkthrough:closed', () => { endWalk(); return true; });
 
-  // Sharing (public builds; on by default). The switch takes effect at once, either way: off
-  // deletes what still waits in the outbox. Deleting empties the outbox and deletes what the
+  // Sharing (public builds; asked since 0.2.7): Settings' switch and the walkthrough's first screen.
+  // Either way at once (sharing.answer, via index.js chooseSharing): off deletes what still waits in
+  // the outbox. Deleting empties the outbox and deletes what the
   // server holds for this install.
   handle('sharing:set', async (on) => {
     if (typeof on !== 'boolean' || !sharing.get()) return null;
@@ -355,16 +366,36 @@ function register(d) {
     if (id === 'retry') { deps.retryModel(); return true; }
     if (id === 'permissions' && MAC) {
       const off = status.get().perms;
-      require('./permissions-mac').openPane(off[0] || 'accessibility');
+      require('./permissions-mac').request(off[0] || 'accessibility');   // the microphone never answered: macOS's prompt
       return true;
     }
     return false;
   });
   handle('app:pane', (kind) => {
     if (!MAC || !['microphone', 'accessibility', 'input', 'automation'].includes(kind)) return false;
-    require('./permissions-mac').openPane(kind);
+    // A microphone macOS was never asked about is not in its list yet: ask instead (permissions-mac.js).
+    require('./permissions-mac').request(kind);
     return true;
   });
+  // The microphone (macOS): its state for the walkthrough and Home, and macOS's own prompt for it.
+  handle('mic:get', () => (MAC ? require('./permissions-mac').micState() : 'granted'));
+  handle('mic:request', () => {
+    if (!MAC) return 'granted';
+    const pm = require('./permissions-mac');
+    return pm.requestMic('the Typd window', { wait: 60 * 1000, again: true }).then((s) => {
+      if (s === 'denied' || s === 'restricted') pm.openPane('microphone');
+      deps.permsChanged && deps.permsChanged();
+      return s;
+    });
+  });
+  handle('mic:reset', () => {
+    if (!MAC) return { state: 'granted' };
+    return require('./permissions-mac').resetMic('the Typd window').then((r) => {   // r.state 'restarting': Typd starts again
+      if (deps.permsChanged) deps.permsChanged();
+      return r;
+    });
+  });
+  if (MAC) require('./permissions-mac').onMicChange((state) => { send('home:mic', { state }); if (deps.permsChanged) deps.permsChanged(); });
   // The model's licence (MODEL_LICENSE.txt: shipped in the app's resources, the repo's in development)
   handle('app:license', () => {
     const file = app.isPackaged ? path.join(process.resourcesPath, 'MODEL_LICENSE.txt') : path.join(__dirname, '..', '..', 'MODEL_LICENSE.txt');
@@ -382,7 +413,7 @@ function register(d) {
 }
 
 function openPrivacy() {
-  if (MAC) { require('./permissions-mac').openPane('microphone'); return true; }
+  if (MAC) { require('./permissions-mac').request('microphone'); return true; }
   shell.openExternal('ms-settings:privacy-microphone').catch(() => {});
   return true;
 }
@@ -471,6 +502,7 @@ function open(section = 'home', opts = {}) {
   win.on('closed', () => {
     win = null;
     practicing = false;
+    endWalk();
     const step = (name, fn) => {
       try { fn(); } catch (err) { console.log('[typd:home] on close, ' + name + ' failed:', (err && err.stack) || err); }
     };
@@ -480,6 +512,18 @@ function open(section = 'home', opts = {}) {
     debug('window closed; Typd keeps running');
   });
   win.loadFile(PAGE, { query: { section: s, capture: opts.capture ? '1' : '', walkthrough: opts.walkthrough ? '1' : '', updates: opts.updates ? '1' : '' } });
+}
+
+/** The walkthrough left the screen: its Done/Skip, Esc, or the window closing under it. */
+function endWalk() {
+  if (!walkOn) return;
+  walkOn = false;
+  try { if (deps && deps.walkthroughEnded) deps.walkthroughEnded(); } catch (err) { debug('walkthrough end:', err && err.message); }
+}
+
+/** Is the walkthrough on screen? */
+function walkthroughShowing() {
+  return walkOn && Boolean(win && !win.isDestroyed());
 }
 
 /** The walkthrough's practice box has focus (and the window too): the key dictates into it. */
@@ -510,4 +554,4 @@ function changed(what) {
   send('home:changed', { what });
 }
 
-module.exports = { register, open, close, isOpen, current, isFocused, isPracticing, heard, changed, setLoginItem, loginItem, syncDock };
+module.exports = { register, open, close, isOpen, current, isFocused, isPracticing, walkthroughShowing, heard, changed, setLoginItem, loginItem, syncDock };

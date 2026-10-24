@@ -39,6 +39,18 @@ public static class Fg {
     return pid;
   }
 
+  // The foreground window's class: Progman/WorkerW (the desktop), CabinetWClass (an Explorer
+  // window), Shell_TrayWnd (the taskbar), Chrome_WidgetWin_1, ConsoleWindowClass... (Get-FieldFacts).
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassNameW(IntPtr h, StringBuilder s, int n);
+  public static string ClassName() {
+    IntPtr h = GetForegroundWindow();
+    if (h == IntPtr.Zero) return "";
+    var sb = new StringBuilder(256);
+    GetClassNameW(h, sb, 256);
+    return sb.ToString();
+  }
+  public static bool HasForeground() { return GetForegroundWindow() != IntPtr.Zero; }
+
   [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
   [DllImport("user32.dll")] public static extern uint GetClipboardSequenceNumber();
 
@@ -261,9 +273,8 @@ $script:ContextLimit = 8000
 # known rather than silently cut; JSON on one line carries this comfortably.
 $script:SelectionLimit = 100000
 
-function Get-FocusText {
+function Get-FocusText($el) {
   try {
-    $el = [System.Windows.Automation.AutomationElement]::FocusedElement
     if ($null -eq $el) { return '' }
 
     # TextPattern is what editors, browsers and document apps expose.
@@ -297,6 +308,70 @@ function Get-FocusText {
     }
   } catch { }
   return ''
+}
+
+# Is the focused element somewhere a paste can land? Facts only -- the decision is made in
+# src/main/pasteTarget.js, where it is tested against recorded trees (bench/copy-popup.js).
+# Nothing here is the user's text: control types, class names, framework ids and the
+# read-only flags. ~1-3 ms warm, inside the context read that already looks at the element.
+#   ct    the control type (Edit, Document, List, ListItem, Pane, ...)
+#   cls   the element's class name; fw its UI framework (Win32, WinForm, WPF, XAML, DirectUI, Chrome...)
+#   val   ValuePattern: none | ro (read-only) | rw
+#   txt   TextPattern present; tro its IsReadOnly at the caret (true/false, null when not said)
+#   win   the foreground window's class; fg false when there is no foreground window
+#   proc  the foreground process; eproc the element's own process (UWP apps sit in ApplicationFrameHost)
+#   root  the element is the desktop's root element; none: no focused element at all
+function Get-FieldFacts($el, [string] $proc) {
+  $f = [ordered]@{
+    none = $false; ct = ''; cls = ''; fw = ''; val = 'none'; txt = $false; tro = $null
+    win = ''; fg = $true; proc = $proc; eproc = ''; root = $false
+  }
+  try {
+    $f.win = [Fg]::ClassName()
+    $f.fg = [Fg]::HasForeground()
+    if ($null -eq $el) { $f.none = $true; return $f }
+    $cur = $el.Current
+    $f.ct = ($cur.ControlType.ProgrammaticName -replace '^ControlType\.', '')
+    $f.cls = [string] $cur.ClassName
+    $f.fw = [string] $cur.FrameworkId
+    $f.eproc = $proc
+    if ($cur.ProcessId -ne [Fg]::Pid()) {
+      try { $f.eproc = (Get-Process -Id $cur.ProcessId -ErrorAction Stop).ProcessName } catch { $f.eproc = '' }
+    }
+    try { $f.root = [System.Windows.Automation.Automation]::Compare($el, [System.Windows.Automation.AutomationElement]::RootElement) } catch { }
+    $vp = $null
+    if ($el.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref] $vp)) {
+      $f.val = $(if ($vp.Current.IsReadOnly) { 'ro' } else { 'rw' })
+    }
+    $tp = $null
+    if ($el.TryGetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern, [ref] $tp)) {
+      $f.txt = $true
+      try {
+        $sel = $tp.GetSelection()
+        if ($sel -and $sel.Length -gt 0) {
+          $a = $sel[0].GetAttributeValue([System.Windows.Automation.TextPattern]::IsReadOnlyAttribute)
+          if ($a -is [bool]) { $f.tro = $a }
+        }
+      } catch { }
+    }
+  } catch {
+    $f.error = "$_"
+  }
+  return $f
+}
+
+# field: the facts alone, for the second look just before a dictation would be offered
+# instead of pasted (the focus may have moved into a text field while the user talked).
+function Get-Field {
+  try {
+    $name = ''
+    try { $name = (Get-Process -Id ([Fg]::Pid()) -ErrorAction Stop).ProcessName } catch { }
+    $el = $null
+    try { $el = [System.Windows.Automation.AutomationElement]::FocusedElement } catch { }
+    Emit (([ordered]@{ ok = $true; field = (Get-FieldFacts $el $name) }) | ConvertTo-Json -Compress -Depth 3)
+  } catch {
+    Emit (@{ ok = $false; error = "$_" } | ConvertTo-Json -Compress)
+  }
 }
 
 # What the user has actually highlighted, as opposed to the whole control.
@@ -492,7 +567,11 @@ function Get-Context {
     $name = ''
     try { $name = (Get-Process -Id $target -ErrorAction Stop).ProcessName } catch { }
 
-    $text = Get-FocusText
+    # One read of the focused element for both the text and the field facts.
+    $el = $null
+    try { $el = [System.Windows.Automation.AutomationElement]::FocusedElement } catch { }
+
+    $text = Get-FocusText $el
     if ($null -eq $text) { $text = '' }
     if ($text.Length -gt $script:ContextLimit) {
       $text = $text.Substring($text.Length - $script:ContextLimit)
@@ -503,7 +582,8 @@ function Get-Context {
       process = $name
       title = [Fg]::Title()
       text = $text
-    }) | ConvertTo-Json -Compress)
+      field = (Get-FieldFacts $el $name)
+    }) | ConvertTo-Json -Compress -Depth 3)
   } catch {
     Emit (@{ ok = $false; error = "$_" } | ConvertTo-Json -Compress)
   }
@@ -539,6 +619,7 @@ while ($true) {
     'restore'   { Restore-Clipboard }
     'focus'     { Get-Focus }
     'context'   { Get-Context }
+    'field'     { Get-Field }
     'selection' { Get-Selection }
     'copysel'   { Get-CopiedSelection }
     'mask'      { [Fg]::MaskAlt() }   # fire and forget: no reply, so it never takes another command's answer

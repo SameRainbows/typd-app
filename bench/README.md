@@ -127,6 +127,39 @@ reuses as it would the real one, and are built from the dogfood audit's failures
   of a different word is put back ("Aysel" for a name the model heard otherwise); a term the
   model heard is kept; a dictation with no term in it makes the same requests as before.
 
+## no-modal.js — nothing of Typd's stops Typd on a first run (0.2.11)
+
+```bash
+node bench/no-modal.js   # in npm run bench
+```
+
+On a brand-new Mac, 0.2.10's "Typd needs two switches turned on" was an app-modal alert (no parent
+window), which stopped the main process and the first model download with it until clicked. Checked:
+over the walkthrough no dialog at all; when it ends, the same words as a sheet on the Typd window
+(Open System Settings opens the pane); a sheet nobody answers holds no timer up; with no Typd window
+on screen showMessageBox is never called. From the sources: every showMessageBox goes through
+`mac/sheet.js` with a visible parent (but the parked cascade engine's), no showMessageBoxSync or
+showErrorBox, an uncaughtException listener of Typd's own (Electron's fallback is a modal error box).
+Also the walkthrough's mic card (no "Ask again" once allowed) and the publisher in package.json.
+The Mac CI's first-run check asserts the real thing: no click, model ready.
+
+## lang-guard.js — English or Turkish only
+
+```bash
+node bench/lang-guard.js --no-model   # in npm run bench
+node bench/lang-guard.js              # + the real model on the CPU, when ../dictation-research has P2d
+```
+
+The language guard (`guardGrammar` in `local.js`): a dictation from a model that names its own
+language carries a llama-server grammar that allows only `language English<asr_text>` or
+`language Turkish<asr_text>` and then no letter of Han/kana, Hangul, Cyrillic, Arabic, Devanagari
+or Thai. Checked: the outputs that started it (P2d's "20年。" and two Japanese answers under an
+English tag) are barred, every Latin letter, Greek, symbol and emoji stays writable, byte by byte
+as llama.cpp checks a token cut inside a character; work while you talk's continuations get the
+text rule alone; revise, models given their tag and `TYPD_LANG_GUARD=0` send no grammar; a server
+that refuses the grammar gets the request again without it. With the model: the server parses it,
+and the three clips come out in English, a FLEURS Turkish clip in Turkish.
+
 ## Reference
 
 | | |

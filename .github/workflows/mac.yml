@@ -1,73 +1,193 @@
-# Build Typd for macOS: the official build, signed with Typd's own certificate.
+# First run of a Typd BUILD on brand-new machines, the way a stranger gets it (Typd 0.2.11, before it is
+# published). The same steps as the 0.2.10 first-run test, which read the public download page; this one
+# takes the installer from a DRAFT release instead (inputs mac_release / win_release: the Mac CI's
+# build-<run id> draft with the dmg and its SHA256SUMS, and a draft holding the Windows installer and its
+# SHA256SUMS), checks the SHA-256 listed there, then installs as a user does (the browser's download mark
+# kept), starts Typd on a clean profile and watches the first run, and runs one real dictation through the
+# installed app's own pipeline.
 #
-# Only a maintainer can start it (Actions > macOS > Run workflow, or `gh workflow run mac.yml`).
-# It never runs on a push or a pull request, so code from a fork never runs with its secrets.
+# Gates (0.2.11): on the Mac, with nobody clicking anything of Typd's, the light model downloads and is
+# ready, and no Typd window is ever modal (layer >= 8: an app-modal alert, which stops Typd -- 0.2.10's
+# switches dialog held the download for as long as it was up); macOS's own microphone prompt is answered
+# Allow, as a person does. After the model is ready the walkthrough is closed (Skip): the switches
+# dialog then comes, as a sheet (informational). On Windows, the installed app's uninstall entry names
+# the publisher (Mehmet Dedeler).
 #
-# What it makes (never a tester build: this repository holds no tester key):
-#   Typd-<version>-mac-<arch>.dmg           the app with the current dictation model inside, checked
-#                                            by scripts/public-build.js verify (no key file, nothing
-#                                            private in app.asar, the model in place), and its
-#                                            .public.json record;
-#   Typd-<version>-update-mac-<arch>.zip    the app-update package (scripts/app-update-package.js:
-#                                            no model, carries nothing) and its .zip.json record;
-#   SHA256SUMS.
-# They are attached to a DRAFT release named build-<run id>. A draft and its files are visible only
-# to the repository's maintainers. Nothing is uploaded as a workflow artifact: a public
-# repository's artifacts can be downloaded by anyone signed in to GitHub. An app update goes out
-# only when a maintainer signs its manifest with a key that never leaves the maintainer's computer
-# (README "App updates"); this workflow cannot publish one.
+# Only a maintainer can start it (gh workflow run mac.yml --ref firstrun-0.2.11 -f mac_release=... -f
+# win_release=...). It builds nothing and publishes nothing. The light model comes from the public model
+# routes (one model download per job).
 #
-# The model is not in git. scripts/fetch-model.js downloads the live one through the public routes
-# a packaged Typd uses, after checking the manifest's Ed25519 signature with the app's own key
-# (src/main/modelManifestKey.js) and each file's sha256. MODEL_LICENSE.txt covers it.
-#
-# Code signing (docs/MAC.md "Code signing"): every app is signed with Typd's own self-signed
-# certificate (secrets MAC_CODESIGN_P12 and MAC_CODESIGN_P12_PASSWORD, imported into a keychain of
-# its own by scripts/mac-signing-import.sh and deleted at the end; the certificate's public
-# fingerprint is in scripts/mac-signing.json). So every build has the same designated requirement,
-# and macOS keeps Typd's Accessibility, Microphone and Input Monitoring switches across updates.
-# It is not an Apple Developer ID: Gatekeeper still asks on a downloaded copy's first open.
-#
-# The token is read-only (the repository's default). This job may write contents only to create
-# the draft release, and only the release step gets the token. No action from outside this
-# repository is used (the repository allows none): the checkout is plain git (the repository is
-# public, so it needs no token), and Node.js comes from nodejs.org, checked against a pinned sha256.
+# Logs and screenshots go to a DRAFT release firstrun-<run id>-<os> (visible to the maintainers only;
+# nothing is uploaded as a workflow artifact, which anyone signed in to GitHub could download).
+# The token is read-only but for the draft-release steps (reading the build, keeping the logs).
 
-name: macOS
+name: First run (0.2.11 build, before publishing)
 
 on:
   workflow_dispatch:
     inputs:
-      arch:
-        description: Which Macs to build for
+      os:
+        description: Which machines
         type: choice
-        options: [both, arm64, x64]
+        options: [both, mac, windows]
         default: both
-      checks_only:
-        description: Only the menu-bar close checks on several macOS versions (no signed build, no release)
-        type: boolean
-        default: false
+      mac_release:
+        description: Draft release holding Typd-<version>-mac-arm64.dmg and SHA256SUMS (the Mac CI's build-<run id>)
+        type: string
+        default: ''
+      win_release:
+        description: Draft release holding Typd-Setup-<version>.exe and SHA256SUMS
+        type: string
+        default: ''
 
 permissions:
   contents: read
 
-# A build never cancels another one.
-concurrency:
-  group: mac-${{ github.run_id }}
-  cancel-in-progress: false
-
 env:
-  ARCHS: ${{ inputs.arch == 'both' && 'arm64 x64' || inputs.arch || 'arm64 x64' }}
+  PAGE: https://typd.mehmetdedeler.com/download/
+  # Real speech, public domain (a 1961 US government recording), 11 s, 16 kHz mono: whisper.cpp's sample.
+  SPEECH_WAV: https://raw.githubusercontent.com/ggml-org/whisper.cpp/master/samples/jfk.wav
+  DICTATE_JS: |
+    'use strict';
+    // One dictation through the installed app's own pipeline (its app.asar, run by its own runtime with
+    // ELECTRON_RUN_AS_NODE=1), against the model server the app started (local.js finds it healthy on
+    // its port and reuses it). Args: <app.asar> <userData> <out.json> <wav>...
+    const fs = require('fs');
+    const path = require('path');
+    const [asar, ud, out, ...wavs] = process.argv.slice(2);
+    function readWav(f) {
+      const b = fs.readFileSync(f);
+      let p = 12, fmt = null, data = null;
+      while (p + 8 <= b.length) {
+        const id = b.toString('ascii', p, p + 4), n = b.readUInt32LE(p + 4);
+        if (id === 'fmt ') fmt = { tag: b.readUInt16LE(p + 8), ch: b.readUInt16LE(p + 10), sr: b.readUInt32LE(p + 12), bits: b.readUInt16LE(p + 22) };
+        if (id === 'data') { data = b.subarray(p + 8, Math.min(b.length, p + 8 + n)); break; }
+        p += 8 + n + (n & 1);
+      }
+      if (!fmt || !data || fmt.tag !== 1 || fmt.bits !== 16) throw new Error('want a 16-bit PCM wav: ' + f);
+      const frames = Math.floor(data.length / (2 * fmt.ch));
+      const s = new Float32Array(frames);
+      for (let i = 0; i < frames; i++) {
+        let v = 0;
+        for (let c = 0; c < fmt.ch; c++) v += data.readInt16LE((i * fmt.ch + c) * 2);
+        s[i] = v / fmt.ch / 32768;
+      }
+      return { samples: s, sampleRate: fmt.sr };
+    }
+    (async () => {
+      const res = { runtime: { node: process.versions.node, electron: process.versions.electron || null }, clips: [] };
+      const exe = process.platform === 'win32' ? 'llama-server.exe' : 'llama-server';
+      process.env.TYPD_LLAMA_SERVER = process.env.TYPD_LLAMA_SERVER || path.join(path.dirname(asar), 'llama', exe);
+      const mu = require(path.join(asar, 'src', 'main', 'modelUpdate.js'));
+      const active = mu.activeModel(path.join(ud, 'models'));
+      res.model = active;
+      if (!active) throw new Error('no complete downloaded model under ' + path.join(ud, 'models'));
+      process.env.TYPD_MODEL_DIR = active.dir;
+      let pipe = null;
+      try { pipe = require(path.join(asar, 'src', 'main', 'pipeline', 'index.js')); } catch (e) { res.pipelineRequire = String((e && e.message) || e).split('\n')[0]; }
+      const local = require(path.join(asar, 'src', 'main', 'pipeline', 'local.js'));
+      const t0 = Date.now();
+      await local.warm();
+      res.warmMs = Date.now() - t0;
+      res.path = pipe ? 'pipeline/index.js run() (the app dictation path)' : 'pipeline/local.js dictate()';
+      for (const w of wavs) {
+        const audio = readWav(w);
+        for (let rep = 1; rep <= 2; rep++) {
+          const t = Date.now();
+          let first = null, text = '', err = null;
+          try {
+            if (pipe) {
+              for await (const ev of pipe.run({ audio, contextBlock: '' })) {
+                if (ev.type === 'partial' && first === null) first = Date.now() - t;
+                if (ev.type === 'done') text = ev.text;
+              }
+            } else {
+              for await (const x of local.dictate(audio.samples, audio.sampleRate, null, '', local.dictationBudget(audio.samples, audio.sampleRate))) {
+                if (first === null) first = Date.now() - t;
+                text = x;
+              }
+            }
+          } catch (e) { err = String((e && e.message) || e); }
+          const row = { file: path.basename(w), seconds: +(audio.samples.length / audio.sampleRate).toFixed(2), sampleRate: audio.sampleRate, rep, firstTextMs: first, totalMs: Date.now() - t, text, err };
+          res.clips.push(row);
+          console.log('DICTATION ' + JSON.stringify(row));
+        }
+      }
+      fs.writeFileSync(out, JSON.stringify(res, null, 1));
+      process.exit(res.clips.some((c) => c.err || !c.text) ? 2 : 0);
+    })().catch((e) => { console.error('dictation script failed: ' + ((e && e.stack) || e)); process.exit(1); });
+
+  # Windows: a list of the visible windows (process | title | size) and a screenshot of the whole screen.
+  WIN_HELPERS_PS1: |
+    Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+    Add-Type -TypeDefinition @"
+    using System; using System.Text; using System.Collections.Generic; using System.Runtime.InteropServices;
+    public static class Wins {
+      delegate bool EnumProc(IntPtr h, IntPtr l);
+      [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc f, IntPtr l);
+      [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+      [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+      [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint p);
+      [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
+      public struct RECT { public int L, T, R, B; }
+      public static List<string> List() {
+        var o = new List<string>();
+        EnumWindows((h, l) => {
+          if (!IsWindowVisible(h)) return true;
+          uint p; GetWindowThreadProcessId(h, out p);
+          var s = new StringBuilder(256); GetWindowText(h, s, 256); RECT r; GetWindowRect(h, out r);
+          string n = ""; try { n = System.Diagnostics.Process.GetProcessById((int)p).ProcessName; } catch {}
+          o.Add(n + " | " + s + " | " + (r.R - r.L) + "x" + (r.B - r.T) + " at " + r.L + "," + r.T);
+          return true;
+        }, IntPtr.Zero);
+        return o;
+      }
+      [DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y);
+      [DllImport("user32.dll")] static extern void mouse_event(uint f, uint dx, uint dy, uint d, UIntPtr e);
+      public static void Click(int x, int y) { SetCursorPos(x, y); System.Threading.Thread.Sleep(150); mouse_event(2, 0, 0, 0, UIntPtr.Zero); mouse_event(4, 0, 0, 0, UIntPtr.Zero); }
+    }
+    "@
+    function Shot($name) {
+      try {
+        $b = [System.Windows.Forms.SystemInformation]::VirtualScreen
+        $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+        $g = [System.Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen($b.Left, $b.Top, 0, 0, $bmp.Size)
+        $bmp.Save("$L\shots\$name.jpg", [System.Drawing.Imaging.ImageFormat]::Jpeg); $g.Dispose(); $bmp.Dispose()
+      } catch { "screenshot $name failed: $($_.Exception.Message)" | Add-Content "$L\actions.txt" }
+    }
+    # A person's click on the button of Typd's window whose name starts with $prefix: found through UI
+    # Automation, pressed with a real mouse click at its centre.
+    Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+    function Click-Named($prefix) {
+      $AE = [System.Windows.Automation.AutomationElement]
+      $button = New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button)
+      for ($try = 0; $try -lt 15; $try++) {
+        $ids = @(Get-Process Typd -ErrorAction SilentlyContinue | ForEach-Object Id)
+        foreach ($w in $AE::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition)) {
+          if ($ids -notcontains $w.Current.ProcessId) { continue }
+          foreach ($b in $w.FindAll([System.Windows.Automation.TreeScope]::Descendants, $button)) {
+            if ($b.Current.Name -like "$prefix*") {
+              $r = $b.Current.BoundingRectangle
+              $x = [int]($r.X + $r.Width / 2); $y = [int]($r.Y + $r.Height / 2)
+              [Wins]::Click($x, $y)
+              return "clicked '$($b.Current.Name)' at $x,$y (found through UI Automation)"
+            }
+          }
+        }
+        Start-Sleep 1
+      }
+      return "no button named '$prefix...' in Typd's windows"
+    }
 
 jobs:
-  build:
-    if: github.repository == 'SameRainbows/typd-app' && !inputs.checks_only
-    runs-on: macos-14
-    timeout-minutes: 120
+  mac:
+    if: github.repository == 'SameRainbows/typd-app' && inputs.os != 'windows'
+    runs-on: macos-15
+    timeout-minutes: 75
     permissions:
-      contents: write   # only for the draft release (the last steps); no other step gets the token
+      contents: write   # only for the draft release (the last step gets the token)
     steps:
-      - name: Check out this commit (plain git, no token)
+      - name: Check out this commit (plain git, no token; for scripts/mac-alert.swift)
         run: |
           set -e
           git init -q .
@@ -76,449 +196,465 @@ jobs:
           git checkout -q --detach FETCH_HEAD
           git log -1 --format='%H %s'
 
-      - name: Node.js 24 (nodejs.org, sha256 pinned)
+      - name: The machine
+        run: |
+          set +e
+          L="$RUNNER_TEMP/fr"; mkdir -p "$L/shots"
+          {
+            sw_vers; uname -m; sysctl -n machdep.cpu.brand_string
+            echo "memory: $(( $(sysctl -n hw.memsize) / 1048576 )) MB, cpus: $(sysctl -n hw.ncpu)"
+            system_profiler SPDisplaysDataType 2>/dev/null | grep -E 'Chipset|Metal|Resolution' | sed 's/^ *//'
+            echo "Gatekeeper: $(spctl --status 2>&1)"; csrutil status
+            df -h / | tail -1
+            ls -d "$HOME/Library/Application Support/typd" 2>&1
+          } 2>&1 | tee "$L/machine.txt"
+          # A stranger's Mac has Gatekeeper on.
+          spctl --status 2>&1 | grep -q 'assessments enabled' || { sudo spctl --global-enable 2>&1 || sudo spctl --master-enable 2>&1; echo "Gatekeeper turned on: $(spctl --status 2>&1)" | tee -a "$L/machine.txt"; }
+          swiftc -O scripts/mac-alert.swift -o "$RUNNER_TEMP/mac-alert" 2>&1 | tail -3
+          "$RUNNER_TEMP/mac-alert" windows | head -5
+
+      - name: Download the build from its draft release, check its SHA-256
         env:
-          NODE_VERSION: v24.22.0
-          NODE_SHA256: 6a9724d9b50a5f22b4816cded441b5a8d9ddae546191a5e5b7efa5a5e2ee26d5   # node-v24.22.0-darwin-arm64.tar.gz
+          GH_TOKEN: ${{ github.token }}
+          REL: ${{ inputs.mac_release }}
         run: |
           set -e
-          test "$(uname -m)" = arm64
-          f="node-$NODE_VERSION-darwin-arm64.tar.gz"
-          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$f" "https://nodejs.org/dist/$NODE_VERSION/$f"
-          echo "$NODE_SHA256  $RUNNER_TEMP/$f" | shasum -a 256 -c -
-          tar -xzf "$RUNNER_TEMP/$f" -C "$RUNNER_TEMP"
-          echo "$RUNNER_TEMP/node-$NODE_VERSION-darwin-arm64/bin" >> "$GITHUB_PATH"
-          "$RUNNER_TEMP/node-$NODE_VERSION-darwin-arm64/bin/node" --version
+          L="$RUNNER_TEMP/fr"; D="$RUNNER_TEMP/rel"; mkdir -p "$D" "$HOME/Downloads"
+          test -n "$REL" || { echo "::error::no mac_release given"; exit 1; }
+          gh release download "$REL" --repo "$GITHUB_REPOSITORY" --pattern 'SHA256SUMS' --dir "$D"
+          NAME=$(grep -oE 'Typd-[0-9.]+-mac-arm64\.dmg' "$D/SHA256SUMS" | head -1)
+          SHA=$(grep -E "[ *]$NAME\$" "$D/SHA256SUMS" | cut -d' ' -f1)
+          test -n "$NAME" && test -n "$SHA"
+          F="$HOME/Downloads/$NAME"
+          echo "draft $REL holds $NAME, SHA-256 $SHA" | tee "$L/download.txt"
+          s0=$(date +%s); gh release download "$REL" --repo "$GITHUB_REPOSITORY" --pattern "$NAME" --dir "$HOME/Downloads"
+          echo "downloaded $(stat -f %z "$F") bytes in $(( $(date +%s) - s0 )) s" | tee -a "$L/download.txt"
+          got=$(shasum -a 256 "$F" | cut -d' ' -f1)
+          echo "sha256 of the download: $got" | tee -a "$L/download.txt"
+          test "$got" = "$SHA" && echo "SHA-256 matches the draft's SHA256SUMS" | tee -a "$L/download.txt"
+          # The mark Safari leaves on a download (Chrome's is the same but for the agent name).
+          xattr -w com.apple.quarantine "0083;$(printf %x "$(date +%s)");Safari;$(uuidgen)" "$F"
+          echo "DMG=$F" >> "$GITHUB_ENV"
 
-      - name: No tester build, ever
+      - name: Install as a user does (open the dmg, Typd to Applications, the download mark kept)
         run: |
-          set -e
-          test -z "${TYPD_TESTER_CONFIG:-}${TYPD_TESTER_DEV:-}${TYPD_TESTER_JSON:-}"
-          if find . -path ./node_modules -prune -o \( -name 'tester.json' -o -name 'tester.*.json' -o -name 'model-updates.json' \) -print | grep .; then
-            echo "a tester or key file is in the checkout"; exit 1
-          fi
-          echo "no tester variables, no tester or key files"
+          set +e
+          L="$RUNNER_TEMP/fr"
+          {
+            echo "dmg: $(xattr -p com.apple.quarantine "$DMG")"
+            MNT=$(hdiutil attach -nobrowse -noautoopen "$DMG" | awk -F'\t' '/\/Volumes\//{print $NF}' | tail -1)
+            echo "mounted at: $MNT"; ls -la "$MNT"
+            echo "Typd.app on the volume: $(xattr -p com.apple.quarantine "$MNT/Typd.app" 2>&1)"
+            ditto "$MNT/Typd.app" /Applications/Typd.app
+            q=$(xattr -p com.apple.quarantine /Applications/Typd.app 2>/dev/null || true)
+            if [ -z "$q" ]; then
+              echo "the copy carries no quarantine mark; giving it the dmg's, as a Finder drag from a quarantined image does"
+              xattr -w com.apple.quarantine "$(xattr -p com.apple.quarantine "$DMG")" /Applications/Typd.app
+            fi
+            echo "/Applications/Typd.app: $(xattr -p com.apple.quarantine /Applications/Typd.app)"
+            hdiutil detach "$MNT" -quiet || true
+            defaults read /Applications/Typd.app/Contents/Info.plist CFBundleShortVersionString
+            du -sh /Applications/Typd.app
+            codesign -dv --verbose=2 /Applications/Typd.app 2>&1 | grep -E '^(Identifier|Authority|TeamIdentifier|Signature|Timestamp|CodeDirectory)'
+            echo "--- spctl (Gatekeeper's assessment)"; spctl -a -vvv -t exec /Applications/Typd.app 2>&1
+            echo "--- syspolicy_check distribution"; syspolicy_check distribution /Applications/Typd.app 2>&1 | head -20
+          } 2>&1 | tee "$L/install.txt"
 
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Bench, model updates and the self-test's decisions
-        run: node bench/updates.js
-
-      - name: Bench, wiring and the hotkey (a key press never takes Typd down)
-        run: node bench/wiring.js && node bench/hotkeys.js
-
-      - name: Download the dictation model (signed manifest, sha256 of every file)
-        run: |
-          set -o pipefail
-          node scripts/fetch-model.js --accept-license | tee fetch-model.log
-          ver=$(sed -n 's/^Model \([A-Za-z0-9._-]*\): .*/\1/p' fetch-model.log | head -n 1)
-          test -n "$ver"
-          echo "MODEL_VERSION=$ver" >> "$GITHUB_ENV"
-          cat models/typd-dictate/model.json
-          ls -la models/typd-dictate
-
-      - name: Fetch llama.cpp for macOS (b11351)
-        run: node scripts/fetch-llama-mac.js $ARCHS
-
-      - name: Build uiohook-napi with its start handshake fixed
-        # The key's event tap. uiohook-napi's start could hang Typd's main thread for good at
-        # launch (scripts/build-uiohook-mac.js says how); this builds it from source, fixed, for
-        # each arch. node-gyp-build loads it in place of the shipped prebuild.
-        run: node scripts/build-uiohook-mac.js $ARCHS
-
-      - name: Typd's signing certificate, in a keychain of its own
-        # scripts/after-pack.js and scripts/app-update-package.js sign with it (TYPD_MAC_SIGN_*).
-        env:
-          MAC_CODESIGN_P12: ${{ secrets.MAC_CODESIGN_P12 }}
-          MAC_CODESIGN_P12_PASSWORD: ${{ secrets.MAC_CODESIGN_P12_PASSWORD }}
-        run: bash scripts/mac-signing-import.sh
-
-      - name: Package (signed with Typd's certificate)
-        run: |
-          # Naming the target makes the arch flags replace build.mac.target's arch list
-          # (electron-builder ignores CLI archs when only the config names targets).
-          flags=""
-          for a in $ARCHS; do flags="$flags --$a"; done
-          unset TYPD_TESTER_CONFIG
-          # The public dmg ships WITHOUT the dictation model (0.2.5): the app downloads the one its
-          # hardware suits at first launch (src/main/modelUpdate.js). The model fetched above is
-          # for the tests below (TYPD_MODEL_DIR, smoke tests), never packaged.
-          TYPD_NO_BUNDLED_MODEL=1 npx electron-builder --mac dmg $flags --publish never
-          ls -la dist
-
-      - name: Inspect the app
-        run: |
-          set -e
-          for a in $ARCHS; do
-            app=$( [ "$a" = arm64 ] && echo "$PWD/dist/mac-arm64/Typd.app" || echo "$PWD/dist/mac/Typd.app" )
-            echo "== $app"
-            codesign --verify --deep --strict --verbose=2 "$app"
-            codesign -dv "$app" 2>&1 | grep -E 'Signature|Identifier|Format|Authority|TeamIdentifier'
-            # One code identity for every build: ai.typd.app and Typd's certificate (scripts/mac-signing.json).
-            dr=$(codesign -d -r- "$app" 2>&1 | sed -n 's/^designated => //p')
-            echo "designated requirement: $dr"
-            echo "$dr" | grep -q 'identifier "ai.typd.app"'
-            echo "$dr" | grep -qi "$(node -p "require('./scripts/mac-signing.json').sha1")"
-            echo "- $a: \`$dr\`" >> "$GITHUB_STEP_SUMMARY"
-            # Gatekeeper: not notarized and not Developer ID, so a downloaded copy's first open is
-            # refused (docs/MAC.md). Printed, not a gate.
-            spctl --assess --type execute -vv "$app" 2>&1 || true
-            plutil -p "$app/Contents/Info.plist" | grep -E 'LSUIElement|NSMicrophoneUsageDescription|NSAppleEventsUsageDescription|LSMinimumSystemVersion|CFBundleIdentifier'
-            test "$(plutil -extract LSUIElement raw -o - "$app/Contents/Info.plist")" = true
-            # A menu-bar app with no window open must never be ended or napped by macOS (docs/MAC.md).
-            test "$(plutil -extract NSSupportsAutomaticTermination raw -o - "$app/Contents/Info.plist")" = false
-            test "$(plutil -extract NSSupportsSuddenTermination raw -o - "$app/Contents/Info.plist")" = false
-            test "$(plutil -extract LSAppNapIsDisabled raw -o - "$app/Contents/Info.plist")" = true
-            ls -la "$app/Contents/Resources/llama" "$app/Contents/Resources/models/typd-dictate"
-            # Model-less: no model.json and no .gguf anywhere in the app.
-            test ! -e "$app/Contents/Resources/models/typd-dictate/model.json"
-            if find "$app" -name '*.gguf' | grep -q .; then echo "the public app must not contain a model"; exit 1; fi
-            file "$app/Contents/Resources/llama/llama-server"
-            test -x "$app/Contents/Resources/llama/llama-server"
-            if [ -e "$app/Contents/Resources/tester.json" ]; then echo "the app must not contain tester.json"; exit 1; fi
-            if find "$app/Contents/Resources/app.asar.unpacked" -path '*sherpa*' | grep -q .; then echo "sherpa-onnx should not be packaged"; exit 1; fi
-            # The keyboard hook's native module loads from the signed bundle (no hook is started).
-            ELECTRON_RUN_AS_NODE=1 "$app/Contents/MacOS/Typd" -e "require(process.argv[1]); console.log('uiohook-napi loads')" "$app/Contents/Resources/app.asar/node_modules/uiohook-napi"
-            # ... and it is the fixed build (scripts/build-uiohook-mac.js), not the prebuild.
-            ELECTRON_RUN_AS_NODE=1 "$app/Contents/MacOS/Typd" -e "const p = require(process.argv[1]).resolve(process.argv[2]); console.log('uiohook-napi from', p); if (!/build\/Release\/uiohook_napi\.node$/.test(p)) process.exit(1)" "$app/Contents/Resources/app.asar/node_modules/node-gyp-build" "$app/Contents/Resources/app.asar/node_modules/uiohook-napi"
-            lipo -archs "$app/Contents/Resources/app.asar.unpacked/node_modules/uiohook-napi/build/Release/uiohook_napi.node"
-          done
-
-      - name: Smoke test, CPU (arm64)
-        if: contains(env.ARCHS, 'arm64')
-        run: |
-          R=dist/mac-arm64/Typd.app/Contents/Resources
-          node scripts/smoke-llama.js --server $R/llama/llama-server --models "$PWD/models/typd-dictate" --gpu-layers 0 --port 8790
-
-      - name: Smoke test, Metal (arm64)
-        if: contains(env.ARCHS, 'arm64')
-        # The runner is a VM whose paravirtual GPU is not a real Mac's; a Metal failure here is
-        # reported but does not fail the build. The CPU test above is the gate.
+      - name: Open it as a stranger does (Gatekeeper)
         continue-on-error: true
         run: |
-          R=dist/mac-arm64/Typd.app/Contents/Resources
-          node scripts/smoke-llama.js --server $R/llama/llama-server --models "$PWD/models/typd-dictate" --gpu-layers 99 --port 8791
+          set +e
+          L="$RUNNER_TEMP/fr"; A="$RUNNER_TEMP/mac-alert"; UD="$HOME/Library/Application Support/typd"
+          to() { perl -e 'alarm shift; exec @ARGV' "$@"; }
+          shot() { screencapture -x "$L/shots/$1.png" 2>&1 | head -2; }
+          {
+            echo "--- double-click: open /Applications/Typd.app"
+            to 30 open /Applications/Typd.app; echo "open exited $?"
+            sleep 12
+            echo "--- windows on screen"; "$A" windows | head -10
+            echo "--- the alert (CoreServicesUIAgent)"; "$A" texts CoreServicesUIAgent | head -20
+            shot 01-gatekeeper
+            if pgrep -f '/Applications/Typd.app/Contents/MacOS/Typd' >/dev/null; then echo "Typd IS running: Gatekeeper let it through"; else echo "Typd is NOT running"; fi
+            echo "--- syspolicyd / CoreServicesUIAgent"
+            log show --last 2m --style compact --predicate 'process == "syspolicyd" OR process == "CoreServicesUIAgent"' 2>/dev/null | grep -iE 'typd|notari|malware|assess|evaluat' | cut -c1-260 | tail -20
+            echo "--- the stranger clicks Done, then System Settings > Privacy & Security"
+            "$A" press CoreServicesUIAgent Done
+            sleep 2
+            to 20 open "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension"; sleep 10
+            "$A" texts "System Settings" | grep -iE 'typd|open anyway|blocked|allow applications|app store' | head -12
+            echo "--- System Settings' buttons"; "$A" texts "System Settings" | grep -i '^button' | head -40 | tr '\n' ';'; echo
+            shot 02-privacy-security
+            osascript -e 'quit app "System Settings"' 2>/dev/null; sleep 2
+            if pgrep -f '/Applications/Typd.app/Contents/MacOS/Typd' >/dev/null; then
+              echo "Typd started anyway: quitting it and clearing what it wrote, so the first launch below starts clean"
+              osascript -e 'quit app "Typd"'; sleep 5; pkill -f /Applications/Typd.app/; rm -rf "$UD"; tccutil reset All ai.typd.app
+            fi
+            test -e "$UD" && echo "a Typd profile exists" || echo "no Typd profile yet (clean)"
+            echo "--- to go on (the page's Terminal line): xattr -dr com.apple.quarantine /Applications/Typd.app"
+          } 2>&1 | tee "$L/gatekeeper.txt"
+          xattr -dr com.apple.quarantine /Applications/Typd.app
 
-      - name: Smoke test, as the app starts (arm64)
-        if: contains(env.ARCHS, 'arm64')
-        # No -ngl: the app's own path. Its self-test transcribes the fixture on Metal first, and on
-        # wrong text restarts on the CPU and tests again. A gate: this is what a Mac user's Typd does.
-        run: |
-          R=dist/mac-arm64/Typd.app/Contents/Resources
-          node scripts/smoke-llama.js --server $R/llama/llama-server --models "$PWD/models/typd-dictate" --port 8793 2>&1 | tee smoke-default.log
-          grep -E 'self-test|path chosen' smoke-default.log
-
-      - name: Smoke test, CPU (x64 under Rosetta)
-        if: contains(env.ARCHS, 'x64')
+      - name: First launch on a clean profile, watched
         continue-on-error: true
         run: |
-          R=dist/mac/Typd.app/Contents/Resources
-          node scripts/smoke-llama.js --server $R/llama/llama-server --models "$PWD/models/typd-dictate" --gpu-layers 0 --port 8792
-
-      - name: App-update packages (README "App updates")
-        # The app without its model, signed again with Typd's certificate (the same designated
-        # requirement as the dmg's app; the record says so), carrying nothing, with the record
-        # publish_app_update.py reads.
-        run: |
-          set -e
-          for a in $ARCHS; do
-            app=$( [ "$a" = arm64 ] && echo dist/mac-arm64/Typd.app || echo dist/mac/Typd.app )
-            node scripts/app-update-package.js mac --app "$app" --arch "$a" --out dist/update
-          done
-          ls -la dist/update
-          node -e "for (const f of require('fs').readdirSync('dist/update').filter((n) => n.endsWith('.zip.json'))) { const r = require('./dist/update/' + f); console.log(f, 'carry', JSON.stringify(r.carry), 'signed', r.signature && r.signature.how, '|', r.signature && r.signature.designated); if (r.carry.length) process.exit(1); }"
-
-      - name: Model choice and network cost on a real Mac (informational)
-        # src/main/hardware.js and src/main/netcost.js, the raw answers logged. A runner is neither
-        # metered nor in Low Data Mode, so "unmetered" is expected; anything else is for a look.
-        continue-on-error: true
-        run: |
-          node -e "const h = require('./src/main/hardware'); h.detect().then((hw) => console.log('hardware:', JSON.stringify(hw), JSON.stringify(h.pick(hw))))"
-          node -e "const cp = require('child_process'); require('./src/main/netcost').probe({ run: async (f, a) => { const r = cp.spawnSync(f, a, { encoding: 'utf8', timeout: 20000 }); console.log('raw:', JSON.stringify(r.stdout), JSON.stringify(r.stderr)); return { code: r.status, stdout: r.stdout || '' }; } }).then((r) => console.log('netcost.probe():', r))"
-
-      - name: Launch the packaged app (arm64)
-        if: contains(env.ARCHS, 'arm64')
-        # Starts Typd.app as a user would and checks that it brings up its own llama-server from
-        # inside the bundle, on 127.0.0.1:8737, and that its self-test reaches a verdict.
-        # Informational: on a runner nobody can grant the microphone, accessibility or input
-        # monitoring, so the rest of the app is not exercised.
-        continue-on-error: true
-        run: |
-          APP="$PWD/dist/mac-arm64/Typd.app"
-          # No model download and no app update from CI; no walkthrough window; no sharing (a public
-          # build shares by default since 0.2.4). The app is model-less: it loads the fetched model.
-          TYPD_DEBUG=1 TYPD_NO_MODEL_UPDATE=1 TYPD_NO_APP_UPDATE=1 TYPD_NO_WALKTHROUGH=1 TYPD_NO_SHARE=1 TYPD_MODEL_DIR="$PWD/models/typd-dictate" "$APP/Contents/MacOS/Typd" > app.log 2>&1 &
-          pid=$!
-          ok=0
-          for i in $(seq 1 120); do
-            if curl -sf http://127.0.0.1:8737/health; then ok=1; break; fi
-            sleep 1
-          done
-          echo
-          for i in $(seq 1 90); do
-            if grep -qE 'path chosen|failed its self-test' app.log; then break; fi
-            sleep 1
-          done
-          grep -E '\[typd:local\] (self-test|path chosen|model .* ready)' app.log || { echo "no self-test verdict in app.log"; ok=0; }
-          pgrep -fl llama-server || true
-          pgrep -fl llama-server | grep -q "$APP/Contents/Resources/llama/llama-server" || ok=0
-          kill $pid 2>/dev/null || true
-          sleep 2
-          pkill -f "$APP/Contents/Resources/llama/llama-server" || true
-          echo "--- app.log (tail)"; tail -60 app.log
-          test $ok = 1
-
-      - name: Close the Typd window, stay running (arm64)
-        if: contains(env.ARCHS, 'arm64')
-        env:
-          TYPD_MODEL_DIR: ${{ github.workspace }}/models/typd-dictate
-        # Closing the Typd window must not take Typd's key with it. scripts/mac-close-check.sh
-        # opens and closes the window in the packaged app (TYPD_TEST_CLOSE_HOME), presses keys
-        # before, during and after, dictates with Right ⌘ after the close, then quits Typd. Two
-        # passes: started from this shell (the runner's privacy rights) and started as Finder
-        # starts it (its own app to macOS, no switches on yet). A gate.
-        run: |
-          chmod +x scripts/mac-close-check.sh
-          fail=0
-          IDLE=0 scripts/mac-close-check.sh exec "$PWD/dist/mac-arm64/Typd.app" || fail=1
-          IDLE=0 scripts/mac-close-check.sh open "$PWD/dist/mac-arm64/Typd.app" open-no-switches || fail=1
-          test $fail = 0
-
-      - name: Let Typd through macOS privacy as its own app (arm64, runner only)
-        if: contains(env.ARCHS, 'arm64')
-        # The runner's VM lets the privacy (TCC) databases be written: grant ai.typd.app
-        # Accessibility, Input Monitoring, posting events and the microphone here, so the next pass
-        # can press its key. Best effort.
-        continue-on-error: true
-        run: |
-          now=$(date +%s)
-          grant() {
-            sudo sqlite3 "$1" "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version, flags, last_modified) VALUES ('$2', 'ai.typd.app', 0, 2, 4, 1, 0, $now);" && echo "granted $2" || echo "could not grant $2"
+          set +e
+          L="$RUNNER_TEMP/fr"; A="$RUNNER_TEMP/mac-alert"; UD="$HOME/Library/Application Support/typd"
+          OUT="$L/typd.out"; ERR="$L/typd.err"; REP="$L/app-update-report.json"
+          shot() { screencapture -x "$L/shots/$1.png" 2>&1 | head -2; }
+          test -e "$UD" && { echo "::warning::a Typd profile exists before the first launch"; ls -la "$UD"; }
+          T0=$(date +%s); echo "$T0" > "$L/t0"
+          el() { echo $(( $(date +%s) - T0 )); }
+          stamp() {   # the new lines of $1, each with the seconds since launch, into $1.t
+            local c=0 tot; [ -f "$1.n" ] && c=$(cat "$1.n")
+            tot=$(wc -l < "$1" 2>/dev/null | tr -d ' '); [ -n "$tot" ] && [ "$tot" -gt "$c" ] || return 0
+            sed -n "$((c+1)),${tot}p" "$1" | sed "s/^/[+$(el)s] /" >> "$1.t"; echo "$tot" > "$1.n"
           }
-          SYS="/Library/Application Support/com.apple.TCC/TCC.db"
-          USR="$HOME/Library/Application Support/com.apple.TCC/TCC.db"
-          for svc in kTCCServiceAccessibility kTCCServiceListenEvent kTCCServicePostEvent; do grant "$SYS" $svc; done
-          grant "$USR" kTCCServiceMicrophone
-          sudo sqlite3 "$SYS" "SELECT service, client, auth_value FROM access WHERE client = 'ai.typd.app';" || true
-          csrutil status || true
+          # TYPD_DEBUG only adds log lines; TYPD_APP_UPDATE_REPORT only writes where the update check stands.
+          open /Applications/Typd.app --env TYPD_DEBUG=1 --env "TYPD_APP_UPDATE_REPORT=$REP" --stdout "$OUT" --stderr "$ERR"
+          shots=" 5 15 30 60 90 120 180 300 480 720 960 "
+          ready=""; upd=""; mic=0; gone=""; held=0; clicked=0; lastp=-1
+          part() { find "$UD/models" -type f -name '*.gguf' -exec stat -f %z {} + 2>/dev/null | awk '{s+=$1} END {print s+0}'; }
+          for i in $(seq 1 1800); do
+            sleep 1; stamp "$OUT"; stamp "$ERR"; e=$(el)
+            if [ $((e / 20)) != $lastp ]; then lastp=$((e / 20)); echo "[+${e}s] model bytes on disk $(part); windows: $("$A" windows | head -5 | tr '\n' ';')" >> "$L/progress.txt"; fi
+            # A modal window of Typd's (layer >= 8: an app-modal alert) fails the gate. Nobody clicks it: 0.2.11
+            # must download and get ready without any click on Typd.
+            if [ $held = 0 ] && "$A" windows | grep -qE '^window: Typd layer (8|[1-9][0-9])'; then
+              held=$e; "$A" texts Typd > "$L/typd-dialog.txt" 2>&1; shot "typd-dialog-$(printf %04d "$e")s"
+              echo "[+${e}s] FAIL a modal window of Typd's is up: $(grep -E '^(text|button):' "$L/typd-dialog.txt" | head -8 | tr '\n' ' ')" >> "$L/actions.txt"
+              echo "[+${e}s] model bytes on disk: $(part)" >> "$L/actions.txt"
+            fi
+            case "$shots" in *" $e "*) shot "launch-$(printf %04d "$e")s"; "$A" windows | head -10 > "$L/windows-$e.txt"; "$A" texts Typd 2>&1 | head -80 > "$L/typd-ax-$e.txt";; esac
+            if "$A" windows | grep -q '^window: UserNotificationCenter'; then
+              "$A" texts UserNotificationCenter > "$L/alert.txt" 2>&1
+              h=$(md5 -q "$L/alert.txt")
+              if [ ! -e "$L/alert-$h.seen" ]; then
+                touch "$L/alert-$h.seen"; cp "$L/alert.txt" "$L/alert-$e.txt"; shot "alert-$(printf %04d "$e")s"
+                echo "[+${e}s] macOS alert: $(grep -E '^(text|button):' "$L/alert.txt" | head -6 | tr '\n' ' ')" >> "$L/actions.txt"
+              fi
+              if [ $mic = 0 ] && grep -qi microphone "$L/alert.txt"; then
+                "$A" press UserNotificationCenter Allow >> "$L/actions.txt" 2>&1; mic=1
+                echo "[+${e}s] pressed Allow on macOS's microphone prompt, as a person does" >> "$L/actions.txt"
+              fi
+            fi
+            if [ -z "$ready" ] && grep -qE '\[typd:local\] model .* ready' "$OUT"; then ready=$e; shot "ready-$(printf %04d "$e")s"; fi
+            if [ -z "$upd" ] && grep -qE '"state":"(current|none|updated)"' "$REP" 2>/dev/null; then upd=$e; fi
+            if ! pgrep -f '/Applications/Typd.app/Contents/MacOS/Typd' >/dev/null; then gone=$e; echo "::error::Typd is not running at +${e}s"; break; fi
+            if [ -n "$ready" ] && { [ -n "$upd" ] || [ $((e - ready)) -gt 360 ]; }; then break; fi
+            # 0.2.10 stalled for good while its dialog was up: give up after 20 min without a ready model.
+            if [ -z "$ready" ] && [ $e -gt 1200 ]; then break; fi
+          done
+          stamp "$OUT"; stamp "$ERR"
+          { echo "ready=${ready}"; echo "modal_at=$( [ $held -gt 0 ] && echo $held )"; echo "gone=${gone}"; echo "typd_clicks=0"; } > "$L/gate.txt"
+          f() { grep -m1 -E "$1" "$OUT.t" 2>/dev/null | sed -E 's/^\[\+([0-9]+)s\].*/\1/'; }
+          {
+            echo "seconds after launch: variant $(f '\[typd:models\] variant'), first download $(f '\[typd:models\] downloading'), verified $(f '\[typd:models\] verified .*every file'), switching $(f '\[typd:models\] switching to'), self-test $(f '\[typd:local\] self-test on'), ready ${ready:-never}, app-update checked ${upd:-never}, Typd gone ${gone:-no}"
+            echo "--- what Typd logged (debug)"
+            grep -E '\[typd:(models|model|local|app-update|share|permissions|walkthrough|life|cuda)\]' "$OUT.t" | grep -vE 'progress|%' | cut -c1-260 | head -90
+            echo "--- stderr (first lines)"; head -20 "$ERR.t" 2>/dev/null | cut -c1-260
+            echo "--- actions"; cat "$L/actions.txt" 2>/dev/null
+            echo "--- Typd's dialog"; cat "$L/typd-dialog.txt" 2>/dev/null | head -20
+            echo "--- progress"; cat "$L/progress.txt" 2>/dev/null | cut -c1-300
+            echo "--- what Typd's windows said (Accessibility), at the screenshot times"
+            for f in "$L"/typd-ax-*.txt; do [ -s "$f" ] && { echo "$(basename "$f"):"; grep -E '^(text|button):' "$f" | head -14 | cut -c1-200; }; done
+          } 2>&1 | tee "$L/first-launch.txt"
 
-      - name: Close the Typd window, stay running, its own app with its switches on (arm64)
-        if: contains(env.ARCHS, 'arm64')
-        env:
-          TYPD_MODEL_DIR: ${{ github.workspace }}/models/typd-dictate
-        # The open pass again, now that Typd holds its permissions as itself (a user's Mac after the
-        # permission dialog), with a minute alone after the close. Then eight more launches, each
-        # of which must come up and quit: uiohook-napi's start used to hang Typd at launch here.
-        run: |
-          chmod +x scripts/mac-launch-loop.sh
-          fail=0
-          scripts/mac-close-check.sh open "$PWD/dist/mac-arm64/Typd.app" open-switches-on || fail=1
-          scripts/mac-launch-loop.sh "$PWD/dist/mac-arm64/Typd.app" 8 || fail=1
-          test $fail = 0
-
-      - name: Open from the menu bar, close with the red X, stay running (arm64)
-        if: contains(env.ARCHS, 'arm64')
-        env:
-          TYPD_MODEL_DIR: ${{ github.workspace }}/models/typd-dictate
-        # A tester's Mac: menu-bar icon > "Open Typd" > the red X, and Typd was gone, menu-bar icon and
-        # all. scripts/mac-tray-close-check.sh takes that path, started as Finder starts Typd: first
-        # through the menu's own "Open Typd" and win.close(), then with real clicks on the menu-bar
-        # icon, the menu and the red X. Each pass then watches Typd alone for 150 s (alive, its
-        # menu-bar icon, CPU, App Nap, its key). A gate.
-        run: |
-          swiftc -O scripts/mac-ui.swift -o "$RUNNER_TEMP/mac-ui"
-          chmod +x scripts/mac-tray-close-check.sh
-          fail=0
-          scripts/mac-tray-close-check.sh "$PWD/dist/mac-arm64/Typd.app" tray-menu tray || fail=1
-          scripts/mac-tray-close-check.sh "$PWD/dist/mac-arm64/Typd.app" gui-clicks gui || fail=1
-          test $fail = 0
-
-      - name: An update opens no window (arm64)
-        if: contains(env.ARCHS, 'arm64')
-        env:
-          TYPD_MODEL_DIR: ${{ github.workspace }}/models/typd-dictate
-        # The first-run walkthrough is for fresh installs only: Typd started on a user-data folder as
-        # 0.2.3 left it (the walkthrough never shown) must open no window; a fresh install must show
-        # it (the control). scripts/mac-first-launch-check.sh. A gate.
-        run: |
-          chmod +x scripts/mac-first-launch-check.sh
-          scripts/mac-first-launch-check.sh "$PWD/dist/mac-arm64/Typd.app"
-
-      - name: First launch with no model (arm64, informational)
-        # The public app as a new user starts it: no model anywhere. First with model updates off: it
-        # must stay up and say it has no model (no crash, no dialog). Then as shipped: it downloads
-        # the variant this runner's hardware gets through the public routes (signed manifest, sha256
-        # of every file), switches to it and passes its self-test.
-        if: contains(env.ARCHS, 'arm64')
+      - name: The model server, the update check, sharing
         continue-on-error: true
         run: |
-          APP="$PWD/dist/mac-arm64/Typd.app"
-          BIN="$APP/Contents/MacOS/Typd"
-          UD="$HOME/Library/Application Support/typd"
-          pkill -f "$BIN" || true
-          rm -rf "$UD/models"
-          TYPD_DEBUG=1 TYPD_NO_MODEL_UPDATE=1 TYPD_NO_APP_UPDATE=1 TYPD_NO_WALKTHROUGH=1 TYPD_NO_SHARE=1 "$BIN" > nomodel-off.log 2>&1 &
-          pid=$!
-          sleep 20
-          alive=0; kill -0 $pid 2>/dev/null && alive=1
-          kill $pid 2>/dev/null || true; sleep 2
-          grep -E '\[typd:model\]' nomodel-off.log || true
-          echo "alive after 20 s with no model and updates off: $alive"
-          grep -q '\[typd:model\] no speech model yet: no download' nomodel-off.log && test $alive = 1 || { tail -40 nomodel-off.log; exit 1; }
-          TYPD_DEBUG=1 TYPD_NO_APP_UPDATE=1 TYPD_NO_WALKTHROUGH=1 TYPD_NO_SHARE=1 "$BIN" > nomodel.log 2>&1 &
-          pid=$!
-          ok=0
-          for i in $(seq 1 600); do
-            if grep -qE '\[typd:local\] model .* ready' nomodel.log; then ok=1; break; fi
-            kill -0 $pid 2>/dev/null || break
-            sleep 1
-          done
-          grep -E '\[typd:model\]|\[typd:models\] (variant|downloading|verified|switching|now running)' nomodel.log | head -30
-          grep -E '\[typd:local\] (self-test|path chosen|model .* ready)' nomodel.log || true
-          ls -la "$UD/models" || true
-          kill $pid 2>/dev/null || true; sleep 2
-          pkill -f "$APP/Contents/Resources/llama/llama-server" || true
-          echo "- first launch with no model: downloaded and ready = $ok" >> "$GITHUB_STEP_SUMMARY"
-          test $ok = 1
+          set +e
+          L="$RUNNER_TEMP/fr"; UD="$HOME/Library/Application Support/typd"
+          {
+            echo "--- health"; curl -s -m 5 -w '  HTTP %{http_code}\n' http://127.0.0.1:8737/health
+            echo "--- /v1/models"; curl -s -m 5 http://127.0.0.1:8737/v1/models | cut -c1-500; echo
+            echo "--- llama-server"; ps -axo pid,rss,etime,args | grep -E '[l]lama-server' | cut -c1-500
+            echo "--- Typd processes"; ps -axo pid,rss,etime,comm | grep -E '[T]ypd' | cut -c1-160
+            echo "--- app-update report"; cat "$L/app-update-report.json" 2>&1; echo
+            echo "--- app-update state"; cat "$UD/app-update/state.json" 2>&1; echo
+            echo "--- settings.json"; cat "$UD/settings.json" 2>&1; echo
+            echo "--- models"; cat "$UD/models/current.json" 2>&1; echo; ls -la "$UD/models"/* 2>&1 | head -20; du -sh "$UD/models"/* 2>&1
+            echo "--- profile"; find "$UD" -maxdepth 2 | sed "s#$UD#<userData>#" | head -60
+            echo "--- share files"; ls -la "$UD"/share* "$UD"/queue* 2>&1 | head
+            echo "--- life.log"; tail -80 "$UD/logs/life.log" 2>&1 | cut -c1-260
+          } 2>&1 | tee "$L/state.txt"
 
-      - name: The app inside each dmg checked for keys (scripts/public-build.js verify)
+      - name: One real dictation through the app's pipeline
+        continue-on-error: true
         run: |
-          set -e
-          test -z "${TYPD_TESTER_CONFIG:-}"
-          want=$(node -p "require('./scripts/mac-signing.json').sha1")
-          for a in $ARCHS; do
-            dmg=$(ls dist/Typd-*-mac-$a.dmg)
-            mnt="$RUNNER_TEMP/typd-dmg-$a"
-            mkdir -p "$mnt"
-            hdiutil attach "$dmg" -nobrowse -readonly -mountpoint "$mnt"
-            codesign --verify --deep --strict "$mnt/Typd.app"
-            codesign -d -r- "$mnt/Typd.app" 2>&1 | grep designated | grep -qi "$want"
-            node scripts/public-build.js verify --app "$mnt/Typd.app" --platform "mac-$a" --installer "$dmg" --expect-model no
-            hdiutil detach "$mnt"
-          done
-          ls -la dist/*.dmg dist/*.dmg.public.json
-          cat dist/*.dmg.public.json
+          set +e
+          L="$RUNNER_TEMP/fr"; UD="$HOME/Library/Application Support/typd"; RES=/Applications/Typd.app/Contents/Resources
+          curl -fsSL -o "$L/speech.wav" "$SPEECH_WAV"
+          { echo "speech.wav sha256 $(shasum -a 256 "$L/speech.wav" | cut -d' ' -f1)"; afinfo "$L/speech.wav" | grep -E 'format|duration'; } | tee "$L/speech.txt"
+          printf '%s' "$DICTATE_JS" > "$RUNNER_TEMP/dictate.js"
+          env ELECTRON_RUN_AS_NODE=1 perl -e 'alarm shift; exec @ARGV' 900 /Applications/Typd.app/Contents/MacOS/Typd "$RUNNER_TEMP/dictate.js" "$RES/app.asar" "$UD" "$L/dictation.json" "$L/speech.wav" "$RES/app.asar/test/fixtures/dictation-3s.wav" 2>&1 | tee "$L/dictation.log"
+          echo "exit ${PIPESTATUS[0]}"
+          cat "$L/dictation.json" 2>/dev/null | head -60
+          screencapture -x "$L/shots/after-dictation.png" 2>&1 | head -2
+          echo "--- life.log after"; tail -15 "$UD/logs/life.log" 2>&1 | cut -c1-200
 
-      - name: Attach the builds to a draft release (visible to maintainers only)
+      - name: The walkthrough closed, the switches dialog as a sheet (informational)
+        continue-on-error: true
+        run: |
+          set +e
+          L="$RUNNER_TEMP/fr"; A="$RUNNER_TEMP/mac-alert"; OUT="$L/typd.out"
+          {
+            echo "--- a person closes the walkthrough (Skip)"
+            "$A" click Typd Skip 2>&1
+            for i in $(seq 1 20); do sleep 1; grep -q 'checked for the end of the walkthrough' "$OUT" && break; done
+            sleep 3
+            grep -E '\[typd:(permissions|sheet)\]' "$OUT" | tail -5 | cut -c1-260
+            echo "--- windows"; "$A" windows | head -8
+            echo "--- Typd's texts"; "$A" texts Typd 2>&1 | grep -E 'switches|Open System Settings|Not Now|Accessibility|Input Monitoring' | head -10 | cut -c1-200
+            if grep -q 'checked for the end of the walkthrough' "$OUT"; then
+              "$A" windows | grep -qE '^window: Typd layer (8|[1-9][0-9])' && echo "FAIL the switches dialog is modal" || echo "ok: no modal window of Typd's"
+              "$A" texts Typd 2>&1 | grep -q 'Typd needs two switches turned on' && echo "ok: the switches dialog is on the Typd window, in the same words" || echo "(the dialog's text was not read)"
+            else
+              echo "(the click on Skip did not land: no check after the walkthrough)"
+            fi
+            screencapture -x "$L/shots/after-walkthrough.png" 2>&1 | head -2
+          } 2>&1 | tee "$L/after-walkthrough.txt"
+
+      - name: Keep the logs and screenshots in a draft release (maintainers only)
+        if: always()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -e
-          version=$(node -p "require('./package.json').version")
-          tag="build-${GITHUB_RUN_ID}"
-          mkdir -p dist/release
-          for f in dist/*.dmg dist/*.dmg.public.json dist/update/*.zip dist/update/*.zip.json; do ln "$f" dist/release/; done
-          (cd dist/release && shasum -a 256 * > SHA256SUMS && cat SHA256SUMS)
-          for f in dist/release/*; do
-            size=$(stat -f %z "$f")
-            if [ "$size" -ge 2147483648 ]; then echo "$f is $size bytes: over GitHub's 2 GiB limit for a release file"; exit 1; fi
-          done
-          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --draft --target "$GITHUB_SHA" \
-            --title "Build ${GITHUB_RUN_ID}: Typd $version" \
-            --notes "Draft (maintainers only): CI build of ${GITHUB_SHA::7}, Typd $version, model $MODEL_VERSION, archs $ARCHS. Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          for f in dist/release/*; do
-            ok=0
-            for i in 1 2 3 4; do
-              if gh release upload "$tag" "$f" --repo "$GITHUB_REPOSITORY" --clobber; then ok=1; break; fi
-              echo "upload of $(basename "$f") failed (try $i); retrying"; sleep $((15 * i))
-            done
-            test $ok = 1
-          done
-          want=$(ls dist/release | wc -l | tr -d ' ')
-          gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft,assets --jq '"draft: \(.isDraft)", (.assets[] | "\(.name)  \(.size)")'
+          L="$RUNNER_TEMP/fr"; UD="$HOME/Library/Application Support/typd"
+          mkdir -p "$L/profile"
+          rsync -a --include='*/' --include='*.json' --include='*.log' --exclude='*' "$UD/" "$L/profile/" 2>/dev/null || true
+          find "$UD" -type f -exec ls -l {} \; 2>/dev/null | sed "s#$UD#<userData>#" > "$L/profile-files.txt" || true
+          for f in "$L"/shots/*.png; do if [ -e "$f" ]; then sips -s format jpeg -s formatOptions 70 "$f" --out "${f%.png}.jpg" >/dev/null 2>&1 && rm "$f"; fi; done
+          tar czf "$RUNNER_TEMP/firstrun-mac.tar.gz" -C "$L" .
+          ls -la "$RUNNER_TEMP/firstrun-mac.tar.gz"
+          tag="firstrun-${GITHUB_RUN_ID}-mac"
+          gh release create "$tag" --draft --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "First-run test ${GITHUB_RUN_ID}, macOS (logs only)" \
+            --notes "Draft (maintainers only): logs and screenshots of a Typd build's first run (${{ inputs.mac_release }}) on a clean macos-15 runner. Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            "$RUNNER_TEMP/firstrun-mac.tar.gz"
           test "$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = true
-          test "$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets | length')" = "$want"
-          echo "- draft release \`$tag\`: $want files (Typd $version, model $MODEL_VERSION)" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Remove the signing keychain
+      - name: Quit Typd
         if: always()
-        run: bash scripts/mac-signing-import.sh --delete
+        run: |
+          osascript -e 'quit app "Typd"' 2>/dev/null || true; sleep 3
+          pkill -f /Applications/Typd.app/ || true
 
-  menubar:
-    # The menu-bar close checks on several macOS versions, on an ad-hoc-signed arm64 build of this
-    # commit (no secrets in this job). macos-14 is the build job's runner; the tester's Mac runs
-    # macOS 27 (xcode-27 is that image, in preview).
-    if: github.repository == 'SameRainbows/typd-app'
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-14, macos-15, macos-26, xcode-27]
-    runs-on: ${{ matrix.os }}
+      - name: 'Gate: no click on Typd, no modal window, the model ready'
+        run: |
+          L="$RUNNER_TEMP/fr"; cat "$L/gate.txt"; . "$L/gate.txt"
+          grep -E '^seconds after launch' "$L/first-launch.txt"
+          grep -m1 -E '\[typd:models\] variant' "$L/typd.out" | cut -c1-200
+          fail=0
+          [ -z "$modal_at" ] || { echo "::error::a modal window of Typd's was up at +${modal_at}s"; fail=1; }
+          [ -n "$ready" ] || { echo "::error::the model never got ready with nobody clicking"; fail=1; }
+          [ -z "$gone" ] || { echo "::error::Typd stopped at +${gone}s"; fail=1; }
+          [ $fail = 0 ] && echo "PASS: no click on anything of Typd's, no modal window, the model ready at +${ready}s"
+          exit $fail
+
+  windows:
+    if: github.repository == 'SameRainbows/typd-app' && inputs.os != 'mac'
+    runs-on: windows-latest
     timeout-minutes: 75
+    permissions:
+      contents: write   # only for the draft release (the last step gets the token)
+    defaults:
+      run:
+        shell: pwsh
     steps:
-      - name: Check out this commit (plain git, no token)
+      - name: The machine
         run: |
-          set -e
-          git init -q .
-          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
-          git fetch -q --depth 1 origin "$GITHUB_SHA"
-          git checkout -q --detach FETCH_HEAD
-          git log -1 --format='%H %s'
-          sw_vers; uname -r; csrutil status || true
+          $ErrorActionPreference = 'Continue'
+          $L ="$env:RUNNER_TEMP\fr"; New-Item -ItemType Directory -Force "$L\shots" | Out-Null
+          & {
+            $os = Get-CimInstance Win32_OperatingSystem; $cs = Get-CimInstance Win32_ComputerSystem
+            "$($os.Caption) $($os.Version) build $($os.BuildNumber)"
+            "memory: $([math]::Round($cs.TotalPhysicalMemory / 1MB)) MB, logical cpus: $($cs.NumberOfLogicalProcessors)"
+            (Get-CimInstance Win32_Processor | Select-Object -First 1).Name
+            Get-CimInstance Win32_VideoController | ForEach-Object { "display adapter: $($_.Name)" }
+            "SmartScreen (Explorer): $((Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer' -ErrorAction SilentlyContinue).SmartScreenEnabled)"
+            "SmartScreen (policy): $((Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System' -ErrorAction SilentlyContinue).EnableSmartScreen)"
+            "user: $(whoami); admin token: $(([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))"
+            "session: $((Get-Process -Id $PID).SessionId)"
+            "Typd profile before install: $(Test-Path "$env:APPDATA\typd")"
+          } *>&1 | Tee-Object -FilePath "$L\machine.txt"
 
-      - name: Node.js 24 (nodejs.org, sha256 pinned)
+      - name: Download the build from its draft release, check its SHA-256
         env:
-          NODE_VERSION: v24.22.0
-          NODE_SHA256: 6a9724d9b50a5f22b4816cded441b5a8d9ddae546191a5e5b7efa5a5e2ee26d5   # node-v24.22.0-darwin-arm64.tar.gz
+          GH_TOKEN: ${{ github.token }}
+          REL: ${{ inputs.win_release }}
         run: |
-          set -e
-          test "$(uname -m)" = arm64
-          f="node-$NODE_VERSION-darwin-arm64.tar.gz"
-          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$f" "https://nodejs.org/dist/$NODE_VERSION/$f"
-          echo "$NODE_SHA256  $RUNNER_TEMP/$f" | shasum -a 256 -c -
-          tar -xzf "$RUNNER_TEMP/$f" -C "$RUNNER_TEMP"
-          echo "$RUNNER_TEMP/node-$NODE_VERSION-darwin-arm64/bin" >> "$GITHUB_PATH"
+          $ErrorActionPreference = 'Stop'
+          $L = "$env:RUNNER_TEMP\fr"; $D = "$env:RUNNER_TEMP\rel"; New-Item -ItemType Directory -Force $D | Out-Null
+          if (-not $env:REL) { throw 'no win_release given' }
+          gh release download $env:REL --repo $env:GITHUB_REPOSITORY --pattern SHA256SUMS --dir $D
+          $line = Get-Content "$D\SHA256SUMS" | Where-Object { $_ -match 'Typd-Setup-[0-9.]+\.exe$' } | Select-Object -First 1
+          $sha = ($line -split '\s+')[0]; $name = [regex]::Match($line, 'Typd-Setup-[0-9.]+\.exe').Value
+          if (-not $sha -or -not $name) { throw 'no installer in SHA256SUMS' }
+          $dl = Join-Path $HOME 'Downloads'; New-Item -ItemType Directory -Force $dl | Out-Null
+          $f = Join-Path $dl $name
+          & {
+            "draft $env:REL holds $name, SHA-256 $sha"
+            $sw = [Diagnostics.Stopwatch]::StartNew()
+            gh release download $env:REL --repo $env:GITHUB_REPOSITORY --pattern $name --dir $dl
+            if ($LASTEXITCODE) { throw 'download failed' }
+            "downloaded $((Get-Item $f).Length) bytes in $([math]::Round($sw.Elapsed.TotalSeconds, 1)) s"
+            $got = (Get-FileHash -Algorithm SHA256 $f).Hash.ToLower()
+            "sha256 of the download: $got"
+            if ($got -ne $sha) { throw 'SHA-256 does not match the draft' }
+            'SHA-256 matches the draft''s SHA256SUMS'
+            # The mark a browser leaves on a download (Mark of the Web).
+            Set-Content -Path $f -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3`r`nReferrerUrl=$env:PAGE`r`nHostUrl=$env:PAGE$name"
+            "Zone.Identifier: $((Get-Content -Path $f -Stream Zone.Identifier) -join ' | ')"
+            $sig = Get-AuthenticodeSignature $f
+            "Authenticode: $($sig.Status) ($($sig.StatusMessage)) signer: $($sig.SignerCertificate.Subject)"
+            "VersionInfo: CompanyName '$((Get-Item $f).VersionInfo.CompanyName)', ProductVersion $((Get-Item $f).VersionInfo.ProductVersion)"
+          } *>&1 | Tee-Object -FilePath "$L\download.txt"
+          "INSTALLER=$f" >> $env:GITHUB_ENV
 
-      - name: No tester build, ever
+      - name: Install it silently, for this user only (no admin)
+        timeout-minutes: 15
         run: |
-          set -e
-          test -z "${TYPD_TESTER_CONFIG:-}${TYPD_TESTER_DEV:-}${TYPD_TESTER_JSON:-}"
-          if find . -path ./node_modules -prune -o \( -name 'tester.json' -o -name 'tester.*.json' -o -name 'model-updates.json' \) -print | grep .; then exit 1; fi
+          $ErrorActionPreference = 'Continue'
+          $L = "$env:RUNNER_TEMP\fr"
+          . ([scriptblock]::Create($env:WIN_HELPERS_PS1))
+          & {
+            'try 1: the download as the browser left it (Mark of the Web, unsigned), /S'
+            $sw = [Diagnostics.Stopwatch]::StartNew()
+            $j = Start-Job -ScriptBlock { param($f) (Start-Process -FilePath $f -ArgumentList '/S' -PassThru -Wait).ExitCode } -ArgumentList $env:INSTALLER
+            if (Wait-Job $j -Timeout 120) {
+              "installer exit code $(Receive-Job $j) after $([math]::Round($sw.Elapsed.TotalSeconds, 1)) s"
+            } else {
+              'after 120 s the installer has not finished. On screen:'
+              Shot 'install-held'
+              [Wins]::List() | Where-Object { $_ -notmatch '^(explorer|TextInputHost|ShellExperienceHost|SearchHost|StartMenuExperienceHost) ' } | ForEach-Object { "  window: $_" }
+              Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'Typd|smartscreen|consent|rundll32|pwsh|powershell' } | ForEach-Object { "  process: $($_.Name) pid $($_.ProcessId) parent $($_.ParentProcessId) $($_.CommandLine)" }
+              Get-WinEvent -LogName 'Microsoft-Windows-SmartScreen/Debug' -MaxEvents 10 -ErrorAction SilentlyContinue | ForEach-Object { "  smartscreen event $($_.Id): $($_.Message)" }
+              Stop-Job $j; Remove-Job $j -Force
+              Get-Process | Where-Object { $_.ProcessName -like 'Typd-Setup*' } | Stop-Process -Force
+              'try 2: the mark taken off (Unblock-File: what "Run anyway" lets through), /S'
+              Unblock-File $env:INSTALLER
+              $sw.Restart()
+              $p = Start-Process -FilePath $env:INSTALLER -ArgumentList '/S' -PassThru
+              if (-not $p.WaitForExit(600000)) { 'installer still running after 10 min'; Shot 'install-held-2'; [Wins]::List() | ForEach-Object { "  window: $_" }; exit 1 }
+              "installer exit code $($p.ExitCode) after $([math]::Round($sw.Elapsed.TotalSeconds, 1)) s"
+            }
+          } *>&1 | Tee-Object -FilePath "$L\install.txt"
 
-      - name: Install dependencies, the model, llama.cpp and the fixed uiohook (arm64)
+      - name: What the install left
         run: |
-          set -e
-          npm ci
-          node scripts/fetch-model.js --accept-license | tail -3
-          node scripts/fetch-llama-mac.js arm64
-          node scripts/build-uiohook-mac.js arm64
+          $ErrorActionPreference = 'Continue'
+          $L = "$env:RUNNER_TEMP\fr"
+          & {
+            $exe = Get-ChildItem "$env:LOCALAPPDATA\Programs" -Recurse -Filter Typd.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+            "Typd.exe: $($exe.FullName) $((Get-Item $exe.FullName).VersionInfo.ProductVersion)"
+            "installed size: $([math]::Round((Get-ChildItem $exe.DirectoryName -Recurse -File | Measure-Object Length -Sum).Sum / 1MB)) MB"
+            Get-ChildItem "$env:APPDATA\Microsoft\Windows\Start Menu\Programs" -Recurse -Filter '*Typd*' | ForEach-Object { "start menu: $($_.Name)" }
+            "desktop shortcut: $(Test-Path (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Typd.lnk'))"
+            Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue | Where-Object DisplayName -like '*Typd*' | ForEach-Object { "uninstall entry $($_.PSChildName): $($_.DisplayName) $($_.DisplayVersion) at $($_.InstallLocation), publisher '$($_.Publisher)'"; "PUBLISHER=$($_.Publisher)" >> $env:GITHUB_ENV; "UNINSTALL_KEY=$($_.PSChildName)" >> $env:GITHUB_ENV }
+            "Typd.exe CompanyName: '$((Get-Item $exe.FullName).VersionInfo.CompanyName)'"
+            "Typd running after the silent install: $([bool](Get-Process Typd -ErrorAction SilentlyContinue))"
+            "Typd profile after the install: $(Test-Path "$env:APPDATA\typd")"
+            "TYPD_EXE=$($exe.FullName)" >> $env:GITHUB_ENV
+          } *>&1 | Tee-Object -FilePath "$L\installed.txt"
+          if (Get-Process Typd -ErrorAction SilentlyContinue) { 'the installer started Typd: stopping it and clearing its profile so the first launch below is clean'; Stop-Process -Name Typd -Force; Start-Sleep 3; Remove-Item -Recurse -Force "$env:APPDATA\typd" -ErrorAction SilentlyContinue }
 
-      - name: Package (arm64, signed ad hoc, no dmg)
-        run: |
-          set -e
-          unset TYPD_TESTER_CONFIG
-          TYPD_NO_BUNDLED_MODEL=1 npx electron-builder --mac dir --arm64 --publish never
-          app=dist/mac-arm64/Typd.app
-          codesign --verify --deep --strict "$app"
-          plutil -p "$app/Contents/Info.plist" | grep -E 'LSUIElement|Termination|AppNap|CFBundleShortVersionString'
-          swiftc -O scripts/mac-ui.swift -o "$RUNNER_TEMP/mac-ui"
-
-      - name: Let Typd through macOS privacy (runner only, best effort)
+      - name: First launch on a clean profile, watched; the server, the update check, sharing; one real dictation
         continue-on-error: true
         run: |
-          now=$(date +%s)
-          grant() {
-            sudo sqlite3 "$1" "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version, flags, last_modified) VALUES ('$2', 'ai.typd.app', 0, 2, 4, 1, 0, $now);" && echo "granted $2" || echo "could not grant $2"
+          $ErrorActionPreference = 'Continue'
+          $L ="$env:RUNNER_TEMP\fr"; $UD = "$env:APPDATA\typd"; $OUT = "$L\typd.out"; $REP = "$L\app-update-report.json"
+          . ([scriptblock]::Create($env:WIN_HELPERS_PS1))
+          "profile before launch: $(Test-Path $UD)" | Tee-Object -FilePath "$L\first-launch.txt"
+          # TYPD_DEBUG only adds log lines; TYPD_APP_UPDATE_REPORT only writes where the update check stands.
+          $env:TYPD_DEBUG = '1'; $env:TYPD_APP_UPDATE_REPORT = $REP
+          $t0 = Get-Date
+          $p = Start-Process -FilePath $env:TYPD_EXE -RedirectStandardOutput $OUT -RedirectStandardError "$L\typd.err" -PassThru
+          Remove-Item Env:TYPD_DEBUG, Env:TYPD_APP_UPDATE_REPORT
+          function El { [int]((Get-Date) - $t0).TotalSeconds }
+          $script:n = 0
+          function Stamp { $lines = @(Get-Content $OUT -ErrorAction SilentlyContinue); if ($lines.Count -gt $script:n) { $e = El; $lines[$script:n..($lines.Count - 1)] | ForEach-Object { "[+${e}s] $_" } | Add-Content "$OUT.t"; $script:n = $lines.Count } }
+          $shots = @(5, 15, 30, 60, 90, 120, 180, 300, 480, 720, 960); $si = 0; $ready = $null; $upd = $null; $gone = $null; $okAt = $null
+          while ((El) -lt 1800) {
+            Start-Sleep 1; Stamp; $e = El
+            while ($si -lt $shots.Count -and $e -ge $shots[$si]) { Shot ('launch-{0:d4}s' -f $shots[$si]); [Wins]::List() | Where-Object { $_ -notmatch '^(explorer|TextInputHost|ShellExperienceHost|SearchHost|StartMenuExperienceHost) ' } | Set-Content "$L\windows-$($shots[$si]).txt"; $si++ }
+            if (-not $ready -and (Select-String -Path $OUT -Pattern '\[typd:local\] model .* ready' -Quiet)) { $ready = $e; Shot ('ready-{0:d4}s' -f $e) }
+            if (-not $upd -and (Test-Path $REP) -and (Select-String -Path $REP -Pattern '"state":"(current|none|updated)"' -Quiet)) { $upd = $e }
+            if ($p.HasExited) { $gone = $e; "::error::Typd exited (code $($p.ExitCode)) at +${e}s"; break }
+            # Typd waits for an OK to download (a connection it cannot call unmetered): a person reads the card
+            # and clicks "Download now".
+            if (-not $okAt -and $e -ge 20 -and (Select-String -Path $OUT -Pattern 'asking first' -Quiet)) {
+              $okAt = $e; Shot ('ask-{0:d4}s' -f $e)
+              "[+${e}s] Typd asks before downloading the model; $(Click-Named 'Download now')" | Add-Content "$L\actions.txt"
+              Start-Sleep 3; Shot ('after-ok-{0:d4}s' -f (El))
+            }
+            if ($ready -and ($upd -or ($e - $ready) -gt 360)) { break }
           }
-          SYS="/Library/Application Support/com.apple.TCC/TCC.db"
-          USR="$HOME/Library/Application Support/com.apple.TCC/TCC.db"
-          for svc in kTCCServiceAccessibility kTCCServiceListenEvent kTCCServicePostEvent; do grant "$SYS" $svc; done
-          grant "$USR" kTCCServiceMicrophone
+          Stamp
+          function F($pat) { $l = Select-String -Path "$OUT.t" -Pattern $pat | Select-Object -First 1; if ($l) { [regex]::Match($l.Line, '^\[\+(\d+)s\]').Groups[1].Value } }
+          & {
+            "seconds after launch: variant $(F '\[typd:models\] variant'), first download $(F '\[typd:models\] downloading'), verified $(F '\[typd:models\] verified .*every file'), switching $(F '\[typd:models\] switching to'), self-test $(F '\[typd:local\] self-test on'), ready $(if ($ready) { $ready } else { 'never' }), app-update checked $(if ($upd) { $upd } else { 'never' }), Typd gone $(if ($gone) { $gone } else { 'no' })"
+            '--- what Typd logged (debug)'
+            Get-Content "$OUT.t" | Where-Object { $_ -match '\[typd:(models|model|local|app-update|share|permissions|walkthrough|life|cuda)\]' -and $_ -notmatch 'progress|%' } | Select-Object -First 90 | ForEach-Object { if ($_.Length -gt 260) { $_.Substring(0, 260) } else { $_ } }
+            '--- stderr (first lines)'; Get-Content "$L\typd.err" -TotalCount 20 -ErrorAction SilentlyContinue
+            '--- windows now'; [Wins]::List() | Where-Object { $_ -match '^(Typd|llama)' }
+            '--- actions'; Get-Content "$L\actions.txt" -ErrorAction SilentlyContinue
+          } *>&1 | Tee-Object -FilePath "$L\first-launch.txt" -Append
+          & {
+            '--- health'; try { $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 http://127.0.0.1:8737/health; "HTTP $($r.StatusCode) $($r.Content)" } catch { "health: $($_.Exception.Message)" }
+            '--- /v1/models'; try { (Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 http://127.0.0.1:8737/v1/models).Content } catch { $_.Exception.Message }
+            '--- llama-server'; Get-CimInstance Win32_Process -Filter "Name='llama-server.exe'" | ForEach-Object { "pid $($_.ProcessId) ws $([math]::Round($_.WorkingSetSize / 1MB)) MB: $($_.CommandLine)" }
+            '--- Typd processes'; Get-Process Typd -ErrorAction SilentlyContinue | ForEach-Object { "pid $($_.Id) ws $([math]::Round($_.WorkingSet64 / 1MB)) MB" }
+            '--- app-update report'; Get-Content $REP -ErrorAction SilentlyContinue
+            '--- app-update state'; Get-Content "$UD\app-update\state.json" -ErrorAction SilentlyContinue
+            '--- settings.json'; Get-Content "$UD\settings.json" -ErrorAction SilentlyContinue
+            '--- models'; Get-Content "$UD\models\current.json" -ErrorAction SilentlyContinue; Get-ChildItem "$UD\models" -Recurse -File | ForEach-Object { "$($_.FullName.Replace($UD, '<userData>')) $($_.Length)" }
+            '--- profile'; Get-ChildItem $UD -Depth 1 | ForEach-Object { $_.FullName.Replace($UD, '<userData>') }
+            '--- life.log'; Get-Content "$UD\logs\life.log" -Tail 80 -ErrorAction SilentlyContinue
+          } *>&1 | Tee-Object -FilePath "$L\state.txt"
+          # One real dictation, through the installed app's own code and the server it started.
+          $res = Join-Path (Split-Path $env:TYPD_EXE) 'resources'
+          curl.exe -fsSL -o "$L\speech.wav" $env:SPEECH_WAV
+          "speech.wav sha256 $((Get-FileHash -Algorithm SHA256 "$L\speech.wav").Hash.ToLower()), $((Get-Item "$L\speech.wav").Length) bytes" | Tee-Object -FilePath "$L\speech.txt"
+          Set-Content "$env:RUNNER_TEMP\dictate.js" $env:DICTATE_JS -NoNewline
+          $env:ELECTRON_RUN_AS_NODE = '1'
+          $argv = @("$env:RUNNER_TEMP\dictate.js", "$res\app.asar", $UD, "$L\dictation.json", "$L\speech.wav", "$res\app.asar\test\fixtures\dictation-3s.wav") | ForEach-Object { '"' + $_ + '"' }
+          $d = Start-Process -FilePath $env:TYPD_EXE -ArgumentList ($argv -join ' ') -RedirectStandardOutput "$L\dictation.log" -RedirectStandardError "$L\dictation.err" -PassThru -NoNewWindow
+          Remove-Item Env:ELECTRON_RUN_AS_NODE
+          if (-not $d.WaitForExit(900000)) { 'dictation script still running after 15 min'; Stop-Process -Id $d.Id -Force }
+          "dictation script exit $($d.ExitCode)"
+          Get-Content "$L\dictation.log", "$L\dictation.err" -ErrorAction SilentlyContinue
+          Shot 'after-dictation'
+          '--- life.log after'; Get-Content "$UD\logs\life.log" -Tail 15 -ErrorAction SilentlyContinue
 
-      - name: Close checks, ${{ matrix.os }}
+      - name: Keep the logs and screenshots in a draft release (maintainers only)
+        if: always()
+        shell: bash
         env:
-          TYPD_MODEL_DIR: ${{ github.workspace }}/models/typd-dictate
+          GH_TOKEN: ${{ github.token }}
         run: |
-          chmod +x scripts/mac-close-check.sh scripts/mac-tray-close-check.sh scripts/mac-first-launch-check.sh
-          APP="$PWD/dist/mac-arm64/Typd.app"
-          fail=0
-          # An update (an existing install) opens no window; a fresh install shows the walkthrough.
-          scripts/mac-first-launch-check.sh "$APP" || fail=1
-          # The old check (the window opened and closed from inside Typd), for comparison.
-          IDLE=0 scripts/mac-close-check.sh open "$APP" inside-${{ matrix.os }} || fail=1
-          # The tester's path: the menu's own item + win.close(), then real clicks.
-          scripts/mac-tray-close-check.sh "$APP" tray-${{ matrix.os }} tray || fail=1
-          scripts/mac-tray-close-check.sh "$APP" gui-${{ matrix.os }} gui || fail=1
-          pkill -f "$APP/Contents" || true
-          test $fail = 0
+          set -e
+          T=$(cygpath -u "$RUNNER_TEMP"); L="$T/fr"; UD="$(cygpath -u "$APPDATA")/typd"
+          mkdir -p "$L/profile"
+          (cd "$UD" 2>/dev/null && find . -type f \( -name '*.json' -o -name '*.log' \) -exec cp --parents {} "$L/profile/" \;) || true
+          (cd "$UD" 2>/dev/null && find . -type f -exec ls -l {} \;) > "$L/profile-files.txt" 2>/dev/null || true
+          tar --force-local -czf "$T/firstrun-win.tar.gz" -C "$L" .
+          ls -la "$T/firstrun-win.tar.gz"
+          tag="firstrun-${GITHUB_RUN_ID}-win"
+          gh release create "$tag" --draft --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "First-run test ${GITHUB_RUN_ID}, Windows (logs only)" \
+            --notes "Draft (maintainers only): logs and screenshots of a Typd build's first run (${{ inputs.win_release }}) on a clean windows-latest runner. Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            "$T/firstrun-win.tar.gz"
+          test "$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = true
+
+      - name: Quit Typd
+        if: always()
+        run: |
+          Get-Process Typd, llama-server -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+
+      - name: 'Gate: the publisher shows in Installed apps'
+        run: |
+          "uninstall key $env:UNINSTALL_KEY, publisher '$env:PUBLISHER', installed at $env:TYPD_EXE"
+          if ($env:PUBLISHER -ne 'Mehmet Dedeler') { "::error::publisher is '$env:PUBLISHER'"; exit 1 }
+          if ($env:TYPD_EXE -notlike "$env:LOCALAPPDATA\Programs\typd\Typd.exe") { "::error::installed at $env:TYPD_EXE"; exit 1 }
+          'PASS: Publisher Mehmet Dedeler; installed per user in %LOCALAPPDATA%\Programs\typd'

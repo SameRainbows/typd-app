@@ -153,6 +153,8 @@ async function flow() {
     reqs[2].assistant === "language English<asr_text>Let's get the release for Ker", reqs.map((r) => r.assistant));
   check("both continue the dictation's own answer up to the term (its language tag included), with its audio and prompt",
     reqs[1].assistant === "language English<asr_text>Let's get the release for" && reqs.slice(1).every((r) => r.system === system && r.seconds === reqs[0].seconds), reqs.slice(1).map((r) => r.assistant));
+  check('the dictation carries the language guard; the two checks, which read the model’s own probabilities, do not',
+    typeof reqs[0].body.grammar === 'string' && !('grammar' in reqs[1].body) && !('grammar' in reqs[2].body), reqs.map((r) => 'grammar' in r.body));
   check('the language tag is never the other word (the first real run replaced "Typd" with it)',
     !reqs.some((r) => /for(language| language)$/.test(r.assistant || '')), reqs.map((r) => r.assistant));
 
@@ -183,8 +185,8 @@ async function flow() {
   n = fake.requests.length;
   text = await collect(local.dictate(audio, 16000, null, system, 200));
   reqs = fake.requests.slice(n);
-  check('no term in the text: one request, its body as before', text === said && reqs.length === 1 &&
-    Object.keys(reqs[0].body).join(',') === 'messages,temperature,cache_prompt,stream,max_tokens', reqs.map((r) => Object.keys(r.body).join(',')));
+  check('no term in the text: one request, its body as before (plus the language guard, bench/lang-guard.js)', text === said && reqs.length === 1 &&
+    Object.keys(reqs[0].body).join(',') === 'messages,temperature,cache_prompt,grammar,stream,max_tokens', reqs.map((r) => Object.keys(r.body).join(',')));
 
   // A server that does not give probabilities (an older build): the text is kept as written.
   said = "Let's get the release for Aysel ready and I'll send it to him.";
