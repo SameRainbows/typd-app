@@ -127,6 +127,9 @@ env:
         }, IntPtr.Zero);
         return o;
       }
+      [DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y);
+      [DllImport("user32.dll")] static extern void mouse_event(uint f, uint dx, uint dy, uint d, UIntPtr e);
+      public static void Click(int x, int y) { SetCursorPos(x, y); System.Threading.Thread.Sleep(150); mouse_event(2, 0, 0, 0, UIntPtr.Zero); mouse_event(4, 0, 0, 0, UIntPtr.Zero); }
     }
     "@
     function Shot($name) {
@@ -136,6 +139,29 @@ env:
         $g = [System.Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen($b.Left, $b.Top, 0, 0, $bmp.Size)
         $bmp.Save("$L\shots\$name.jpg", [System.Drawing.Imaging.ImageFormat]::Jpeg); $g.Dispose(); $bmp.Dispose()
       } catch { "screenshot $name failed: $($_.Exception.Message)" | Add-Content "$L\actions.txt" }
+    }
+    # A person's click on the button of Typd's window whose name starts with $prefix: found through UI
+    # Automation, pressed with a real mouse click at its centre.
+    Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+    function Click-Named($prefix) {
+      $AE = [System.Windows.Automation.AutomationElement]
+      $button = New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button)
+      for ($try = 0; $try -lt 15; $try++) {
+        $ids = @(Get-Process Typd -ErrorAction SilentlyContinue | ForEach-Object Id)
+        foreach ($w in $AE::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition)) {
+          if ($ids -notcontains $w.Current.ProcessId) { continue }
+          foreach ($b in $w.FindAll([System.Windows.Automation.TreeScope]::Descendants, $button)) {
+            if ($b.Current.Name -like "$prefix*") {
+              $r = $b.Current.BoundingRectangle
+              $x = [int]($r.X + $r.Width / 2); $y = [int]($r.Y + $r.Height / 2)
+              [Wins]::Click($x, $y)
+              return "clicked '$($b.Current.Name)' at $x,$y (found through UI Automation)"
+            }
+          }
+        }
+        Start-Sleep 1
+      }
+      return "no button named '$prefix...' in Typd's windows"
     }
 
 jobs:
@@ -242,6 +268,7 @@ jobs:
             sleep 2
             to 20 open "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension"; sleep 10
             "$A" texts "System Settings" | grep -iE 'typd|open anyway|blocked|allow applications|app store' | head -12
+            echo "--- System Settings' buttons"; "$A" texts "System Settings" | grep -i '^button' | head -40 | tr '\n' ';'; echo
             shot 02-privacy-security
             osascript -e 'quit app "System Settings"' 2>/dev/null; sleep 2
             if pgrep -f '/Applications/Typd.app/Contents/MacOS/Typd' >/dev/null; then
@@ -271,16 +298,31 @@ jobs:
           # TYPD_DEBUG only adds log lines; TYPD_APP_UPDATE_REPORT only writes where the update check stands.
           open /Applications/Typd.app --env TYPD_DEBUG=1 --env "TYPD_APP_UPDATE_REPORT=$REP" --stdout "$OUT" --stderr "$ERR"
           shots=" 5 15 30 60 90 120 180 300 480 720 960 "
-          ready=""; upd=""; mic=0; gone=0
+          ready=""; upd=""; mic=0; gone=""; held=0; clicked=0; lastp=-1
+          part() { find "$UD/models" -type f -name '*.gguf' -exec stat -f %z {} + 2>/dev/null | awk '{s+=$1} END {print s+0}'; }
           for i in $(seq 1 1800); do
             sleep 1; stamp "$OUT"; stamp "$ERR"; e=$(el)
+            if [ $((e / 20)) != $lastp ]; then lastp=$((e / 20)); echo "[+${e}s] model bytes on disk $(part); windows: $("$A" windows | head -5 | tr '\n' ';')" >> "$L/progress.txt"; fi
+            # Typd's own modal dialog: read it, show that it holds the download, then answer it as a person does.
+            if [ $held = 0 ] && "$A" windows | grep -qE '^window: Typd layer (8|[1-9][0-9])'; then
+              held=$e; "$A" texts Typd > "$L/typd-dialog.txt" 2>&1; shot "typd-dialog-$(printf %04d "$e")s"
+              echo "[+${e}s] a modal dialog of Typd's is up: $(grep -E '^(text|button):' "$L/typd-dialog.txt" | head -8 | tr '\n' ' ')" >> "$L/actions.txt"
+              echo "[+${e}s] model bytes on disk: $(part)" >> "$L/actions.txt"
+            fi
+            if [ $held -gt 0 ] && [ $clicked = 0 ] && [ $((e - held)) -ge 60 ]; then
+              echo "[+${e}s] after 60 s with the dialog up, model bytes on disk: $(part)" >> "$L/actions.txt"
+              "$A" click Typd "Open System Settings" >> "$L/actions.txt" 2>&1; clicked=$e
+              echo "[+${e}s] clicked Open System Settings, the dialog's default button, as a person does" >> "$L/actions.txt"
+              sleep 8; shot "after-dialog-$(printf %04d "$(el)")s"; "$A" windows | head -6 >> "$L/actions.txt"
+              osascript -e 'quit app "System Settings"' 2>/dev/null
+            fi
             case "$shots" in *" $e "*) shot "launch-$(printf %04d "$e")s"; "$A" windows | head -10 > "$L/windows-$e.txt"; "$A" texts Typd 2>&1 | head -80 > "$L/typd-ax-$e.txt";; esac
             if "$A" windows | grep -q '^window: UserNotificationCenter'; then
               "$A" texts UserNotificationCenter > "$L/alert.txt" 2>&1
               h=$(md5 -q "$L/alert.txt")
               if [ ! -e "$L/alert-$h.seen" ]; then
                 touch "$L/alert-$h.seen"; cp "$L/alert.txt" "$L/alert-$e.txt"; shot "alert-$(printf %04d "$e")s"
-                echo "[+${e}s] macOS alert: $(grep -m1 AXStaticText "$L/alert.txt")" >> "$L/actions.txt"
+                echo "[+${e}s] macOS alert: $(grep -E '^(text|button):' "$L/alert.txt" | head -6 | tr '\n' ' ')" >> "$L/actions.txt"
               fi
               if [ $mic = 0 ] && grep -qi microphone "$L/alert.txt"; then
                 "$A" press UserNotificationCenter Allow >> "$L/actions.txt" 2>&1; mic=1
@@ -300,6 +342,10 @@ jobs:
             grep -E '\[typd:(models|model|local|app-update|share|permissions|walkthrough|life|cuda)\]' "$OUT.t" | grep -vE 'progress|%' | cut -c1-260 | head -90
             echo "--- stderr (first lines)"; head -20 "$ERR.t" 2>/dev/null | cut -c1-260
             echo "--- actions"; cat "$L/actions.txt" 2>/dev/null
+            echo "--- Typd's dialog"; cat "$L/typd-dialog.txt" 2>/dev/null | head -20
+            echo "--- progress"; cat "$L/progress.txt" 2>/dev/null | cut -c1-300
+            echo "--- what Typd's windows said (Accessibility), at the screenshot times"
+            for f in "$L"/typd-ax-*.txt; do [ -s "$f" ] && { echo "$(basename "$f"):"; grep -E '^(text|button):' "$f" | head -14 | cut -c1-200; }; done
           } 2>&1 | tee "$L/first-launch.txt"
 
       - name: The model server, the update check, sharing
@@ -476,13 +522,20 @@ jobs:
           function El { [int]((Get-Date) - $t0).TotalSeconds }
           $script:n = 0
           function Stamp { $lines = @(Get-Content $OUT -ErrorAction SilentlyContinue); if ($lines.Count -gt $script:n) { $e = El; $lines[$script:n..($lines.Count - 1)] | ForEach-Object { "[+${e}s] $_" } | Add-Content "$OUT.t"; $script:n = $lines.Count } }
-          $shots = @(5, 15, 30, 60, 90, 120, 180, 300, 480, 720, 960); $si = 0; $ready = $null; $upd = $null; $gone = $null
+          $shots = @(5, 15, 30, 60, 90, 120, 180, 300, 480, 720, 960); $si = 0; $ready = $null; $upd = $null; $gone = $null; $okAt = $null
           while ((El) -lt 1800) {
             Start-Sleep 1; Stamp; $e = El
             while ($si -lt $shots.Count -and $e -ge $shots[$si]) { Shot ('launch-{0:d4}s' -f $shots[$si]); [Wins]::List() | Where-Object { $_ -notmatch '^(explorer|TextInputHost|ShellExperienceHost|SearchHost|StartMenuExperienceHost) ' } | Set-Content "$L\windows-$($shots[$si]).txt"; $si++ }
             if (-not $ready -and (Select-String -Path $OUT -Pattern '\[typd:local\] model .* ready' -Quiet)) { $ready = $e; Shot ('ready-{0:d4}s' -f $e) }
             if (-not $upd -and (Test-Path $REP) -and (Select-String -Path $REP -Pattern '"state":"(current|none|updated)"' -Quiet)) { $upd = $e }
             if ($p.HasExited) { $gone = $e; "::error::Typd exited (code $($p.ExitCode)) at +${e}s"; break }
+            # Typd waits for an OK to download (a connection it cannot call unmetered): a person reads the card
+            # and clicks "Download now".
+            if (-not $okAt -and $e -ge 20 -and (Select-String -Path $OUT -Pattern 'asking first' -Quiet)) {
+              $okAt = $e; Shot ('ask-{0:d4}s' -f $e)
+              "[+${e}s] Typd asks before downloading the model; $(Click-Named 'Download now')" | Add-Content "$L\actions.txt"
+              Start-Sleep 3; Shot ('after-ok-{0:d4}s' -f (El))
+            }
             if ($ready -and ($upd -or ($e - $ready) -gt 360)) { break }
           }
           Stamp
@@ -493,6 +546,7 @@ jobs:
             Get-Content "$OUT.t" | Where-Object { $_ -match '\[typd:(models|model|local|app-update|share|permissions|walkthrough|life|cuda)\]' -and $_ -notmatch 'progress|%' } | Select-Object -First 90 | ForEach-Object { if ($_.Length -gt 260) { $_.Substring(0, 260) } else { $_ } }
             '--- stderr (first lines)'; Get-Content "$L\typd.err" -TotalCount 20 -ErrorAction SilentlyContinue
             '--- windows now'; [Wins]::List() | Where-Object { $_ -match '^(Typd|llama)' }
+            '--- actions'; Get-Content "$L\actions.txt" -ErrorAction SilentlyContinue
           } *>&1 | Tee-Object -FilePath "$L\first-launch.txt" -Append
           & {
             '--- health'; try { $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 http://127.0.0.1:8737/health; "HTTP $($r.StatusCode) $($r.Content)" } catch { "health: $($_.Exception.Message)" }
