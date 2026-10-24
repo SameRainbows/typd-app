@@ -26,7 +26,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFile } = require('child_process');
-const { app, dialog } = require('electron');
+const { app } = require('electron');
+const sheet = require('./sheet');   // Typd's dialogs as sheets on its window, never app-modal (0.2.11)
 
 let offering = false;   // the move offer is on screen (the walkthrough waits: index.js)
 const LSREGISTER = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister';
@@ -70,7 +71,9 @@ async function offerMove() {
   life('location', 'running from ' + where + (exists ? '; another Typd is in /Applications' : ''));
   try { app.focus({ steal: true }); } catch { /* it still shows */ }
   offering = true;
-  const { response } = await dialog.showMessageBox({
+  // A sheet on the Typd window: an app-modal alert would stop Typd -- the first model download with
+  // it -- for as long as nobody answers.
+  const shown = await sheet.show({
     type: 'none',
     title: 'Typd',
     message: exists ? 'Use the Typd in your Applications folder?' : 'Move Typd to your Applications folder?',
@@ -84,7 +87,8 @@ async function offerMove() {
     cancelId: 1,
     noLink: true
   }).finally(() => { offering = false; });
-  if (response !== 0) { life('location', 'the person kept this copy where it is'); return false; }
+  if (!shown) { life('location', 'no Typd window to offer the move in: this copy stays where it is'); return false; }
+  if (shown.response !== 0) { life('location', 'the person kept this copy where it is'); return false; }
   if (exists) {
     life('location', 'handing over to ' + there);
     // After this copy has quit (one Typd at a time: a second copy quits at once).
@@ -98,7 +102,7 @@ async function offerMove() {
     return moved;
   } catch (err) {
     life('location', 'the move failed: ' + ((err && err.message) || err));
-    dialog.showMessageBox({ type: 'none', title: 'Typd', message: 'Typd could not move itself', detail: 'Drag Typd from ' + where + ' into your Applications folder, then open it from there.', buttons: ['OK'], noLink: true }).catch(() => {});
+    sheet.show({ type: 'none', title: 'Typd', message: 'Typd could not move itself', detail: 'Drag Typd from ' + where + ' into your Applications folder, then open it from there.', buttons: ['OK'], noLink: true }).catch(() => {});
     return false;
   }
 }

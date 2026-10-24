@@ -52,13 +52,18 @@ function world() {
   const w = {
     mic: 'not-determined', ax: true, listen: 'granted', afterReset: null,
     askImpl: () => new Promise(() => {}),       // macOS's prompt: nobody answers
-    asks: 0, dialogs: [], responses: [], opened: [], execs: [], life: [], focus: 0, quits: 0,
+    asks: 0, dialogs: [], responses: [], opened: [], execs: [], life: [], focus: 0, quits: 0, modal: 0,
+    win: { isDestroyed: () => false, isVisible: () => true, isMinimized: () => false, restore() {}, once() {}, removeListener() {} },
     userData: fs.mkdtempSync(path.join(os.tmpdir(), 'typd-mic-ud-'))
   };
   w.electron = {
     app: { isPackaged: true, focus() { w.focus++; }, getAppPath: () => root, getPath: () => w.userData, quit() { w.quits++; } },
     dialog: {
-      async showMessageBox(o) {
+      // 0.2.11: Typd's dialogs are sheets (mac/sheet.js): showMessageBox(window, options). One with no
+      // window is counted: on a Mac that is an app-modal alert, which stops Typd.
+      async showMessageBox(a, b) {
+        const o = b || a;
+        if (!b) w.modal++;
         w.dialogs.push(o);
         const r = w.responses.length ? w.responses.shift() : { response: o.cancelId };
         if (r.advance) clockOffset += r.advance;
@@ -99,11 +104,13 @@ function world() {
 
 const PM = path.join(root, 'src', 'main', 'permissions-mac.js');
 const LOC = path.join(root, 'src', 'main', 'mac', 'app-location.js');
+const SHEET = path.join(root, 'src', 'main', 'mac', 'sheet.js');
 let current = null;
 const load0 = Module._load;
 Module._load = function (request, parent, isMain) {
   if (current && request === 'electron') return current.electron;
   if (current && parent && parent.filename === LOC && request === 'child_process') return current.child;
+  if (current && parent && parent.filename === SHEET && request === '../lifelog') return current.lifelog;
   if (current && parent && parent.filename === PM) {
     if (request === './inject') return current.inject;
     if (request === './lifelog') return current.lifelog;
@@ -117,6 +124,7 @@ Module._load = function (request, parent, isMain) {
 function fresh(w) {
   current = w;
   delete require.cache[PM];
+  require(SHEET).use(() => w.win);   // index.js: the Typd window, on screen
   return require(PM);
 }
 

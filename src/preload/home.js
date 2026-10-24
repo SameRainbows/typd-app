@@ -61,7 +61,8 @@ contextBridge.exposeInMainWorld('typdHome', {
 
   walkthrough: {
     practice: call('walkthrough:practice'),
-    done: call('walkthrough:done')
+    done: call('walkthrough:done'),
+    closed: call('walkthrough:closed')
   },
 
   // macOS: the microphone's state ('granted', 'denied', 'restricted', 'not-determined', 'asking'),

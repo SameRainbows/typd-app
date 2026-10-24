@@ -127,6 +127,22 @@ reuses as it would the real one, and are built from the dogfood audit's failures
   of a different word is put back ("Aysel" for a name the model heard otherwise); a term the
   model heard is kept; a dictation with no term in it makes the same requests as before.
 
+## no-modal.js — nothing of Typd's stops Typd on a first run (0.2.11)
+
+```bash
+node bench/no-modal.js   # in npm run bench
+```
+
+On a brand-new Mac, 0.2.10's "Typd needs two switches turned on" was an app-modal alert (no parent
+window), which stopped the main process and the first model download with it until clicked. Checked:
+over the walkthrough no dialog at all; when it ends, the same words as a sheet on the Typd window
+(Open System Settings opens the pane); a sheet nobody answers holds no timer up; with no Typd window
+on screen showMessageBox is never called. From the sources: every showMessageBox goes through
+`mac/sheet.js` with a visible parent (but the parked cascade engine's), no showMessageBoxSync or
+showErrorBox, an uncaughtException listener of Typd's own (Electron's fallback is a modal error box).
+Also the walkthrough's mic card (no "Ask again" once allowed) and the publisher in package.json.
+The Mac CI's first-run check asserts the real thing: no click, model ready.
+
 ## lang-guard.js — English or Turkish only
 
 ```bash

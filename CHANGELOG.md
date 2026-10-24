@@ -1,5 +1,11 @@
 # What's new
 
+## 0.2.11 · October 2026
+
+- **Macs: the first download no longer waits for a click.** On a new Mac, Typd's message about turning on Accessibility and Input Monitoring could hold everything up, the speech model's download included, until you clicked it. It no longer appears over the walkthrough, which shows those switches itself. When it does appear, it's attached to the Typd window and Typd keeps working underneath. The same goes for the offer to move Typd to your Applications folder.
+- **The walkthrough's microphone line** no longer shows **Ask again** once the microphone is allowed.
+- **Windows: Typd's publisher is shown** (Mehmet Dedeler) in Settings › Apps › Installed apps for new installs.
+
 ## 0.2.10 · October 2026
 
 - **Nothing to paste into? Copy it instead.** When you dictate with no text field selected — on the desktop, in File Explorer or Finder, on a button — Typd no longer pastes into nowhere. A small card appears just above the pill with the start of what you said and a **Copy** button. It stays about six seconds (a thin bar shows how long), waits while your pointer is over it, and never takes the keyboard from the app you are in. Your clipboard is left alone until you click **Copy**, and the dictation is always in Home if you want it later. Browsers, terminals, chat apps, editors and games still get the paste as before: Typd only holds back when it is sure there is no text field.

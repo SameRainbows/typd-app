@@ -221,6 +221,10 @@ if (!primary) {
   });
   // Errors nobody caught, for the log: one line each, nothing quoted (lifelog.errorLine).
   process.on('uncaughtExceptionMonitor', (err) => life.log('uncaught exception', life.errorLine(err)));
+  // Without a listener of its own, Electron answers such an error with a modal error box
+  // (dialog.showErrorBox), which on a Mac stops Typd -- a model download with it -- until it is
+  // closed. Electron keeps running after one either way, so this listener only keeps the box away.
+  process.on('uncaughtException', (err) => console.error('[typd] uncaught exception:', (err && err.stack) || err));
   process.on('unhandledRejection', (reason) => {
     life.log('unhandled rejection', life.errorLine(reason));
     if (process.env.TYPD_DEBUG) console.log('[typd] unhandled rejection:', reason);
@@ -1314,6 +1318,8 @@ app.whenReady().then(() => {
     modelLater: () => modelUpdate.later(),
     // macOS: the microphone's state moved (macOS's prompt answered, or asked): the tray and Home follow.
     permsChanged: checkMacPermissions,
+    // The walkthrough left the screen: a Mac's switches dialog it kept back comes now (permissions-mac.js).
+    walkthroughEnded: () => { if (MAC) require('./permissions-mac').walkthroughEnded(); },
     // Automatic / Full / Light, or the asking switch, changed: read the hardware again and check soon.
     modelChanged: () => { choice.forget(); modelUpdate.recheck(); },
     lowMemoryNow: () => require('./pipeline/local').lowMemory,
@@ -1376,6 +1382,14 @@ app.whenReady().then(() => {
     // must not hold its permissions: mac/app-location.js), and a Typd running from Downloads, the
     // Desktop, a disk image or a translocated copy offers to move to Applications first.
     const location = require('./mac/app-location');
+    // Typd's own dialogs are sheets on the Typd window (opened for one if it is closed), never
+    // app-modal alerts, which stop Typd -- the first model download with it -- until answered
+    // (mac/sheet.js). None over the first-run walkthrough: its window lists the switches itself.
+    require('./mac/sheet').use(() => {
+      if (!home.isOpen()) home.open('home', { by: 'a dialog of Typd’s (a sheet on this window)' });
+      return home.current();
+    });
+    require('./permissions-mac').holdWhile(() => walkthroughDue() || home.walkthroughShowing());
     location.quitWith(quit);
     require('./permissions-mac').quitWith(quit);
     // macOS's microphone prompt unanswered after a check's wait: the Typd window, on its card (or the

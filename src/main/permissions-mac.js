@@ -2,7 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { app, dialog, shell, systemPreferences, nativeImage, ipcMain } = require('electron');
+const { app, shell, systemPreferences, nativeImage, ipcMain } = require('electron');
 
 /**
  * macOS permissions: asked for once, together, in plain words -- and again
@@ -24,7 +24,8 @@ const { app, dialog, shell, systemPreferences, nativeImage, ipcMain } = require(
  *
  * No app can grant itself any of these. It can only ask, and for three of them
  * the answer is a switch the person flips by hand. So: one native dialog naming
- * the switches that are off and why, one button that opens the right pane, and
+ * the switches that are off and why -- a sheet on the Typd window, never an app-modal
+ * alert (mac/sheet.js), and never over the first-run walkthrough -- one button that opens the right pane, and
  * then a quiet poll that opens the next pane as each switch goes on. No
  * dashboard, no tour (ROADMAP, Law 2).
  *
@@ -61,6 +62,8 @@ let micAsking = null;       // macOS's microphone prompt in flight: { promise, a
 const micListeners = [];
 let onUnanswered = null;    // index.js: open the Typd window (its card offers Allow / Ask again)
 let recheckOnAnswer = false; // a check left macOS's prompt alone: run it again when macOS answers
+let holdFor = null;         // index.js: true while the first-run walkthrough is due or on screen
+let heldBack = false;       // a check kept its dialog back for the walkthrough: ask when it ends
 
 /** inject-mac.js, through inject.js; required late because it requires this file back. */
 const inject = () => require('./inject');
@@ -296,7 +299,9 @@ async function ask(off) {
       lifeLog('permissions', 'test: the dialog answered ' + test + ' (TYPD_TEST_DIALOG_ANSWER; buttons ' + buttons.join(', ') + ')');
       return test;
     }
-    const { response } = await dialog.showMessageBox({
+    // A sheet on the Typd window (mac/sheet.js), never an app-modal alert: that one stops Typd itself
+    // -- the speech model's download included -- until it is answered (0.2.10 on a brand-new Mac).
+    const shown = await require('./mac/sheet').show({
       type: 'none',
       icon: icon(),
       title: 'Typd',
@@ -310,6 +315,8 @@ async function ask(off) {
       cancelId: buttons.length - 1,
       noLink: true
     });
+    if (!shown) return 'later';   // no Typd window on screen: its card lists the same switches
+    const { response } = shown;
     return response === 0 ? 'open' : offered && response === 1 ? 'reset' : 'later';
   } finally {
     dialogOpen = false;
@@ -429,6 +436,13 @@ async function check(reason) {
   // Automation on its own is a refusal the person already gave macOS; it rides
   // along with the others but never brings the dialog up by itself.
   if (!off.some((k) => k !== 'automation') || !showable()) return false;
+  // A fresh install's walkthrough is on screen (or about to be): no dialog over it. Its window lists
+  // the switches with their own buttons; the dialog comes, as a sheet, once the walkthrough ends.
+  if (holdFor && holdFor()) {
+    if (!heldBack) lifeLog('permissions', 'off: ' + off.join(', ') + '; no dialog over the walkthrough (the Typd window lists them); asked when it ends');
+    heldBack = true;
+    return false;
+  }
 
   const answer = await ask(off);
   if (answer === 'open') {
@@ -523,7 +537,7 @@ async function refusedAtOnce() {
   dialogOpen = true;
   try {
     try { app.focus({ steal: true }); } catch { /* it still shows */ }
-    await dialog.showMessageBox({
+    await require('./mac/sheet').show({
       type: 'none',
       icon: icon(),
       title: 'Typd',
@@ -573,6 +587,16 @@ function ensure(reason = 'startup') {
   return checking;
 }
 
+/** index.js: `fn()` is true while the first-run walkthrough is due or on screen (no dialog over it). */
+function holdWhile(fn) { holdFor = fn; }
+
+/** index.js: the walkthrough is gone (finished, skipped, or its window closed): a check held back runs now. */
+function walkthroughEnded() {
+  if (!heldBack) return;
+  heldBack = false;
+  setTimeout(() => ensure('the end of the walkthrough'), 1000);
+}
+
 /** Every switch, for anything that wants to show it (the Settings window, one day). */
 async function status() {
   const off = await missing();
@@ -586,4 +610,4 @@ async function status() {
 // prompt is answered -- but a prompt nobody answers (or nobody can see) must not hold it back for long.
 function isAsking(limit = MIC_WAIT_MS) { return dialogOpen || Boolean(micAsking && Date.now() - micAsking.at < limit); }
 
-module.exports = { ensure, status, openPane, isAsking, request, requestMic, resetMic, micState, onMicChange, whenUnanswered, securitySettings, quitWith };
+module.exports = { ensure, status, openPane, isAsking, request, requestMic, resetMic, micState, onMicChange, whenUnanswered, securitySettings, quitWith, holdWhile, walkthroughEnded };

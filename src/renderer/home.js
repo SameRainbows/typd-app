@@ -1124,6 +1124,7 @@
       if (!S.platform.mac || !m || m === 'unknown') { box.hidden = true; return; }
       box.classList.remove('done');
       if (m === 'granted') {
+        btn.hidden = true;   // allowed: no "Ask again" next to the tick
         box.hidden = !hadMic;
         if (hadMic) { box.classList.add('done'); $('walkMicText').textContent = '✓ Microphone allowed.'; }
         return;
@@ -1202,6 +1203,7 @@
       $('walk').hidden = true;
       step = 0;
       api.walkthrough.practice(false);
+      if (api.walkthrough.closed) api.walkthrough.closed();   // main: a Mac's switches dialog may come now
     }
 
     $('walkNext').addEventListener('click', function () { go(step + 1); });
