@@ -25,9 +25,9 @@ on:
   workflow_dispatch:
     inputs:
       hog_gb:
-        description: GB of other memory held during the busy runs
+        description: GB of other memory held during the busy runs (one busy pass per value, space-separated)
         type: string
-        default: '2.5'
+        default: '1.5 2.5'
       idle_s:
         description: Seconds idle between the server start and the first dictation
         type: string
@@ -107,12 +107,8 @@ env:
         sw = re.search(r'used = ([\d.]+)M', sh('sysctl', '-n', 'vm.swapusage'))
         lvl = sh('sysctl', '-n', 'kern.memorystatus_vm_pressure_level').strip()
         free = sh('sysctl', '-n', 'kern.memorystatus_level').strip()
-        if lpid and k % 2 == 0:
-            o = sh('footprint', str(lpid))
-            if not os.path.exists(out + '.footprint.txt'): open(out + '.footprint.txt', 'w').write(o)
-            fp = mbof(re.search(r'Footprint:\s*([\d.]+)\s*(B|KB|MB|GB)', o))
-            iog = mbof(re.search(r'([\d.]+)\s*(B|KB|MB|GB)\s+[\d.]+\s*(?:B|KB|MB|GB)\s+[\d.]+\s*(?:B|KB|MB|GB)\s+\d+\s+IOAccelerator', o))
-        elif not lpid: fp = iog = None
+        # No footprint/vmmap here: they inspect (and stall) the server, which slowed every dictation in run
+        # 40194540437. The server's peak footprint comes from vmmap after its last dictation instead.
         pg = lambda key: round(vm.get(key, 0) * page / 1048576)
         f.write(json.dumps({'t': round(t0, 2), 'phase': phase, 'llama_rss_mb': llama and round(llama / 1024), 'llama_fp_mb': fp,
             'llama_ioaccel_mb': iog, 'typd_rss_mb': typd and round(typd / 1024), 'hog_rss_mb': hog and round(hog / 1024),
@@ -232,6 +228,10 @@ env:
       console.log('WARM ' + JSON.stringify(res));
       if (res.warmError) { fs.writeFileSync(c.out, JSON.stringify(res, null, 1)); process.exit(3); }
       res.afterWarm = vmmap(res.pid);
+      if (c.set === 'M') {   // buffer sizes only (LLAMA_LOG_VERBOSITY=4 from the caller): the self-test was the one request
+        local.stop(); await sleep(2000); mark(c.phaseFile, 'none');
+        fs.writeFileSync(c.out, JSON.stringify(res, null, 1)); process.exit(0);
+      }
       mark(c.phaseFile, c.label + ':idle');
       await sleep(c.idleS * 1000);
       const plan = c.set === 'A'
@@ -262,7 +262,10 @@ env:
     import glob, json, os, re, sys
     L = sys.argv[1]
     S = [json.loads(l) for l in open(f'{L}/samples.jsonl') if l.strip()]
-    order = [f'{v}/{m}/{s}' for v in ('quiet', 'busy') for m in ('p2d_low', 'p2d_normal', 'light_low') for s in ('A', 'B')]
+    order = []
+    for s in S:
+        lab = s['phase'].split(':')[0]
+        if lab.count('/') == 2 and not lab.endswith('/M') and lab not in order: order.append(lab)
     out = []
     def p(*a): out.append(' '.join(str(x) for x in a))
     def mx(rows, k): v = [r[k] for r in rows if r.get(k) is not None]; return max(v) if v else None
@@ -270,7 +273,7 @@ env:
     base = [r for r in S if r['phase'] == 'baseline']
     if base:
         b = base[-1]; p(f"baseline (no Typd): free {b['free_mb']} MB, active {b['active_mb']}, inactive {b['inactive_mb']}, wired {b['wired_mb']}, compressor {b['compressor_mb']}, swap {b['swap_used_mb']} MB, free% {b['free_pct']}, pressure {b['pressure']}")
-    p('| run | device | warm s | server RSS peak MB | footprint peak MB (vmmap) | Metal (IOAccelerator) MB | harness RSS MB | pressure max | free% min | compressor max MB | swap used max MB (start) | page-ins MB | swap-outs MB | hog RSS min MB | latencies (release->text ms) |')
+    p('| run | device | warm s | server RSS peak MB | footprint peak MB (vmmap) | system wired max MB (baseline ~850) | harness RSS MB | pressure max | free% min | compressor max MB | swap used max MB (start) | page-ins MB | swap-outs MB | hog RSS min MB | latencies (release->text ms) |')
     p('|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|')
     texts = []
     for lab in order:
@@ -281,7 +284,7 @@ env:
         if not rows: p(f'| {lab} | (no samples) |'); continue
         pg = rows[0]['page'] / 1048576
         pi = round((rows[-1]['pageins'] - rows[0]['pageins']) * pg); so = round((rows[-1]['swapouts'] - rows[0]['swapouts']) * pg)
-        vm = (r.get('end') or {}).get('peak'); ioa = mx(rows, 'llama_ioaccel_mb')
+        vm = (r.get('end') or {}).get('peak'); ioa = mx(rows, 'wired_mb')
         lat = '; '.join(f"{c['clip']}/{c['how']}/{c['tag']} {c['releaseToTextMs']}" + (f" ({c['plan']['steps']} steps)" if c.get('plan') and c['plan'].get('steps') else '') for c in r['clips'])
         p(f"| {lab} | {r.get('device')} {'low' if (r.get('lowMemory') or {}).get('on') else 'normal'} | {round(r['warmMs'] / 1000, 1)} | {mx(rows, 'llama_rss_mb')} | {vm} (sampled {mx(rows, 'llama_fp_mb')}) | {ioa} | {mx(rows, 'typd_rss_mb')} | {mx(rows, 'pressure')} | {mn(rows, 'free_pct')} | {mx(rows, 'compressor_mb')} | {mx(rows, 'swap_used_mb')} ({rows[0]['swap_used_mb']}) | {pi} | {so} | {mn(rows, 'hog_rss_mb')} | {lat} |")
         for c in r['clips']:
@@ -383,26 +386,32 @@ jobs:
           sleep 15
           FULL=$(ls -d "$M/full"/*/ | grep -v partial | head -1); LIGHT=$(ls -d "$M/light"/*/ | grep -v partial | head -1)
           CL="{\"short5a\":\"$C/short5a.wav\",\"short5b\":\"$C/short5b.wav\",\"jfk\":\"$C/jfk.wav\",\"long36\":\"$C/long36.wav\"}"
-          for variant in quiet busy; do
-            if [ $variant = busy ]; then
-              echo hog > "$L/phase"
-              python3 "$RUNNER_TEMP/hog.py" "$HOG_GB" > "$L/hog.out" 2>&1 &
-              echo $! > "$L/hog.pid"; sleep 40; cat "$L/hog.out"
-            fi
+          one() {   # $1 label, $2 set, $3 model dir, $4 low
+            local lab=$1 f="${1//\//_}"
+            echo "purge" > "$L/phase"; sudo purge; sleep 3
+            echo "=== $lab $(date -u +%H:%M:%S) free% $(sysctl -n kern.memorystatus_level) swap $(sysctl -n vm.swapusage | grep -oE 'used = [0-9.]+M')"
+            cfg="{\"label\":\"$lab\",\"set\":\"$2\",\"low\":\"$4\",\"modelDir\":\"${3%/}\",\"out\":\"$L/phase-$f.json\",\"clips\":$CL,\"idleS\":$IDLE_S,\"phaseFile\":\"$L/phase\"}"
+            ELECTRON_RUN_AS_NODE=1 perl -e 'alarm shift; exec @ARGV' 1200 "$APP" "$RUNNER_TEMP/bench.js" run "$cfg" > "$L/run-$f.out" 2> "$L/run-$f.err"
+            echo "exit $?"
+            grep -E '^(WARM|DICTATION) ' "$L/run-$f.out" | cut -c1-400
+            pkill -f 'Resources/llama/llama-server' 2>/dev/null; sleep 2
+          }
+          mdir() { case $1 in p2d_*) echo "$FULL";; *) echo "$LIGHT";; esac; }
+          mlow() { case $1 in *_low) echo 1;; *) echo 0;; esac; }
+          # 1. llama.cpp's buffer sizes per mode (log verbosity 4; untimed: warm with its self-test, then stop)
+          export LLAMA_LOG_VERBOSITY=4
+          for mdl in p2d_low p2d_normal light_low; do one "bufs/$mdl/M" M "$(mdir $mdl)" "$(mlow $mdl)"; done
+          unset LLAMA_LOG_VERBOSITY
+          # 2. quiet; 3. busy, a fresh hog per model and per size (each starts from the same state)
+          for mdl in p2d_low p2d_normal light_low; do for set in A B; do one "quiet/$mdl/$set" $set "$(mdir $mdl)" "$(mlow $mdl)"; done; done
+          for gb in $HOG_GB; do
             for mdl in p2d_low p2d_normal light_low; do
-              case $mdl in p2d_low) dir=$FULL; low=1;; p2d_normal) dir=$FULL; low=0;; light_low) dir=$LIGHT; low=1;; esac
-              for set in A B; do
-                lab="$variant/$mdl/$set"; f="${lab//\//_}"
-                echo "purge" > "$L/phase"; sudo purge; sleep 3
-                echo "=== $lab $(date -u +%H:%M:%S) free% $(sysctl -n kern.memorystatus_level) swap $(sysctl -n vm.swapusage | grep -oE 'used = [0-9.]+M')"
-                cfg="{\"label\":\"$lab\",\"set\":\"$set\",\"low\":\"$low\",\"modelDir\":\"${dir%/}\",\"out\":\"$L/phase-$f.json\",\"clips\":$CL,\"idleS\":$IDLE_S,\"phaseFile\":\"$L/phase\"}"
-                ELECTRON_RUN_AS_NODE=1 perl -e 'alarm shift; exec @ARGV' 1200 "$APP" "$RUNNER_TEMP/bench.js" run "$cfg" > "$L/run-$f.out" 2> "$L/run-$f.err"
-                echo "exit $?"
-                grep -E '^(WARM|DICTATION) ' "$L/run-$f.out" | cut -c1-400
-                pkill -f 'Resources/llama/llama-server' 2>/dev/null; sleep 2
-              done
+              echo hog > "$L/phase"
+              python3 "$RUNNER_TEMP/hog.py" "$gb" > "$L/hog-$gb-$mdl.out" 2>&1 &
+              echo $! > "$L/hog.pid"; sleep 30; cat "$L/hog-$gb-$mdl.out"
+              for set in A B; do one "busy$gb/$mdl/$set" $set "$(mdir $mdl)" "$(mlow $mdl)"; done
+              kill "$(cat "$L/hog.pid")" 2>/dev/null; rm -f "$L/hog.pid"; sleep 10
             done
-            if [ $variant = busy ]; then kill "$(cat "$L/hog.pid")" 2>/dev/null; rm -f "$L/hog.pid"; fi
           done
           echo none > "$L/phase"; sleep 3; touch "$L/stop"; sleep 3
           wc -l "$L/samples.jsonl"; cat "$L/sampler.out"
@@ -414,10 +423,12 @@ jobs:
           L="$RUNNER_TEMP/m8"
           printf '%s' "$SUMMARY_PY" > "$RUNNER_TEMP/summary.py"
           python3 "$RUNNER_TEMP/summary.py" "$L" | tee "$L/summary.md"
-          echo "--- llama.cpp memory lines (first server start of each run)"
-          for e in "$L"/run-*.err; do echo "$(basename "$e"):"; grep -E 'recommendedMaxWorkingSetSize|has unified memory|GPU name|buffer size|using [A-Za-z]+ backend|CPU fallback|failed to allocate|out of memory' "$e" | sed -E 's/^[^a-zA-Z]*//' | sort | uniq -c | head -16; done
-          echo "--- end-of-run vmmap (peak) per run"
-          for f in "$L"/phase-*.json; do python3 -c "import json,sys; r=json.load(open(sys.argv[1])); print(r['label'], 'afterWarm', (r.get('afterWarm') or {}).get('footprint'), 'end', (r.get('end') or {}).get('footprint'), 'peak', (r.get('end') or {}).get('peak')); [print('   ', l) for l in ((r.get('end') or {}).get('lines') or [])[:12]]" "$f"; done
+          echo "--- llama.cpp buffers per mode (log verbosity 4, the untimed starts)"
+          for e in "$L"/run-bufs_*.err; do echo "$(basename "$e"):"; grep -iE 'recommendedMaxWorkingSetSize|unified memory|GPU name|buffer size|MiB|using [A-Za-z0-9]+ backend|flash|not supported|fall' "$e" | grep -v 'MUL_MAT: type' | sed -E 's/^[0-9.]+ //' | sort | uniq -c | head -40; done
+          echo "--- failures in the timed runs"
+          grep -lE 'failed to allocate|out of memory|watchdog' "$L"/run-*.err "$L"/run-*.out 2>/dev/null
+          echo "--- vmmap per run (after warm, after the last dictation, peak)"
+          for f in "$L"/phase-*.json; do python3 -c "import json,sys; r=json.load(open(sys.argv[1])); print(r['label'], 'afterWarm', (r.get('afterWarm') or {}).get('footprint'), (r.get('afterWarm') or {}).get('peak'), 'end', (r.get('end') or {}).get('footprint'), 'peak', (r.get('end') or {}).get('peak'))" "$f"; done
 
       - name: Keep the logs in a draft release (maintainers only)
         if: always()
