@@ -852,7 +852,9 @@ env:
     umask 022
     LOGDIR=/Library/Logs/TypdWorker
     log() { printf '%s [runner] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOGDIR/worker.log"; }
-    others() { pgrep -u "$(id -u)" | grep -vx "$$"; }
+    others() {   # this account's processes but this one; not the agents macOS itself runs for every account
+      ps -U "$(id -u)" -o pid=,comm= | awk -v me="$$" '$1 != me && $2 !~ /^\/(System|usr\/libexec|usr\/sbin)\// {print $1}'
+    }
     # Nothing of an earlier run may outlive it: a job left over from a crash or a stop is ended here.
     left=$(others | grep -vx "$PPID" | tr '\n' ' ')
     [ -n "$left" ] && { log "ending processes left from before: $left"; kill $left 2>/dev/null; sleep 3; kill -9 $left 2>/dev/null; }
@@ -1470,7 +1472,9 @@ env:
     typd-worker resume; nocheck "resume: flag gone" test -e /Users/Shared/TypdWorker/control/paused
     sudo -n -u $W /Library/TypdWorker/bin/idlegate check > "$L/check-worker.txt" 2>&1; cat "$L/check-worker.txt"
     typd-worker stop; sleep 2
-    [ -z "$(pgrep -u $W)" ] && ok "stop: nothing of $W runs" || bad "stop: still running $(pgrep -u $W | tr '\n' ' ')"
+    ours() { ps -U "$(id -u $W)" -o pid=,comm= 2>/dev/null | awk '$2 !~ /^\/(System|usr\/libexec|usr\/sbin)\//'; }
+    ps -U "$(id -u $W)" -o pid=,comm= 2>/dev/null | sed 's/^/  after stop: /'
+    [ -z "$(ours)" ] && ok "stop: nothing of Typd Worker runs (macOS's own per-account agents aside)" || bad "stop: still running: $(ours | tr '\n' ' ')"
     sudo launchctl print-disabled system | grep -E 'com.typd.worker.runner' | head -2
     typd-worker status | grep -q 'OFF - stopped by you' && ok "status shows it is off" || bad "status off"
     typd-worker start; sleep 4
