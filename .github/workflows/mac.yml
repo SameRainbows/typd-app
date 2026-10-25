@@ -53,6 +53,7 @@ env:
     F_JOBS_PUBLISH_SH jobs/publish.sh
     F_JOBS_TEACHER_SH jobs/teacher.sh
     F_JOBS_TEACHER_PY jobs/teacher.py
+    F_JOBS_GATE_SH jobs/gate.sh
     F_TESTS_CI_KIT_SCRIPTS_P1_AUTHOR_PY tests/ci_kit/scripts/p1/author.py
     F_TESTS_CI_KIT_DOCS_AUTHOR_BRIEF_MD tests/ci_kit/docs/AUTHOR_BRIEF.md
     F_TESTS_CI_KIT_PROMPTS_P1_AUTHOR_V2_ADDENDUM_MD tests/ci_kit/prompts/p1/AUTHOR_V2_ADDENDUM.md
@@ -1512,6 +1513,21 @@ env:
     [ $rc = 0 ] && [ -f "$T/count" ] && ok "needs-gb: starts with 8 GB free" || bad "needs-gb: rc $rc"
     rm -f "$F/avail_mb"
 
+    # 11. jobs/gate.sh with the first kit's idlegate (no --needs-gb): it waits for memory itself, then hands over
+    GS=${2:-}
+    if [ -n "$GS" ]; then
+      OLD=$T/old-idlegate; grep -v -- '--needs-gb' "$G" > "$OLD"; chmod +x "$OLD"
+      "$OLD" run --needs-gb 1 -- true >/dev/null 2>&1; [ $? = 64 ] && ok "the stand-in old idlegate rejects --needs-gb (exit 64)" || bad "stand-in old idlegate"
+      idle; echo 2000 > "$F/avail_mb"; rm -f "$T/count"
+      IDLEGATE=$OLD TYPD_GATE_INTERVAL=1 /bin/bash "$GS" --name test10 --needs-gb 4 --evict-after 10m -- /bin/bash -c "echo 1 >> $T/count" > "$T/run10.out" 2>&1 &
+      GP=$!
+      sleep 4; [ ! -f "$T/count" ] && grep -q 'waiting for 4 GB free' "$T/run10.out" && ok "gate.sh + old idlegate: waits with 2 GB free" || { bad "gate.sh waits"; cat "$T/run10.out"; }
+      echo 8000 > "$F/avail_mb"; wait $GP; rc=$?
+      [ $rc = 0 ] && [ -f "$T/count" ] && ok "gate.sh + old idlegate: runs when 8 GB are free" || { bad "gate.sh run rc $rc"; cat "$T/run10.out"; }
+      IDLEGATE=$G /bin/bash "$GS" --name test11 --needs-gb 1 -- true > "$T/run11.out" 2>&1 && ! grep -q 'gate.sh' "$T/run11.out" && ok "gate.sh + new idlegate: passed straight through" || bad "gate.sh new"
+      rm -f "$F/avail_mb"
+    fi
+
     echo; echo "gate log:"; sed 's/^/  /' "$T/gate.log" | tail -40
     echo; echo "RESULT: $PASS passed, $FAILN failed"
     rm -rf "$T"
@@ -1653,6 +1669,8 @@ env:
     fi
 
     echo "== 7. run again (repair; no new code: keeps everything)"
+    # the first kit's programs (an idlegate without --needs-gb): an update must replace them in place
+    sudo sh -c 'printf "#!/bin/bash\n# the first kit\n" > /Library/TypdWorker/bin/idlegate; printf "#!/bin/bash\n" > /Library/TypdWorker/bin/status.sh'
     # a runner registered under another name (as the first kit's): an update must keep it
     sudo sed -i '' 's/^RUNNER_NAME=.*/RUNNER_NAME=old-name/' /Library/TypdWorker/worker.conf
     printf '{\n  "agentId": 1,\n  "agentName": "registered-name",\n  "poolId": 1\n}\n' | sudo -u $W tee /Users/$W/actions-runner/.runner >/dev/null
@@ -1661,6 +1679,7 @@ env:
     [ $rc = 0 ] || [ $rc = 3 ] && ok "second run (an update, no code) finished (rc $rc)" || bad "second run rc $rc"
     grep -q 'already installed (unchanged' "$L/install2.txt" && ok "input watch kept as it was (its switch stays)" || bad "input watch reinstalled"
     [ "$(dscl . -list /Users | grep -cx $W)" = 1 ] && ok "still one account" || bad "accounts"
+    grep -q -- '--needs-gb' /Library/TypdWorker/bin/idlegate && grep -q 'at a glance' /Library/TypdWorker/bin/status.sh && ok "update replaced the old idlegate and status in place" || bad "old programs left after the update"
     grep -q '^RUNNER_NAME=registered-name$' /Library/TypdWorker/worker.conf && ok "update keeps the registered runner name" || bad "runner name: $(grep RUNNER_NAME /Library/TypdWorker/worker.conf)"
     sudo rm -f /Users/$W/actions-runner/.runner
 
@@ -2736,6 +2755,40 @@ env:
 
     if __name__ == "__main__":
         sys.exit(main())
+  F_JOBS_GATE_SH: |
+    #!/bin/bash
+    # gate.sh: `idlegate run` for the jobs, with any installed kit. The first kit's idlegate has no --needs-gb; with that
+    # one, this script takes the option out, waits here (checked every minute, logged) until that much memory is free,
+    # then hands over to idlegate without it. With a newer idlegate it passes everything through unchanged.
+    #   gate.sh [idlegate run options, --needs-gb N included] -- COMMAND...
+    set -u
+    G=${IDLEGATE:-$(command -v idlegate)}
+    [ -x "$G" ] || { echo "gate.sh: no idlegate on this Mac (is Typd Worker installed?)"; exit 1; }
+    if grep -q -- '--needs-gb' "$G"; then exec "$G" run "$@"; fi
+    args=(); need=0; name=job
+    while [ $# -gt 0 ]; do
+      case $1 in
+        --needs-gb) need=$2; shift 2;;
+        --name) name=$2; args+=("$1" "$2"); shift 2;;
+        --) args+=("$@"); break;;
+        *) args+=("$1"); shift;;
+      esac
+    done
+    avail_mb() {
+      if [ -n "${TYPD_GATE_FAKE:-}" ] && [ -f "$TYPD_GATE_FAKE/avail_mb" ]; then cat "$TYPD_GATE_FAKE/avail_mb"; return; fi
+      vm_stat | awk '/page size of/ {ps = $8} /^Pages (free|inactive|speculative|purgeable):/ {gsub(/\./, "", $NF); s += $NF} END {printf "%d", s * ps / 1048576}'
+    }
+    need_mb=$(awk -v g="$need" 'BEGIN {printf "%d", g * 1024}')
+    t0=$(date +%s); last=0
+    while [ "$need_mb" -gt 0 ]; do
+      a=$(avail_mb)
+      [ "${a:-0}" -ge "$need_mb" ] && { echo "$(date '+%Y-%m-%d %H:%M:%S') [gate.sh] \"$name\": $((a / 1024)) GB free, enough (needs $need)"; break; }
+      now=$(date +%s)
+      [ $((now - last)) -ge 600 ] && { echo "$(date '+%Y-%m-%d %H:%M:%S') [gate.sh] \"$name\": waiting for $need GB free (now $((a / 1024)) GB; the installed idlegate predates --needs-gb)"; last=$now; }
+      [ $((now - t0)) -ge $((70 * 3600)) ] && { echo "[gate.sh] gave up waiting for memory"; exit 124; }
+      sleep "${TYPD_GATE_INTERVAL:-60}"
+    done
+    exec "$G" run "${args[@]}"
   F_TESTS_CI_KIT_SCRIPTS_P1_AUTHOR_PY: |
     """CI stand-in for the kit's author.py (the real one is private): the same command line and output rows for what
     label.py uses, so the Mac job's plumbing (llama.cpp, model download, server, resume) is tested end to end."""
@@ -2817,7 +2870,7 @@ jobs:
 
       - name: The gate's logic (simulated conditions, macOS's /bin/bash 3.2)
         run: |
-          /bin/bash "$M/tests/gate_test.sh" "$M/src/idlegate" 2>&1 | tee "$L/gate_test.txt"
+          /bin/bash "$M/tests/gate_test.sh" "$M/src/idlegate" "$M/jobs/gate.sh" 2>&1 | tee "$L/gate_test.txt"
           test "${PIPESTATUS[0]}" = 0
 
       - name: The real readings on this VM
