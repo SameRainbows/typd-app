@@ -1,75 +1,306 @@
-# Build Typd for macOS: the official build, signed with Typd's own certificate. (Branch main, Typd
-# 0.2.11: the same checks as the release-0.2.11 branch -- the microphone and icon checks, the patched
-# llama.cpp encoder that scripts/fetch-llama-mac.js builds, the copy pop-up's bench, a look at what
-# macOS Accessibility says about the focused element in a few real apps, and the no-modal bench: none
-# of Typd's dialogs may stop Typd.)
+# Can an 8 GB Apple-silicon Mac run the full model (P2d, 1.7B)? Typd 0.2.11 gives the full model only to Macs
+# with 16 GB or more. This job measures it on a GitHub macOS arm64 runner (an M1 virtual machine with ~7 GB,
+# a stand-in for an 8 GB Mac), with Typd's own code end to end:
+#   - the shipped 0.2.11 Mac build (the CI draft build-40047208604, the same dmg as the live download);
+#   - the models fetched by the app's own updater (src/main/modelUpdate.js createUpdater, the public routes,
+#     the signed manifest, every sha256 checked): the full model (p2d_1p7b) and the light one;
+#   - dictation through the app's pipeline (pipeline/index.js run(), local.js starting llama-server), the
+#     audio fed 256 ms at a time in real time as the overlay sends it (openStream), so "work while you talk"
+#     runs as in the app; release-to-text is timed from the last chunk to the finished text.
+# Modes: P2d in low-memory mode (TYPD_LOW_MEMORY=1), P2d in normal mode (=0), the light model as 0.2.11 runs it
+# on an 8 GB Mac (low-memory mode). Each once on a quiet machine and once "busy": another process holding
+# hog_gb GB of incompressible memory and touching it every 5 s (a browser). Before each server start the file
+# cache is purged (a cold start). Memory: llama-server RSS and physical footprint (Metal allocations
+# included; vmmap's peak), the system's pressure level, free %, compressor, swap, page-ins.
 #
-# Only a maintainer can start it (Actions > macOS > Run workflow, or `gh workflow run mac.yml`).
-# It never runs on a push or a pull request, so code from a fork never runs with its secrets.
+# Speech, public domain only: whisper.cpp's jfk.wav (11 s) and two short pieces and one 36 s piece of a US
+# presidential radio address (Wikimedia Commons, 1 Nov 2008), cut at pauses.
 #
-# What it makes (never a tester build: this repository holds no tester key):
-#   Typd-<version>-mac-<arch>.dmg           the app with the current dictation model inside, checked
-#                                            by scripts/public-build.js verify (no key file, nothing
-#                                            private in app.asar, the model in place), and its
-#                                            .public.json record;
-#   Typd-<version>-update-mac-<arch>.zip    the app-update package (scripts/app-update-package.js:
-#                                            no model, carries nothing) and its .zip.json record;
-#   SHA256SUMS.
-# They are attached to a DRAFT release named build-<run id>. A draft and its files are visible only
-# to the repository's maintainers. Nothing is uploaded as a workflow artifact: a public
-# repository's artifacts can be downloaded by anyone signed in to GitHub. An app update goes out
-# only when a maintainer signs its manifest with a key that never leaves the maintainer's computer
-# (README "App updates"); this workflow cannot publish one.
-#
-# The model is not in git. scripts/fetch-model.js downloads the live one through the public routes
-# a packaged Typd uses, after checking the manifest's Ed25519 signature with the app's own key
-# (src/main/modelManifestKey.js) and each file's sha256. MODEL_LICENSE.txt covers it.
-#
-# Code signing (docs/MAC.md "Code signing"): every app is signed with Typd's own self-signed
-# certificate (secrets MAC_CODESIGN_P12 and MAC_CODESIGN_P12_PASSWORD, imported into a keychain of
-# its own by scripts/mac-signing-import.sh and deleted at the end; the certificate's public
-# fingerprint is in scripts/mac-signing.json). So every build has the same designated requirement,
-# and macOS keeps Typd's Accessibility, Microphone and Input Monitoring switches across updates.
-# It is not an Apple Developer ID: Gatekeeper still asks on a downloaded copy's first open.
-#
-# The token is read-only (the repository's default). This job may write contents only to create
-# the draft release, and only the release step gets the token. No action from outside this
-# repository is used (the repository allows none): the checkout is plain git (the repository is
-# public, so it needs no token), and Node.js comes from nodejs.org, checked against a pinned sha256.
+# Only a maintainer can start it (gh workflow run mac.yml --ref mem8gb-0.2.11). It builds nothing and
+# publishes nothing; logs go to a DRAFT release mem8gb-<run id> (maintainers only).
 
-name: macOS
+name: 8 GB Mac memory test (P2d vs light, 0.2.11)
 
 on:
   workflow_dispatch:
     inputs:
-      arch:
-        description: Which Macs to build for
-        type: choice
-        options: [both, arm64, x64]
-        default: both
-      checks_only:
-        description: Only the menu-bar close checks on several macOS versions (no signed build, no release)
-        type: boolean
-        default: false
+      hog_gb:
+        description: GB of other memory held during the busy runs
+        type: string
+        default: '2.5'
+      idle_s:
+        description: Seconds idle between the server start and the first dictation
+        type: string
+        default: '30'
 
 permissions:
   contents: read
 
-# A build never cancels another one.
-concurrency:
-  group: mac-${{ github.run_id }}
-  cancel-in-progress: false
-
 env:
-  ARCHS: ${{ inputs.arch == 'both' && 'arm64 x64' || inputs.arch || 'arm64 x64' }}
+  BUILD_RELEASE: build-40047208604
+  DMG_NAME: Typd-0.2.11-mac-arm64.dmg
+  DMG_SHA: e1d7f4bde9e10f8810f9a9a1555be18e4b01769157761475cd64625aa2806c5b
+  JFK_URL: https://raw.githubusercontent.com/ggml-org/whisper.cpp/master/samples/jfk.wav
+  JFK_SHA: 59dfb9a4acb36fe2a2affc14bacbee2920ff435cb13cc314a08c13f66ba7860e
+  RADIO_URL: https://upload.wikimedia.org/wikipedia/commons/2/22/George_W._Bush%27s_weekly_radio_address_%28November_1%2C_2008%29.oga
+  RADIO_SHA: b844a36b9b0c0d777c64f1d62356bf0b6cad6a0f753627f5a7e7abd17c843f0c
+
+  CLIPS_PY: |
+    # The radio address (44.1 kHz Vorbis) to 16 kHz mono 16-bit, cut at pauses (sample offsets at 16 kHz).
+    import sys, wave, hashlib, numpy as np, soundfile as sf
+    from scipy.signal import resample_poly
+    src, outdir = sys.argv[1], sys.argv[2]
+    x, sr = sf.read(src, dtype='float64', always_2d=True)
+    assert sr == 44100, sr
+    y = resample_poly(x.mean(axis=1), 160, 441)
+    cuts = {'short5a': (461760, 544000), 'short5b': (630720, 720960), 'long36': (1027520, 1608000)}
+    for name, (a, b) in cuts.items():
+        s = np.clip(np.rint(y[a:b] * 32768.0), -32768, 32767).astype('<i2')
+        with wave.open(f'{outdir}/{name}.wav', 'wb') as w:
+            w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000); w.writeframes(s.tobytes())
+        print(name, f'{(b - a) / 16000:.2f} s', 'pcm sha256', hashlib.sha256(s.tobytes()).hexdigest())
+
+  HOG_PY: |
+    # Another app's memory: hog_gb GB of incompressible bytes, every page read again every 5 s.
+    import os, sys, time
+    n = int(float(sys.argv[1]) * 1024 ** 3)
+    blk = os.urandom(1 << 20)
+    buf = bytearray(n)
+    for off in range(0, n, 1 << 20):
+        m = min(1 << 20, n - off); buf[off:off + m] = blk[:m]
+    print(f'hog: {n / 1024 ** 3:.2f} GB allocated and filled', flush=True)
+    while True:
+        s = 0
+        for off in range(0, n, 16384): s += buf[off]
+        time.sleep(5)
+
+  SAMPLER_PY: |
+    # Every second: llama-server / harness / hog RSS, the system's memory state; every 2 s llama-server's footprint.
+    import json, os, re, subprocess, sys, time
+    out, phasef, stopf, hogpidf = sys.argv[1:5]
+    def sh(*a):
+        try: return subprocess.run(a, capture_output=True, text=True, timeout=10).stdout
+        except Exception: return ''
+    page = int(sh('sysctl', '-n', 'hw.pagesize').strip() or 16384)
+    UNIT = {'B': 1 / 1048576, 'KB': 1 / 1024, 'MB': 1, 'GB': 1024}
+    def mbof(m): return round(float(m.group(1)) * UNIT[m.group(2)], 1) if m else None
+    fp, iog, k = None, None, 0
+    f = open(out, 'a')
+    while not os.path.exists(stopf):
+        t0 = time.time()
+        try: phase = open(phasef).read().strip()
+        except Exception: phase = 'none'
+        try: hogpid = int(open(hogpidf).read().strip())
+        except Exception: hogpid = None
+        llama = typd = hog = None; lpid = None
+        for line in sh('ps', '-axo', 'pid=,rss=,comm=').splitlines():
+            p = line.split(None, 2)
+            if len(p) < 3: continue
+            pid, rss = int(p[0]), int(p[1])
+            if p[2].endswith('llama-server'): llama, lpid = (llama or 0) + rss, pid
+            elif p[2].endswith('/MacOS/Typd'): typd = (typd or 0) + rss
+            elif pid == hogpid: hog = rss
+        vm = {}
+        for line in sh('vm_stat').splitlines():
+            m = re.match(r'^"?([^:"]+)"?:\s+(\d+)\.?$', line.strip())
+            if m: vm[m.group(1)] = int(m.group(2))
+        sw = re.search(r'used = ([\d.]+)M', sh('sysctl', '-n', 'vm.swapusage'))
+        lvl = sh('sysctl', '-n', 'kern.memorystatus_vm_pressure_level').strip()
+        free = sh('sysctl', '-n', 'kern.memorystatus_level').strip()
+        if lpid and k % 2 == 0:
+            o = sh('footprint', str(lpid))
+            if not os.path.exists(out + '.footprint.txt'): open(out + '.footprint.txt', 'w').write(o)
+            fp = mbof(re.search(r'Footprint:\s*([\d.]+)\s*(B|KB|MB|GB)', o))
+            iog = mbof(re.search(r'([\d.]+)\s*(B|KB|MB|GB)\s+[\d.]+\s*(?:B|KB|MB|GB)\s+[\d.]+\s*(?:B|KB|MB|GB)\s+\d+\s+IOAccelerator', o))
+        elif not lpid: fp = iog = None
+        pg = lambda key: round(vm.get(key, 0) * page / 1048576)
+        f.write(json.dumps({'t': round(t0, 2), 'phase': phase, 'llama_rss_mb': llama and round(llama / 1024), 'llama_fp_mb': fp,
+            'llama_ioaccel_mb': iog, 'typd_rss_mb': typd and round(typd / 1024), 'hog_rss_mb': hog and round(hog / 1024),
+            'free_mb': pg('Pages free'), 'active_mb': pg('Pages active'), 'inactive_mb': pg('Pages inactive'),
+            'wired_mb': pg('Pages wired down'), 'compressor_mb': pg('Pages occupied by compressor'),
+            'file_mb': pg('File-backed pages'), 'anon_mb': pg('Anonymous pages'),
+            'pageins': vm.get('Pageins', 0), 'pageouts': vm.get('Pageouts', 0), 'swapins': vm.get('Swapins', 0),
+            'swapouts': vm.get('Swapouts', 0), 'swap_used_mb': float(sw.group(1)) if sw else None,
+            'pressure': int(lvl) if lvl.isdigit() else None, 'free_pct': int(free) if free.isdigit() else None, 'page': page}) + '\n')
+        f.flush(); k += 1
+        time.sleep(max(0.05, 1 - (time.time() - t0)))
+
+  BENCH_JS: |
+    'use strict';
+    // Typd's own code, run by the app's runtime (ELECTRON_RUN_AS_NODE=1) from its app.asar.
+    //   fetch <full|light> <modelsDir>     the app's model updater, public routes (signed manifest, sha256s)
+    //   run <json>                          one server start: warm, idle, dictations, the server's peak memory
+    const fs = require('fs'), path = require('path'), cp = require('child_process');
+    const ASAR = process.env.APP_ASAR;
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const now = () => Date.now();
+    const mark = (f, s) => { if (f) fs.writeFileSync(f, s); };
+    function readWav(f) {
+      const b = fs.readFileSync(f);
+      let p = 12, fmt = null, data = null;
+      while (p + 8 <= b.length) {
+        const id = b.toString('ascii', p, p + 4), n = b.readUInt32LE(p + 4);
+        if (id === 'fmt ') fmt = { tag: b.readUInt16LE(p + 8), ch: b.readUInt16LE(p + 10), sr: b.readUInt32LE(p + 12), bits: b.readUInt16LE(p + 22) };
+        if (id === 'data') { data = b.subarray(p + 8, Math.min(b.length, p + 8 + n)); break; }
+        p += 8 + n + (n & 1);
+      }
+      if (!fmt || !data || fmt.tag !== 1 || fmt.bits !== 16 || fmt.sr !== 16000) throw new Error('want 16 kHz 16-bit PCM: ' + f);
+      const frames = Math.floor(data.length / (2 * fmt.ch));
+      const s = new Float32Array(frames);
+      for (let i = 0; i < frames; i++) {
+        let v = 0;
+        for (let c = 0; c < fmt.ch; c++) v += data.readInt16LE((i * fmt.ch + c) * 2);
+        s[i] = v / fmt.ch / 32768;
+      }
+      return { samples: s, sampleRate: fmt.sr };
+    }
+    async function fetchModel(variant, modelsDir) {
+      const mu = require(path.join(ASAR, 'src', 'main', 'modelUpdate.js'));
+      fs.mkdirSync(modelsDir, { recursive: true });
+      const appVersion = JSON.parse(fs.readFileSync(path.join(ASAR, 'package.json'), 'utf8')).version;
+      const t0 = now();
+      let last = '';
+      const upd = mu.createUpdater({
+        config: { endpoint: mu.ENDPOINT, key: null }, modelsDir, bundledDir: path.join(modelsDir, 'none'), appVersion,
+        variant: () => variant, networkCost: async () => 'unmetered', automatic: () => false, askFirst: () => false,
+        switchModel: async () => {}, log: (...m) => console.log('[typd:models]', ...m)
+      });
+      upd.onChange((l) => { if (l && l !== last) { last = l; if (!/\d+ ?%/.test(l) || /0 ?%/.test(l)) console.log(`[line +${((now() - t0) / 1000).toFixed(1)}s] ${l}`); } });
+      upd.start();
+      while (now() - t0 < 30 * 60e3) {
+        await sleep(1000);
+        const act = mu.activeModel(modelsDir);
+        if (!act) continue;
+        upd.stop();
+        const m = JSON.parse(fs.readFileSync(path.join(act.dir, 'manifest.json'), 'utf8'));
+        const r = { variant, app: appVersion, version: act.version, dir: act.dir, seconds: (now() - t0) / 1000,
+          files: m.files.map((x) => ({ name: x.name, size: x.size, sha256: x.sha256 })), model_json: JSON.parse(fs.readFileSync(path.join(act.dir, 'model.json'), 'utf8')) };
+        console.log('FETCHED ' + JSON.stringify(r));
+        process.exit(0);
+      }
+      console.error('no model after 30 min: ' + last);
+      process.exit(1);
+    }
+    function vmmap(pid) {
+      if (!pid) return null;
+      try {
+        const o = cp.execFileSync('sudo', ['-n', 'vmmap', '-summary', String(pid)], { encoding: 'utf8', timeout: 90000, maxBuffer: 64 << 20 });
+        const g = (re) => { const m = re.exec(o); return m ? m[1] : null; };
+        return { footprint: g(/Physical footprint:\s+(\S+)/), peak: g(/Physical footprint \(peak\):\s+(\S+)/),
+          lines: o.split('\n').filter((l) => /IOAccelerator|IOKit|mapped file|MALLOC_LARGE|MALLOC_SMALL|VM_ALLOCATE|TOTAL/i.test(l)).slice(0, 30) };
+      } catch (e) { return { error: String(e.message || e).slice(0, 300) }; }
+    }
+    async function once(pipe, audio, how) {
+      const SR = 16000, CH = 4096;   // 256 ms, as the overlay sends it
+      const ctl = new AbortController();
+      const t0 = now();
+      pipe.wake('');
+      let stream = null;
+      if (how === 'rt') {
+        stream = pipe.openStream(ctl.signal, () => '');
+        for (let i = 0; i < audio.samples.length; i += CH) {
+          const due = t0 + ((Math.min(audio.samples.length, i + CH)) / SR) * 1000;
+          const w = due - now(); if (w > 0) await sleep(w);
+          if (stream) stream.push(audio.samples.slice(i, Math.min(audio.samples.length, i + CH)));
+        }
+      }
+      const rel = now();
+      let first = null, text = '', err = null;
+      try {
+        for await (const ev of pipe.run({ audio, contextBlock: '', signal: ctl.signal, stream })) {
+          if (ev.type === 'partial' && first === null) first = now() - rel;
+          if (ev.type === 'done') text = ev.text;
+        }
+      } catch (e) { err = String((e && e.message) || e); }
+      const row = { releaseToTextMs: now() - rel, firstPartialMs: first, lateMs: how === 'rt' ? Math.round(rel - t0 - audio.samples.length / SR * 1000) : null, text, err };
+      if (stream && stream.plan) row.plan = stream.plan;
+      if (stream && stream.timings) row.requests = stream.timings.map((t) => ({ kind: t.kind, ms: t.ms, audioS: t.audioS, startS: t.startS, error: t.error }));
+      return row;
+    }
+    async function runPhase(c) {
+      Object.assign(process.env, { TYPD_MODEL_DIR: c.modelDir, TYPD_LOW_MEMORY: c.low, TYPD_DEBUG: '1', TYPD_NO_MODEL_UPDATE: '1',
+        TYPD_LLAMA_SERVER: process.env.TYPD_LLAMA_SERVER || path.join(path.dirname(ASAR), 'llama', 'llama-server') });
+      const pipe = require(path.join(ASAR, 'src', 'main', 'pipeline', 'index.js'));
+      const local = require(path.join(ASAR, 'src', 'main', 'pipeline', 'local.js'));
+      const res = { label: c.label, set: c.set, low: c.low, model: path.basename(c.modelDir), clips: [] };
+      mark(c.phaseFile, c.label + ':warm');
+      let t = now();
+      try { await local.warm(); } catch (e) { res.warmError = String((e && e.message) || e); }
+      res.warmMs = now() - t;
+      Object.assign(res, { lowMemory: local.lowMemory, device: local.device, context: local.CONTEXT, pid: local.SERVER_PID, longLimits: local.longLimits(),
+        args: local.serverArgs('99').filter((a) => !a.includes('/')).join(' '), conv: local.serverEnv({}, '99').MTMD_QWEN3A_CONV_GROUP || null });
+      console.log('WARM ' + JSON.stringify(res));
+      if (res.warmError) { fs.writeFileSync(c.out, JSON.stringify(res, null, 1)); process.exit(3); }
+      res.afterWarm = vmmap(res.pid);
+      mark(c.phaseFile, c.label + ':idle');
+      await sleep(c.idleS * 1000);
+      const plan = c.set === 'A'
+        ? [['short5a', 'rt', 'cold'], ['short5a', 'rt', 'warm'], ['short5b', 'rt', 'warm'], ['jfk', 'rt', 'warm'], ['jfk', 'rt', 'warm2']]
+        : [['long36', 'rt', 'cold'], ['long36', 'rt', 'warm'], ['long36', 'batch', 'warm']];
+      for (const [name, how, tag] of plan) {
+        const audio = readWav(c.clips[name]);
+        mark(c.phaseFile, `${c.label}:${name}:${how}:${tag}`);
+        const row = { clip: name, how, tag, seconds: +(audio.samples.length / 16000).toFixed(2), ...(await once(pipe, audio, how)) };
+        res.clips.push(row);
+        console.log('DICTATION ' + JSON.stringify(row));
+        mark(c.phaseFile, c.label + ':gap');
+        await sleep(3000);
+      }
+      res.end = vmmap(res.pid);
+      mark(c.phaseFile, c.label + ':stop');
+      local.stop();
+      await sleep(2000);
+      mark(c.phaseFile, 'none');
+      fs.writeFileSync(c.out, JSON.stringify(res, null, 1));
+      process.exit(res.clips.some((x) => x.err || !x.text) ? 2 : 0);
+    }
+    const [cmd, ...a] = process.argv.slice(2);
+    (cmd === 'fetch' ? fetchModel(a[0], a[1]) : runPhase(JSON.parse(a[0])))
+      .catch((e) => { console.error('bench failed: ' + ((e && e.stack) || e)); process.exit(1); });
+
+  SUMMARY_PY: |
+    import glob, json, os, re, sys
+    L = sys.argv[1]
+    S = [json.loads(l) for l in open(f'{L}/samples.jsonl') if l.strip()]
+    order = [f'{v}/{m}/{s}' for v in ('quiet', 'busy') for m in ('p2d_low', 'p2d_normal', 'light_low') for s in ('A', 'B')]
+    out = []
+    def p(*a): out.append(' '.join(str(x) for x in a))
+    def mx(rows, k): v = [r[k] for r in rows if r.get(k) is not None]; return max(v) if v else None
+    def mn(rows, k): v = [r[k] for r in rows if r.get(k) is not None]; return min(v) if v else None
+    base = [r for r in S if r['phase'] == 'baseline']
+    if base:
+        b = base[-1]; p(f"baseline (no Typd): free {b['free_mb']} MB, active {b['active_mb']}, inactive {b['inactive_mb']}, wired {b['wired_mb']}, compressor {b['compressor_mb']}, swap {b['swap_used_mb']} MB, free% {b['free_pct']}, pressure {b['pressure']}")
+    p('| run | device | warm s | server RSS peak MB | footprint peak MB (vmmap) | Metal (IOAccelerator) MB | harness RSS MB | pressure max | free% min | compressor max MB | swap used max MB (start) | page-ins MB | swap-outs MB | hog RSS min MB | latencies (release->text ms) |')
+    p('|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|')
+    texts = []
+    for lab in order:
+        f = f"{L}/phase-{lab.replace('/', '_')}.json"
+        if not os.path.exists(f): p(f'| {lab} | (no result) |'); continue
+        r = json.load(open(f))
+        rows = [x for x in S if x['phase'].startswith(lab + ':')]
+        if not rows: p(f'| {lab} | (no samples) |'); continue
+        pg = rows[0]['page'] / 1048576
+        pi = round((rows[-1]['pageins'] - rows[0]['pageins']) * pg); so = round((rows[-1]['swapouts'] - rows[0]['swapouts']) * pg)
+        vm = (r.get('end') or {}).get('peak'); ioa = mx(rows, 'llama_ioaccel_mb')
+        lat = '; '.join(f"{c['clip']}/{c['how']}/{c['tag']} {c['releaseToTextMs']}" + (f" ({c['plan']['steps']} steps)" if c.get('plan') and c['plan'].get('steps') else '') for c in r['clips'])
+        p(f"| {lab} | {r.get('device')} {'low' if (r.get('lowMemory') or {}).get('on') else 'normal'} | {round(r['warmMs'] / 1000, 1)} | {mx(rows, 'llama_rss_mb')} | {vm} (sampled {mx(rows, 'llama_fp_mb')}) | {ioa} | {mx(rows, 'typd_rss_mb')} | {mx(rows, 'pressure')} | {mn(rows, 'free_pct')} | {mx(rows, 'compressor_mb')} | {mx(rows, 'swap_used_mb')} ({rows[0]['swap_used_mb']}) | {pi} | {so} | {mn(rows, 'hog_rss_mb')} | {lat} |")
+        for c in r['clips']:
+            texts.append(f"{lab} {c['clip']} {c['how']} {c['tag']} {c['releaseToTextMs']} ms: {c['text'] or c['err']}")
+    p(''); p('texts:'); out.extend(texts)
+    p(''); p('server settings:')
+    for lab in order:
+        f = f"{L}/phase-{lab.replace('/', '_')}.json"
+        if os.path.exists(f):
+            r = json.load(open(f)); p(f"{lab}: {r.get('lowMemory')} ctx {r.get('context')} conv {r.get('conv')} longLimits {r.get('longLimits')} args: {r.get('args')}")
+    print('\n'.join(out))
 
 jobs:
-  build:
-    if: github.repository == 'SameRainbows/typd-app' && !inputs.checks_only
-    runs-on: macos-14
-    timeout-minutes: 120
+  mac:
+    if: github.repository == 'SameRainbows/typd-app'
+    runs-on: macos-15
+    timeout-minutes: 170
     permissions:
-      contents: write   # only for the draft release (the last steps); no other step gets the token
+      contents: write   # the build's draft release, and the draft that keeps the logs
     steps:
       - name: Check out this commit (plain git, no token)
         run: |
@@ -80,558 +311,133 @@ jobs:
           git checkout -q --detach FETCH_HEAD
           git log -1 --format='%H %s'
 
-      - name: Node.js 24 (nodejs.org, sha256 pinned)
-        env:
-          NODE_VERSION: v24.22.0
-          NODE_SHA256: 6a9724d9b50a5f22b4816cded441b5a8d9ddae546191a5e5b7efa5a5e2ee26d5   # node-v24.22.0-darwin-arm64.tar.gz
+      - name: The machine
         run: |
-          set -e
-          test "$(uname -m)" = arm64
-          f="node-$NODE_VERSION-darwin-arm64.tar.gz"
-          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$f" "https://nodejs.org/dist/$NODE_VERSION/$f"
-          echo "$NODE_SHA256  $RUNNER_TEMP/$f" | shasum -a 256 -c -
-          tar -xzf "$RUNNER_TEMP/$f" -C "$RUNNER_TEMP"
-          echo "$RUNNER_TEMP/node-$NODE_VERSION-darwin-arm64/bin" >> "$GITHUB_PATH"
-          "$RUNNER_TEMP/node-$NODE_VERSION-darwin-arm64/bin/node" --version
+          set +e
+          L="$RUNNER_TEMP/m8"; mkdir -p "$L"
+          {
+            sw_vers; uname -m; sysctl -n machdep.cpu.brand_string
+            echo "memory: $(( $(sysctl -n hw.memsize) / 1048576 )) MB, cpus: $(sysctl -n hw.ncpu), page $(sysctl -n hw.pagesize)"
+            system_profiler SPDisplaysDataType 2>/dev/null | grep -E 'Chipset|Metal|Cores|Resolution' | sed 's/^ *//'
+            echo "iogpu.wired_limit_mb: $(sysctl -n iogpu.wired_limit_mb 2>&1)"
+            echo "swap: $(sysctl -n vm.swapusage)"; echo "pressure level: $(sysctl -n kern.memorystatus_vm_pressure_level), free%: $(sysctl -n kern.memorystatus_level)"
+            top -l 1 -n 0 | grep -E 'PhysMem|Processes'
+            vm_stat
+            df -h / | tail -1
+            ps -axo rss=,comm= | sort -rn | head -12
+          } 2>&1 | tee "$L/machine.txt"
 
-      - name: No tester build, ever
-        run: |
-          set -e
-          test -z "${TYPD_TESTER_CONFIG:-}${TYPD_TESTER_DEV:-}${TYPD_TESTER_JSON:-}"
-          if find . -path ./node_modules -prune -o \( -name 'tester.json' -o -name 'tester.*.json' -o -name 'model-updates.json' \) -print | grep .; then
-            echo "a tester or key file is in the checkout"; exit 1
-          fi
-          echo "no tester variables, no tester or key files"
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Bench, model updates and the self-test's decisions
-        run: node bench/updates.js
-
-      - name: Bench, wiring and the hotkey (a key press never takes Typd down)
-        run: node bench/wiring.js && node bench/hotkeys.js
-
-      - name: Bench, nothing of Typd's stops Typd (sheets, never app-modal; none over the walkthrough)
-        run: node bench/no-modal.js
-
-      - name: Bench, the copy pop-up (informational)
-        # 0.2.10: is there a text field (recorded trees), the pop-up's timer, pause and dismiss, and its
-        # page in a headless Chrome when the runner has one.
-        continue-on-error: true
-        run: node bench/copy-popup.js
-
-      - name: Download the dictation model (signed manifest, sha256 of every file)
-        run: |
-          set -o pipefail
-          node scripts/fetch-model.js --accept-license | tee fetch-model.log
-          ver=$(sed -n 's/^Model \([A-Za-z0-9._-]*\): .*/\1/p' fetch-model.log | head -n 1)
-          test -n "$ver"
-          echo "MODEL_VERSION=$ver" >> "$GITHUB_ENV"
-          cat models/typd-dictate/model.json
-          ls -la models/typd-dictate
-
-      - name: Fetch llama.cpp for macOS (b11351)
-        run: node scripts/fetch-llama-mac.js $ARCHS
-
-      - name: Bench, the language guard on the real model (informational)
-        # 0.2.10: macOS's llama-server (b11351, on the CPU) takes the guard's grammar (English or Turkish only),
-        # and the published model hears the test clip with it.
-        continue-on-error: true
-        run: TYPD_GUARD_BENCH_MODEL="$PWD/models/typd-dictate" node bench/lang-guard.js
-
-      - name: Build uiohook-napi with its start handshake fixed
-        # The key's event tap. uiohook-napi's start could hang Typd's main thread for good at
-        # launch (scripts/build-uiohook-mac.js says how); this builds it from source, fixed, for
-        # each arch. node-gyp-build loads it in place of the shipped prebuild.
-        run: node scripts/build-uiohook-mac.js $ARCHS
-
-      - name: Typd's signing certificate, in a keychain of its own
-        # scripts/after-pack.js and scripts/app-update-package.js sign with it (TYPD_MAC_SIGN_*).
-        env:
-          MAC_CODESIGN_P12: ${{ secrets.MAC_CODESIGN_P12 }}
-          MAC_CODESIGN_P12_PASSWORD: ${{ secrets.MAC_CODESIGN_P12_PASSWORD }}
-        run: bash scripts/mac-signing-import.sh
-
-      - name: The macOS icon, made by Apple's iconutil (every size, each at its size)
-        # build.mac.icon is build/icon.icns. electron-builder's own .icns from assets/typd.png had wrong sizes
-        # in its @2x slots and PNGs in the 16/32 px ARGB slots (0.2.6 and earlier): broken small icons in Finder.
-        run: bash scripts/build-mac-icon.sh
-
-      - name: Package (signed with Typd's certificate)
-        run: |
-          # Naming the target makes the arch flags replace build.mac.target's arch list
-          # (electron-builder ignores CLI archs when only the config names targets).
-          flags=""
-          for a in $ARCHS; do flags="$flags --$a"; done
-          unset TYPD_TESTER_CONFIG
-          # The public dmg ships WITHOUT the dictation model (0.2.5): the app downloads the one its
-          # hardware suits at first launch (src/main/modelUpdate.js). The model fetched above is
-          # for the tests below (TYPD_MODEL_DIR, smoke tests), never packaged.
-          TYPD_NO_BUNDLED_MODEL=1 npx electron-builder --mac dmg $flags --publish never
-          ls -la dist
-
-      - name: Inspect the app
-        run: |
-          set -e
-          for a in $ARCHS; do
-            app=$( [ "$a" = arm64 ] && echo "$PWD/dist/mac-arm64/Typd.app" || echo "$PWD/dist/mac/Typd.app" )
-            echo "== $app"
-            codesign --verify --deep --strict --verbose=2 "$app"
-            codesign -dv "$app" 2>&1 | grep -E 'Signature|Identifier|Format|Authority|TeamIdentifier'
-            # One code identity for every build: ai.typd.app and Typd's certificate (scripts/mac-signing.json).
-            dr=$(codesign -d -r- "$app" 2>&1 | sed -n 's/^designated => //p')
-            echo "designated requirement: $dr"
-            echo "$dr" | grep -q 'identifier "ai.typd.app"'
-            echo "$dr" | grep -qi "$(node -p "require('./scripts/mac-signing.json').sha1")"
-            echo "- $a: \`$dr\`" >> "$GITHUB_STEP_SUMMARY"
-            # Gatekeeper: not notarized and not Developer ID, so a downloaded copy's first open is
-            # refused (docs/MAC.md). Printed, not a gate.
-            spctl --assess --type execute -vv "$app" 2>&1 || true
-            plutil -p "$app/Contents/Info.plist" | grep -E 'LSUIElement|NSMicrophoneUsageDescription|NSAppleEventsUsageDescription|LSMinimumSystemVersion|CFBundleIdentifier'
-            test "$(plutil -extract LSUIElement raw -o - "$app/Contents/Info.plist")" = true
-            # A menu-bar app with no window open must never be ended or napped by macOS (docs/MAC.md).
-            test "$(plutil -extract NSSupportsAutomaticTermination raw -o - "$app/Contents/Info.plist")" = false
-            test "$(plutil -extract NSSupportsSuddenTermination raw -o - "$app/Contents/Info.plist")" = false
-            test "$(plutil -extract LSAppNapIsDisabled raw -o - "$app/Contents/Info.plist")" = true
-            # (PlistBuddy, not plutil: plutil reads the dots in an entitlement's name as a key path.)
-            # The microphone (0.2.7): the usage string in the app and in every helper app, the audio-input
-            # entitlement in the app and every helper (scripts/mac-entitlements.plist), and still no
-            # hardened runtime (TCC prompts without it; with it, a missing entitlement is refused silently).
-            mic=$(plutil -extract NSMicrophoneUsageDescription raw -o - "$app/Contents/Info.plist")
-            test -n "$mic"
-            for b in "$app" "$app"/Contents/Frameworks/*.app; do
-              hm=$(plutil -extract NSMicrophoneUsageDescription raw -o - "$b/Contents/Info.plist" 2>/dev/null || true)
-              [ "$hm" = "$mic" ] || { echo "$(basename "$b"): NSMicrophoneUsageDescription missing or different"; exit 1; }
-              codesign -d --entitlements - --xml "$b" 2>/dev/null > "$RUNNER_TEMP/ent.plist"
-              [ "$(/usr/libexec/PlistBuddy -c "Print :com.apple.security.device.audio-input" "$RUNNER_TEMP/ent.plist" 2>/dev/null)" = true ] || { echo "$(basename "$b"): no com.apple.security.device.audio-input entitlement"; exit 1; }
-              codesign -dv "$b" 2>&1 | grep -q 'flags=0x0(none)' || { echo "$(basename "$b"): unexpected code-signing flags: $(codesign -dv "$b" 2>&1 | grep CodeDirectory)"; exit 1; }
-              echo "  $(basename "$b"): usage string, audio-input entitlement, no hardened runtime"
-            done
-            echo "- $a: microphone usage string + audio-input entitlement in the app and its helpers" >> "$GITHUB_STEP_SUMMARY"
-            # The icon: every size at its size (scripts/check-icns.js), and Apple's iconutil reads back exactly
-            # the ten images of a full iconset, each at its pixel size.
-            node scripts/check-icns.js "$app/Contents/Resources/icon.icns"
-            rm -rf "$RUNNER_TEMP/icon.iconset"
-            iconutil -c iconset "$app/Contents/Resources/icon.icns" -o "$RUNNER_TEMP/icon.iconset"
-            got=$(cd "$RUNNER_TEMP/icon.iconset" && for f in *.png; do echo "$f=$(sips -g pixelWidth "$f" | awk '/pixelWidth/ {print $2}')"; done | LC_ALL=C sort | tr '\n' ' ')
-            want="icon_128x128.png=128 icon_128x128@2x.png=256 icon_16x16.png=16 icon_16x16@2x.png=32 icon_256x256.png=256 icon_256x256@2x.png=512 icon_32x32.png=32 icon_32x32@2x.png=64 icon_512x512.png=512 icon_512x512@2x.png=1024 "
-            echo "iconutil reads back: $got"
-            [ "$got" = "$want" ] || { echo "the icon is not a full iconset at the right sizes"; exit 1; }
-            ls -la "$app/Contents/Resources/llama" "$app/Contents/Resources/models/typd-dictate"
-            # Model-less: no model.json and no .gguf anywhere in the app.
-            test ! -e "$app/Contents/Resources/models/typd-dictate/model.json"
-            if find "$app" -name '*.gguf' | grep -q .; then echo "the public app must not contain a model"; exit 1; fi
-            file "$app/Contents/Resources/llama/llama-server"
-            test -x "$app/Contents/Resources/llama/llama-server"
-            if [ -e "$app/Contents/Resources/tester.json" ]; then echo "the app must not contain tester.json"; exit 1; fi
-            if find "$app/Contents/Resources/app.asar.unpacked" -path '*sherpa*' | grep -q .; then echo "sherpa-onnx should not be packaged"; exit 1; fi
-            # The keyboard hook's native module loads from the signed bundle (no hook is started).
-            ELECTRON_RUN_AS_NODE=1 "$app/Contents/MacOS/Typd" -e "require(process.argv[1]); console.log('uiohook-napi loads')" "$app/Contents/Resources/app.asar/node_modules/uiohook-napi"
-            # ... and it is the fixed build (scripts/build-uiohook-mac.js), not the prebuild.
-            ELECTRON_RUN_AS_NODE=1 "$app/Contents/MacOS/Typd" -e "const p = require(process.argv[1]).resolve(process.argv[2]); console.log('uiohook-napi from', p); if (!/build\/Release\/uiohook_napi\.node$/.test(p)) process.exit(1)" "$app/Contents/Resources/app.asar/node_modules/node-gyp-build" "$app/Contents/Resources/app.asar/node_modules/uiohook-napi"
-            lipo -archs "$app/Contents/Resources/app.asar.unpacked/node_modules/uiohook-napi/build/Release/uiohook_napi.node"
-          done
-
-      - name: Smoke test, CPU (arm64)
-        if: contains(env.ARCHS, 'arm64')
-        run: |
-          R=dist/mac-arm64/Typd.app/Contents/Resources
-          node scripts/smoke-llama.js --server $R/llama/llama-server --models "$PWD/models/typd-dictate" --gpu-layers 0 --port 8790
-
-      - name: Smoke test, Metal (arm64)
-        if: contains(env.ARCHS, 'arm64')
-        # The runner is a VM whose paravirtual GPU is not a real Mac's; a Metal failure here is
-        # reported but does not fail the build. The CPU test above is the gate.
-        continue-on-error: true
-        run: |
-          R=dist/mac-arm64/Typd.app/Contents/Resources
-          node scripts/smoke-llama.js --server $R/llama/llama-server --models "$PWD/models/typd-dictate" --gpu-layers 99 --port 8791
-
-      - name: Smoke test, as the app starts (arm64)
-        if: contains(env.ARCHS, 'arm64')
-        # No -ngl: the app's own path. Its self-test transcribes the fixture on Metal first, and on
-        # wrong text restarts on the CPU and tests again. A gate: this is what a Mac user's Typd does.
-        run: |
-          R=dist/mac-arm64/Typd.app/Contents/Resources
-          node scripts/smoke-llama.js --server $R/llama/llama-server --models "$PWD/models/typd-dictate" --port 8793 2>&1 | tee smoke-default.log
-          grep -E 'self-test|path chosen' smoke-default.log
-
-      - name: Smoke test, CPU (x64 under Rosetta)
-        if: contains(env.ARCHS, 'x64')
-        continue-on-error: true
-        run: |
-          R=dist/mac/Typd.app/Contents/Resources
-          node scripts/smoke-llama.js --server $R/llama/llama-server --models "$PWD/models/typd-dictate" --gpu-layers 0 --port 8792
-
-      - name: App-update packages (README "App updates")
-        # The app without its model, signed again with Typd's certificate (the same designated
-        # requirement as the dmg's app; the record says so), carrying nothing, with the record
-        # publish_app_update.py reads.
-        run: |
-          set -e
-          for a in $ARCHS; do
-            app=$( [ "$a" = arm64 ] && echo dist/mac-arm64/Typd.app || echo dist/mac/Typd.app )
-            node scripts/app-update-package.js mac --app "$app" --arch "$a" --out dist/update
-          done
-          ls -la dist/update
-          node -e "for (const f of require('fs').readdirSync('dist/update').filter((n) => n.endsWith('.zip.json'))) { const r = require('./dist/update/' + f); console.log(f, 'carry', JSON.stringify(r.carry), 'signed', r.signature && r.signature.how, '|', r.signature && r.signature.designated); if (r.carry.length) process.exit(1); }"
-          # The package's app is signed again (the outer bundle only): it must keep the audio-input entitlement.
-          for z in dist/update/*.zip; do
-            d="$RUNNER_TEMP/upd-$(basename "$z" .zip)"; rm -rf "$d"; mkdir -p "$d"; ditto -x -k "$z" "$d"
-            codesign --verify --deep --strict "$d/Typd.app"
-            for b in "$d/Typd.app" "$d"/Typd.app/Contents/Frameworks/*.app; do
-              codesign -d --entitlements - --xml "$b" 2>/dev/null > "$RUNNER_TEMP/ent.plist"
-              [ "$(/usr/libexec/PlistBuddy -c "Print :com.apple.security.device.audio-input" "$RUNNER_TEMP/ent.plist" 2>/dev/null)" = true ] || { echo "$(basename "$z"): $(basename "$b") lost the audio-input entitlement"; exit 1; }
-            done
-            node scripts/check-icns.js "$d/Typd.app/Contents/Resources/icon.icns"
-            echo "$(basename "$z"): audio-input entitlement in the app and its helpers; icon ok"
-          done
-
-      - name: Model choice and network cost on a real Mac (informational)
-        # src/main/hardware.js and src/main/netcost.js, the raw answers logged. A runner is neither
-        # metered nor in Low Data Mode, so "unmetered" is expected; anything else is for a look.
-        continue-on-error: true
-        run: |
-          node -e "const h = require('./src/main/hardware'); h.detect().then((hw) => console.log('hardware:', JSON.stringify(hw), JSON.stringify(h.pick(hw))))"
-          node -e "const cp = require('child_process'); require('./src/main/netcost').probe({ run: async (f, a) => { const r = cp.spawnSync(f, a, { encoding: 'utf8', timeout: 20000 }); console.log('raw:', JSON.stringify(r.stdout), JSON.stringify(r.stderr)); return { code: r.status, stdout: r.stdout || '' }; } }).then((r) => console.log('netcost.probe():', r))"
-
-      - name: Is there a text field? macOS Accessibility on a real Mac (informational)
-        # 0.2.10: the field facts src/main/mac/inject-helper.js reads for the front app's focused
-        # element, classified by src/main/pasteTarget.js. Expected: TextEdit's document and Terminal
-        # editable, Finder (frontmost, a window) not-editable, a Safari page unknown. If the runner's
-        # osascript may not read System Events, every answer is "unknown" (it then pastes, as always).
-        continue-on-error: true
-        run: |
-          probe() {
-            out=$( (sleep 1; printf '1 field\n'; sleep 4) | osascript -l JavaScript src/main/mac/inject-helper.js ax 2>ax.err | grep '"id":1' | tail -n 1)
-            node -e "const pt = require('./src/main/pasteTarget'); const r = process.argv[2] ? JSON.parse(process.argv[2]) : null; console.log(process.argv[1] + ':', JSON.stringify(r && r.field), '->', JSON.stringify(pt.classify(r && r.field, 'darwin')))" "$1" "$out"
-            if [ -s ax.err ]; then sed -n '1,3p' ax.err; fi
-          }
-          front() { osascript -e 'tell application "System Events" to get name of first process whose frontmost is true' 2>&1; }
-          defaults write com.apple.TextEdit NSShowAppCentricOpenPanelInsteadOfUntitledFile -bool false
-          open -a TextEdit; sleep 4; osascript -e 'tell application "TextEdit" to activate'; sleep 1
-          echo "front: $(front)"; probe "TextEdit, a new document"
-          osascript -e 'tell application "TextEdit" to quit saving no' || true; sleep 1
-          osascript -e 'tell application "Finder" to activate'; sleep 2
-          echo "front: $(front)"; probe "Finder, frontmost"
-          open "$HOME"; sleep 3
-          echo "front: $(front)"; probe "Finder, a window"
-          open -a Terminal; sleep 4
-          echo "front: $(front)"; probe "Terminal"
-          osascript -e 'tell application "Terminal" to quit' || true
-          open -a Safari "https://example.com"; sleep 6
-          echo "front: $(front)"; probe "Safari, a page"
-          osascript -e 'tell application "Safari" to quit' || true
-
-      - name: Launch the packaged app (arm64)
-        if: contains(env.ARCHS, 'arm64')
-        # Starts Typd.app as a user would and checks that it brings up its own llama-server from
-        # inside the bundle, on 127.0.0.1:8737, and that its self-test reaches a verdict.
-        # Informational: on a runner nobody can grant the microphone, accessibility or input
-        # monitoring, so the rest of the app is not exercised.
-        continue-on-error: true
-        run: |
-          APP="$PWD/dist/mac-arm64/Typd.app"
-          # No model download and no app update from CI; no walkthrough window; no sharing (a public
-          # build shares by default since 0.2.4). The app is model-less: it loads the fetched model.
-          TYPD_DEBUG=1 TYPD_NO_MODEL_UPDATE=1 TYPD_NO_APP_UPDATE=1 TYPD_NO_WALKTHROUGH=1 TYPD_NO_SHARE=1 TYPD_MODEL_DIR="$PWD/models/typd-dictate" "$APP/Contents/MacOS/Typd" > app.log 2>&1 &
-          pid=$!
-          ok=0
-          for i in $(seq 1 120); do
-            if curl -sf http://127.0.0.1:8737/health; then ok=1; break; fi
-            sleep 1
-          done
-          echo
-          for i in $(seq 1 90); do
-            if grep -qE 'path chosen|failed its self-test' app.log; then break; fi
-            sleep 1
-          done
-          grep -E '\[typd:local\] (self-test|path chosen|model .* ready)' app.log || { echo "no self-test verdict in app.log"; ok=0; }
-          pgrep -fl llama-server || true
-          pgrep -fl llama-server | grep -q "$APP/Contents/Resources/llama/llama-server" || ok=0
-          kill $pid 2>/dev/null || true
-          sleep 2
-          pkill -f "$APP/Contents/Resources/llama/llama-server" || true
-          echo "--- app.log (tail)"; tail -60 app.log
-          test $ok = 1
-
-      - name: Close the Typd window, stay running (arm64)
-        if: contains(env.ARCHS, 'arm64')
-        env:
-          TYPD_MODEL_DIR: ${{ github.workspace }}/models/typd-dictate
-        # Closing the Typd window must not take Typd's key with it. scripts/mac-close-check.sh
-        # opens and closes the window in the packaged app (TYPD_TEST_CLOSE_HOME), presses keys
-        # before, during and after, dictates with Right ⌘ after the close, then quits Typd. Two
-        # passes: started from this shell (the runner's privacy rights) and started as Finder
-        # starts it (its own app to macOS, no switches on yet). A gate.
-        run: |
-          chmod +x scripts/mac-close-check.sh
-          fail=0
-          IDLE=0 scripts/mac-close-check.sh exec "$PWD/dist/mac-arm64/Typd.app" || fail=1
-          IDLE=0 scripts/mac-close-check.sh open "$PWD/dist/mac-arm64/Typd.app" open-no-switches || fail=1
-          test $fail = 0
-
-      - name: The microphone, as a new user's first launch asks for it (arm64)
-        if: contains(env.ARCHS, 'arm64')
-        # scripts/mac-mic-check.sh: on a fresh profile with the microphone never answered, macOS prompts for
-        # it as ai.typd.app (tccd: AUTHREQ_PROMPTING), Typd logs the request, stops waiting on an unanswered
-        # prompt and shows its own dialog (0.2.6 waited forever), and Allow puts Typd in the Microphone list
-        # (a TCC row). A gate.
-        run: |
-          swiftc -O scripts/mac-alert.swift -o "$RUNNER_TEMP/mac-alert"
-          chmod +x scripts/mac-mic-check.sh
-          scripts/mac-mic-check.sh "$PWD/dist/mac-arm64/Typd.app" mic-signed
-
-      - name: Let Typd through macOS privacy as its own app (arm64, runner only)
-        if: contains(env.ARCHS, 'arm64')
-        # The runner's VM lets the privacy (TCC) databases be written: grant ai.typd.app
-        # Accessibility, Input Monitoring, posting events and the microphone here, so the next pass
-        # can press its key. Best effort.
-        continue-on-error: true
-        run: |
-          now=$(date +%s)
-          grant() {
-            sudo sqlite3 "$1" "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version, flags, last_modified) VALUES ('$2', 'ai.typd.app', 0, 2, 4, 1, 0, $now);" && echo "granted $2" || echo "could not grant $2"
-          }
-          SYS="/Library/Application Support/com.apple.TCC/TCC.db"
-          USR="$HOME/Library/Application Support/com.apple.TCC/TCC.db"
-          for svc in kTCCServiceAccessibility kTCCServiceListenEvent kTCCServicePostEvent; do grant "$SYS" $svc; done
-          # macOS 27 moved the user's TCC.db under /private/var/containers/Data/ProtectedSystem (writable here: SIP is off).
-          if [ -f "$USR" ]; then grant "$USR" kTCCServiceMicrophone; else
-            sudo find /private/var/containers/Data/ProtectedSystem -name TCC.db -path '*com.apple.TCC*' 2>/dev/null | while IFS= read -r db; do grant "$db" kTCCServiceMicrophone; done
-          fi
-          sudo sqlite3 "$SYS" "SELECT service, client, auth_value FROM access WHERE client = 'ai.typd.app';" || true
-          csrutil status || true
-
-      - name: Close the Typd window, stay running, its own app with its switches on (arm64)
-        if: contains(env.ARCHS, 'arm64')
-        env:
-          TYPD_MODEL_DIR: ${{ github.workspace }}/models/typd-dictate
-        # The open pass again, now that Typd holds its permissions as itself (a user's Mac after the
-        # permission dialog), with a minute alone after the close. Then eight more launches, each
-        # of which must come up and quit: uiohook-napi's start used to hang Typd at launch here.
-        run: |
-          chmod +x scripts/mac-launch-loop.sh
-          fail=0
-          scripts/mac-close-check.sh open "$PWD/dist/mac-arm64/Typd.app" open-switches-on || fail=1
-          scripts/mac-launch-loop.sh "$PWD/dist/mac-arm64/Typd.app" 8 || fail=1
-          test $fail = 0
-
-      - name: Open from the menu bar, close with the red X, stay running (arm64)
-        if: contains(env.ARCHS, 'arm64')
-        env:
-          TYPD_MODEL_DIR: ${{ github.workspace }}/models/typd-dictate
-        # A tester's Mac: menu-bar icon > "Open Typd" > the red X, and Typd was gone, menu-bar icon and
-        # all. scripts/mac-tray-close-check.sh takes that path, started as Finder starts Typd: first
-        # through the menu's own "Open Typd" and win.close(), then with real clicks on the menu-bar
-        # icon, the menu and the red X. Each pass then watches Typd alone for 150 s (alive, its
-        # menu-bar icon, CPU, App Nap, its key). A gate.
-        run: |
-          swiftc -O scripts/mac-ui.swift -o "$RUNNER_TEMP/mac-ui"
-          chmod +x scripts/mac-tray-close-check.sh
-          fail=0
-          scripts/mac-tray-close-check.sh "$PWD/dist/mac-arm64/Typd.app" tray-menu tray || fail=1
-          scripts/mac-tray-close-check.sh "$PWD/dist/mac-arm64/Typd.app" gui-clicks gui || fail=1
-          test $fail = 0
-
-      - name: An update opens no window (arm64)
-        if: contains(env.ARCHS, 'arm64')
-        env:
-          TYPD_MODEL_DIR: ${{ github.workspace }}/models/typd-dictate
-        # The first-run walkthrough is for fresh installs only: Typd started on a user-data folder as
-        # 0.2.3 left it (the walkthrough never shown) must open no window; a fresh install must show
-        # it (the control). scripts/mac-first-launch-check.sh. A gate.
-        run: |
-          chmod +x scripts/mac-first-launch-check.sh
-          scripts/mac-first-launch-check.sh "$PWD/dist/mac-arm64/Typd.app"
-
-      - name: First launch with no model (arm64, informational)
-        # The public app as a new user starts it: no model anywhere. First with model updates off: it
-        # must stay up and say it has no model (no crash, no dialog). Then as shipped: it downloads
-        # the variant this runner's hardware gets through the public routes (signed manifest, sha256
-        # of every file), switches to it and passes its self-test.
-        if: contains(env.ARCHS, 'arm64')
-        continue-on-error: true
-        run: |
-          APP="$PWD/dist/mac-arm64/Typd.app"
-          BIN="$APP/Contents/MacOS/Typd"
-          UD="$HOME/Library/Application Support/typd"
-          pkill -f "$BIN" || true
-          rm -rf "$UD/models"
-          TYPD_DEBUG=1 TYPD_NO_MODEL_UPDATE=1 TYPD_NO_APP_UPDATE=1 TYPD_NO_WALKTHROUGH=1 TYPD_NO_SHARE=1 "$BIN" > nomodel-off.log 2>&1 &
-          pid=$!
-          sleep 20
-          alive=0; kill -0 $pid 2>/dev/null && alive=1
-          kill $pid 2>/dev/null || true; sleep 2
-          grep -E '\[typd:model\]' nomodel-off.log || true
-          echo "alive after 20 s with no model and updates off: $alive"
-          grep -q '\[typd:model\] no speech model yet: no download' nomodel-off.log && test $alive = 1 || { tail -40 nomodel-off.log; exit 1; }
-          TYPD_DEBUG=1 TYPD_NO_APP_UPDATE=1 TYPD_NO_WALKTHROUGH=1 TYPD_NO_SHARE=1 "$BIN" > nomodel.log 2>&1 &
-          pid=$!
-          ok=0
-          for i in $(seq 1 600); do
-            if grep -qE '\[typd:local\] model .* ready' nomodel.log; then ok=1; break; fi
-            kill -0 $pid 2>/dev/null || break
-            sleep 1
-          done
-          grep -E '\[typd:model\]|\[typd:models\] (variant|downloading|verified|switching|now running)' nomodel.log | head -30
-          grep -E '\[typd:local\] (self-test|path chosen|model .* ready)' nomodel.log || true
-          ls -la "$UD/models" || true
-          kill $pid 2>/dev/null || true; sleep 2
-          pkill -f "$APP/Contents/Resources/llama/llama-server" || true
-          echo "- first launch with no model: downloaded and ready = $ok" >> "$GITHUB_STEP_SUMMARY"
-          test $ok = 1
-
-      - name: The app inside each dmg checked for keys (scripts/public-build.js verify)
-        run: |
-          set -e
-          test -z "${TYPD_TESTER_CONFIG:-}"
-          want=$(node -p "require('./scripts/mac-signing.json').sha1")
-          for a in $ARCHS; do
-            dmg=$(ls dist/Typd-*-mac-$a.dmg)
-            mnt="$RUNNER_TEMP/typd-dmg-$a"
-            mkdir -p "$mnt"
-            hdiutil attach "$dmg" -nobrowse -readonly -mountpoint "$mnt"
-            codesign --verify --deep --strict "$mnt/Typd.app"
-            codesign -d -r- "$mnt/Typd.app" 2>&1 | grep designated | grep -qi "$want"
-            node scripts/public-build.js verify --app "$mnt/Typd.app" --platform "mac-$a" --installer "$dmg" --expect-model no
-            hdiutil detach "$mnt"
-          done
-          ls -la dist/*.dmg dist/*.dmg.public.json
-          cat dist/*.dmg.public.json
-
-      - name: Attach the builds to a draft release (visible to maintainers only)
+      - name: Typd 0.2.11 (the shipped Mac build), its SHA-256 checked
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -e
-          version=$(node -p "require('./package.json').version")
-          tag="build-${GITHUB_RUN_ID}"
-          mkdir -p dist/release
-          for f in dist/*.dmg dist/*.dmg.public.json dist/update/*.zip dist/update/*.zip.json; do ln "$f" dist/release/; done
-          (cd dist/release && shasum -a 256 * > SHA256SUMS && cat SHA256SUMS)
-          for f in dist/release/*; do
-            size=$(stat -f %z "$f")
-            if [ "$size" -ge 2147483648 ]; then echo "$f is $size bytes: over GitHub's 2 GiB limit for a release file"; exit 1; fi
+          L="$RUNNER_TEMP/m8"; D="$RUNNER_TEMP/rel"; mkdir -p "$D"
+          gh release download "$BUILD_RELEASE" --repo "$GITHUB_REPOSITORY" --pattern SHA256SUMS --pattern "$DMG_NAME" --dir "$D"
+          got=$(shasum -a 256 "$D/$DMG_NAME" | cut -d' ' -f1)
+          grep -q "$got" "$D/SHA256SUMS"; test "$got" = "$DMG_SHA"
+          echo "$DMG_NAME sha256 $got (= the live public download)" | tee "$L/app.txt"
+          MNT=$(hdiutil attach -nobrowse -noautoopen "$D/$DMG_NAME" | awk -F'\t' '/\/Volumes\//{print $NF}' | tail -1)
+          ditto "$MNT/Typd.app" "$RUNNER_TEMP/Typd.app"; hdiutil detach "$MNT" -quiet || true
+          R="$RUNNER_TEMP/Typd.app/Contents/Resources"
+          { defaults read "$RUNNER_TEMP/Typd.app/Contents/Info.plist" CFBundleShortVersionString; ls "$R/llama"; cat "$R/llama/PATCHED.json" 2>/dev/null; } 2>&1 | tee -a "$L/app.txt"
+          echo "APP=$RUNNER_TEMP/Typd.app/Contents/MacOS/Typd" >> "$GITHUB_ENV"
+          echo "APP_ASAR=$R/app.asar" >> "$GITHUB_ENV"
+
+      - name: Real speech (public domain), cut at pauses
+        run: |
+          set -e
+          L="$RUNNER_TEMP/m8"; C="$RUNNER_TEMP/clips"; mkdir -p "$C"
+          curl -fsSL -o "$C/jfk.wav" "$JFK_URL"
+          curl -fsSL -A 'typd-app-ci/1.0 (memory test; github.com/SameRainbows/typd-app)' -o "$C/radio.oga" "$RADIO_URL"
+          test "$(shasum -a 256 "$C/jfk.wav" | cut -d' ' -f1)" = "$JFK_SHA"
+          test "$(shasum -a 256 "$C/radio.oga" | cut -d' ' -f1)" = "$RADIO_SHA"
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install -q numpy==2.4.6 scipy==1.17.1 soundfile==0.14.0 || "$RUNNER_TEMP/venv/bin/pip" install -q numpy scipy soundfile
+          "$RUNNER_TEMP/venv/bin/pip" list 2>/dev/null | grep -iE '^(numpy|scipy|soundfile) '
+          printf '%s' "$CLIPS_PY" > "$RUNNER_TEMP/clips.py"
+          "$RUNNER_TEMP/venv/bin/python" -I "$RUNNER_TEMP/clips.py" "$C/radio.oga" "$C" | tee "$L/clips.txt"
+          echo "jfk 11.00 s sha256 $JFK_SHA" | tee -a "$L/clips.txt"
+
+      - name: The models, through the app's own updater (public routes)
+        run: |
+          set -e
+          L="$RUNNER_TEMP/m8"; M="$RUNNER_TEMP/models"
+          printf '%s' "$BENCH_JS" > "$RUNNER_TEMP/bench.js"
+          for v in full light; do
+            ELECTRON_RUN_AS_NODE=1 perl -e 'alarm shift; exec @ARGV' 1900 "$APP" "$RUNNER_TEMP/bench.js" fetch $v "$M/$v" 2>&1 | tee "$L/fetch-$v.log" | grep -vE 'progress' | tail -12
           done
-          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --draft --target "$GITHUB_SHA" \
-            --title "Build ${GITHUB_RUN_ID}: Typd $version" \
-            --notes "Draft (maintainers only): CI build of ${GITHUB_SHA::7}, Typd $version, model $MODEL_VERSION, archs $ARCHS. Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          for f in dist/release/*; do
-            ok=0
-            for i in 1 2 3 4; do
-              if gh release upload "$tag" "$f" --repo "$GITHUB_REPOSITORY" --clobber; then ok=1; break; fi
-              echo "upload of $(basename "$f") failed (try $i); retrying"; sleep $((15 * i))
+          grep -h '^FETCHED' "$L"/fetch-*.log > "$L/fetched.jsonl"
+          for v in full light; do d=$(ls -d "$M/$v"/*/ | grep -v partial | head -1); echo "$v: $d"; ls -la "$d"; done
+
+      - name: Measure (quiet, then busy)
+        env:
+          HOG_GB: ${{ inputs.hog_gb }}
+          IDLE_S: ${{ inputs.idle_s }}
+        run: |
+          set +e
+          L="$RUNNER_TEMP/m8"; M="$RUNNER_TEMP/models"; C="$RUNNER_TEMP/clips"
+          printf '%s' "$SAMPLER_PY" > "$RUNNER_TEMP/sampler.py"; printf '%s' "$HOG_PY" > "$RUNNER_TEMP/hog.py"
+          echo baseline > "$L/phase"; rm -f "$L/stop" "$L/hog.pid"
+          sudo nohup python3 "$RUNNER_TEMP/sampler.py" "$L/samples.jsonl" "$L/phase" "$L/stop" "$L/hog.pid" > "$L/sampler.out" 2>&1 &
+          sleep 15
+          FULL=$(ls -d "$M/full"/*/ | grep -v partial | head -1); LIGHT=$(ls -d "$M/light"/*/ | grep -v partial | head -1)
+          CL="{\"short5a\":\"$C/short5a.wav\",\"short5b\":\"$C/short5b.wav\",\"jfk\":\"$C/jfk.wav\",\"long36\":\"$C/long36.wav\"}"
+          for variant in quiet busy; do
+            if [ $variant = busy ]; then
+              echo hog > "$L/phase"
+              python3 "$RUNNER_TEMP/hog.py" "$HOG_GB" > "$L/hog.out" 2>&1 &
+              echo $! > "$L/hog.pid"; sleep 40; cat "$L/hog.out"
+            fi
+            for mdl in p2d_low p2d_normal light_low; do
+              case $mdl in p2d_low) dir=$FULL; low=1;; p2d_normal) dir=$FULL; low=0;; light_low) dir=$LIGHT; low=1;; esac
+              for set in A B; do
+                lab="$variant/$mdl/$set"; f="${lab//\//_}"
+                echo "purge" > "$L/phase"; sudo purge; sleep 3
+                echo "=== $lab $(date -u +%H:%M:%S) free% $(sysctl -n kern.memorystatus_level) swap $(sysctl -n vm.swapusage | grep -oE 'used = [0-9.]+M')"
+                cfg="{\"label\":\"$lab\",\"set\":\"$set\",\"low\":\"$low\",\"modelDir\":\"${dir%/}\",\"out\":\"$L/phase-$f.json\",\"clips\":$CL,\"idleS\":$IDLE_S,\"phaseFile\":\"$L/phase\"}"
+                ELECTRON_RUN_AS_NODE=1 perl -e 'alarm shift; exec @ARGV' 1200 "$APP" "$RUNNER_TEMP/bench.js" run "$cfg" > "$L/run-$f.out" 2> "$L/run-$f.err"
+                echo "exit $?"
+                grep -E '^(WARM|DICTATION) ' "$L/run-$f.out" | cut -c1-400
+                pkill -f 'Resources/llama/llama-server' 2>/dev/null; sleep 2
+              done
             done
-            test $ok = 1
+            if [ $variant = busy ]; then kill "$(cat "$L/hog.pid")" 2>/dev/null; rm -f "$L/hog.pid"; fi
           done
-          want=$(ls dist/release | wc -l | tr -d ' ')
-          gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft,assets --jq '"draft: \(.isDraft)", (.assets[] | "\(.name)  \(.size)")'
-          test "$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = true
-          test "$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets | length')" = "$want"
-          echo "- draft release \`$tag\`: $want files (Typd $version, model $MODEL_VERSION)" >> "$GITHUB_STEP_SUMMARY"
+          echo none > "$L/phase"; sleep 3; touch "$L/stop"; sleep 3
+          wc -l "$L/samples.jsonl"; cat "$L/sampler.out"
 
-      - name: Remove the signing keychain
+      - name: Summary
         if: always()
-        run: bash scripts/mac-signing-import.sh --delete
-
-  menubar:
-    # The menu-bar close checks on several macOS versions, on an ad-hoc-signed arm64 build of this
-    # commit (no secrets in this job). macos-14 is the build job's runner; the tester's Mac runs
-    # macOS 27 (xcode-27 is that image, in preview).
-    if: github.repository == 'SameRainbows/typd-app'
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-14, macos-15, macos-26, xcode-27]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 75
-    steps:
-      - name: Check out this commit (plain git, no token)
         run: |
-          set -e
-          git init -q .
-          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
-          git fetch -q --depth 1 origin "$GITHUB_SHA"
-          git checkout -q --detach FETCH_HEAD
-          git log -1 --format='%H %s'
-          sw_vers; uname -r; csrutil status || true
+          set +e
+          L="$RUNNER_TEMP/m8"
+          printf '%s' "$SUMMARY_PY" > "$RUNNER_TEMP/summary.py"
+          python3 "$RUNNER_TEMP/summary.py" "$L" | tee "$L/summary.md"
+          echo "--- llama.cpp memory lines (first server start of each run)"
+          for e in "$L"/run-*.err; do echo "$(basename "$e"):"; grep -E 'recommendedMaxWorkingSetSize|has unified memory|GPU name|buffer size|using [A-Za-z]+ backend|CPU fallback|failed to allocate|out of memory' "$e" | sed -E 's/^[^a-zA-Z]*//' | sort | uniq -c | head -16; done
+          echo "--- end-of-run vmmap (peak) per run"
+          for f in "$L"/phase-*.json; do python3 -c "import json,sys; r=json.load(open(sys.argv[1])); print(r['label'], 'afterWarm', (r.get('afterWarm') or {}).get('footprint'), 'end', (r.get('end') or {}).get('footprint'), 'peak', (r.get('end') or {}).get('peak')); [print('   ', l) for l in ((r.get('end') or {}).get('lines') or [])[:12]]" "$f"; done
 
-      - name: Node.js 24 (nodejs.org, sha256 pinned)
+      - name: Keep the logs in a draft release (maintainers only)
+        if: always()
         env:
-          NODE_VERSION: v24.22.0
-          NODE_SHA256: 6a9724d9b50a5f22b4816cded441b5a8d9ddae546191a5e5b7efa5a5e2ee26d5   # node-v24.22.0-darwin-arm64.tar.gz
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -e
-          test "$(uname -m)" = arm64
-          f="node-$NODE_VERSION-darwin-arm64.tar.gz"
-          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$f" "https://nodejs.org/dist/$NODE_VERSION/$f"
-          echo "$NODE_SHA256  $RUNNER_TEMP/$f" | shasum -a 256 -c -
-          tar -xzf "$RUNNER_TEMP/$f" -C "$RUNNER_TEMP"
-          echo "$RUNNER_TEMP/node-$NODE_VERSION-darwin-arm64/bin" >> "$GITHUB_PATH"
+          L="$RUNNER_TEMP/m8"
+          tar czf "$RUNNER_TEMP/mem8gb.tar.gz" -C "$L" .
+          ls -la "$RUNNER_TEMP/mem8gb.tar.gz"
+          tag="mem8gb-${GITHUB_RUN_ID}"
+          gh release create "$tag" --draft --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "8 GB Mac memory test ${GITHUB_RUN_ID} (logs only)" \
+            --notes "Draft (maintainers only): logs of the 8 GB Mac memory test (P2d vs light, Typd 0.2.11) on a macos-15 runner. Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            "$RUNNER_TEMP/mem8gb.tar.gz"
+          test "$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = true
 
-      - name: No tester build, ever
+      - name: Stop everything
+        if: always()
         run: |
-          set -e
-          test -z "${TYPD_TESTER_CONFIG:-}${TYPD_TESTER_DEV:-}${TYPD_TESTER_JSON:-}"
-          if find . -path ./node_modules -prune -o \( -name 'tester.json' -o -name 'tester.*.json' -o -name 'model-updates.json' \) -print | grep .; then exit 1; fi
-
-      - name: Install dependencies, the model, llama.cpp and the fixed uiohook (arm64)
-        run: |
-          set -e
-          npm ci
-          node scripts/fetch-model.js --accept-license | tail -3
-          node scripts/fetch-llama-mac.js arm64
-          node scripts/build-uiohook-mac.js arm64
-
-      - name: Package (arm64, signed ad hoc, no dmg)
-        run: |
-          set -e
-          unset TYPD_TESTER_CONFIG
-          bash scripts/build-mac-icon.sh
-          TYPD_NO_BUNDLED_MODEL=1 npx electron-builder --mac dir --arm64 --publish never
-          app=dist/mac-arm64/Typd.app
-          codesign --verify --deep --strict "$app"
-          plutil -p "$app/Contents/Info.plist" | grep -E 'LSUIElement|Termination|AppNap|CFBundleShortVersionString'
-          swiftc -O scripts/mac-ui.swift -o "$RUNNER_TEMP/mac-ui"
-
-      - name: The microphone, as a new user's first launch asks for it, ${{ matrix.os }}
-        # scripts/mac-mic-check.sh (see the build job): macOS prompts for it as ai.typd.app, Typd does not wait
-        # forever on an unanswered prompt, Allow puts Typd in the Microphone list. macOS 27 is the reporter's. A gate.
-        run: |
-          swiftc -O scripts/mac-alert.swift -o "$RUNNER_TEMP/mac-alert"
-          chmod +x scripts/mac-mic-check.sh
-          scripts/mac-mic-check.sh "$PWD/dist/mac-arm64/Typd.app" mic-${{ matrix.os }}
-
-      - name: Let Typd through macOS privacy (runner only, best effort)
-        continue-on-error: true
-        run: |
-          now=$(date +%s)
-          grant() {
-            sudo sqlite3 "$1" "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version, flags, last_modified) VALUES ('$2', 'ai.typd.app', 0, 2, 4, 1, 0, $now);" && echo "granted $2" || echo "could not grant $2"
-          }
-          SYS="/Library/Application Support/com.apple.TCC/TCC.db"
-          USR="$HOME/Library/Application Support/com.apple.TCC/TCC.db"
-          for svc in kTCCServiceAccessibility kTCCServiceListenEvent kTCCServicePostEvent; do grant "$SYS" $svc; done
-          # macOS 27 moved the user's TCC.db under /private/var/containers/Data/ProtectedSystem (writable here: SIP is off).
-          if [ -f "$USR" ]; then grant "$USR" kTCCServiceMicrophone; else
-            sudo find /private/var/containers/Data/ProtectedSystem -name TCC.db -path '*com.apple.TCC*' 2>/dev/null | while IFS= read -r db; do grant "$db" kTCCServiceMicrophone; done
-          fi
-
-      - name: Close checks, ${{ matrix.os }}
-        env:
-          TYPD_MODEL_DIR: ${{ github.workspace }}/models/typd-dictate
-        run: |
-          chmod +x scripts/mac-close-check.sh scripts/mac-tray-close-check.sh scripts/mac-first-launch-check.sh
-          APP="$PWD/dist/mac-arm64/Typd.app"
-          fail=0
-          # An update (an existing install) opens no window; a fresh install shows the walkthrough.
-          scripts/mac-first-launch-check.sh "$APP" || fail=1
-          # The old check (the window opened and closed from inside Typd), for comparison.
-          IDLE=0 scripts/mac-close-check.sh open "$APP" inside-${{ matrix.os }} || fail=1
-          # The tester's path: the menu's own item + win.close(), then real clicks.
-          scripts/mac-tray-close-check.sh "$APP" tray-${{ matrix.os }} tray || fail=1
-          scripts/mac-tray-close-check.sh "$APP" gui-${{ matrix.os }} gui || fail=1
-          pkill -f "$APP/Contents" || true
-          test $fail = 0
+          touch "$RUNNER_TEMP/m8/stop" 2>/dev/null || true
+          pkill -f 'Resources/llama/llama-server' || true
+          pkill -f hog.py || true
