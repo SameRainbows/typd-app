@@ -882,7 +882,7 @@ env:
     # the facts
     listener=$(pgrep -u "$WORKER_USER" -f Runner.Listener 2>/dev/null | head -1)
     service=$(pgrep -u "$WORKER_USER" -f runner-service 2>/dev/null | head -1)
-    last=$(grep -E 'Listening for Jobs|Connected to GitHub|Running job|completed with result|Unauthorized|Failed to create session|registration has been deleted|not connected to GitHub|An error occurred|Retrying' "$LOGDIR/runner.log" "$LOGDIR/worker.log" 2>/dev/null | tail -1 | sed 's/^[^:]*://')
+    last=$(grep -E 'Listening for Jobs|Connected to GitHub|Running job|completed with result|Unauthorized|Failed to create session|registration has been deleted|not connected to GitHub|An error occurred|Retrying' "$LOGDIR/runner.log" "$LOGDIR/worker.log" 2>/dev/null | tail -1 | sed -E 's/^[^:]*://; s/^[0-9-]+ [0-9:]+Z?:? (\[[a-z]+\] )?//')
     disabled=no; launchctl print-disabled system 2>/dev/null | grep -qE '"com.typd.worker.runner" => (true|disabled)' && disabled=yes
     paused=no; [ -e "$SHARED/control/paused" ] && paused=yes
     chk=$("$BIN/idlegate" check 2>&1); verdict=$(printf '%s\n' "$chk" | sed -n 's/^verdict: //p')
