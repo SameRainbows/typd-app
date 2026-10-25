@@ -7,17 +7,19 @@
 #            the LaunchDaemon, the LaunchAgent, the owner's tools, repair, Gatekeeper, a clean removal (15 and 26)
 #   bench    job (a) as the worker account through the gate: the shipped 0.2.11 app, the light model, one clip,
 #            a quiet pass and a small-memory pass, the results to a draft release
-#   label    job (b) as the worker account through the gate: llama.cpp's macOS build, a tiny Gemma stand-in, inputs
-#            and outputs through draft releases, resume
+#   label    job (b): refused on a Mac under 48 GB (these VMs: 7 GB); then, with that limit lifted for the test, as
+#            the worker account through the gate: llama.cpp's macOS build, a tiny Gemma stand-in, drafts, resume
+#   teacher  job (c) as the worker account through the gate: a shard of public-domain speech (JFK) as FLAC through
+#            a draft release, the shipped app's llama.cpp, the light model standing in for P2d, resume, a draft
 name: Mac worker tests (gate, installer, jobs)
 
 on:
   workflow_dispatch:
     inputs:
       parts:
-        description: Which parts (gate install bench label)
+        description: Which parts (gate install bench label teacher)
         type: string
-        default: gate install bench label
+        default: gate install bench label teacher
 
 permissions:
   contents: read
@@ -49,6 +51,8 @@ env:
     F_JOBS_LABEL_SH jobs/label.sh
     F_JOBS_LABEL_PY jobs/label.py
     F_JOBS_PUBLISH_SH jobs/publish.sh
+    F_JOBS_TEACHER_SH jobs/teacher.sh
+    F_JOBS_TEACHER_PY jobs/teacher.py
     F_TESTS_CI_KIT_SCRIPTS_P1_AUTHOR_PY tests/ci_kit/scripts/p1/author.py
     F_TESTS_CI_KIT_DOCS_AUTHOR_BRIEF_MD tests/ci_kit/docs/AUTHOR_BRIEF.md
     F_TESTS_CI_KIT_PROMPTS_P1_AUTHOR_V2_ADDENDUM_MD tests/ci_kit/prompts/p1/AUTHOR_V2_ADDENDUM.md
@@ -69,6 +73,8 @@ env:
     #                             start it again from the top at the next idle time. For jobs that resume from
     #                             their own files. 0 = never pause, always stop. Default: never evict.
     #       --memory MODE         warning (default): pause at memory pressure "warning"; critical; ignore
+    #       --needs-gb N          start only with N GB free, so a job waits instead of squeezing the
+    #                             owner's apps on a small Mac; memory pressure still pauses it once it runs
     #       --nice N              CPU priority, 0..20 (default 10; 0 for timing benchmarks)
     #   DUR: 90s, 15m, 6h, 2d or plain seconds.
     #
@@ -155,11 +161,10 @@ env:
         IN_HOW="hardware watch: keyboard $(ago "$A_kb"), mouse/trackpad $(ago "$A_ptr")"
         return
       fi
-      hid=$(ioreg -c IOHIDSystem -r -d 1 -k HIDIdleTime 2>/dev/null | awk '/HIDIdleTime/ {printf "%d", $NF / 1000000000; exit}')
+      hid=$(fake hid) || hid=$(ioreg -c IOHIDSystem -r -d 1 -k HIDIdleTime 2>/dev/null | awk '/HIDIdleTime/ {printf "%d", $NF / 1000000000; exit}')
       hid=${hid:-0}
-      console=$(stat -f %Su /dev/console 2>/dev/null)
-      locked=no
-      ioreg -n Root -d 1 2>/dev/null | grep -q '"CGSSessionScreenIsLocked"=Yes' && locked=yes
+      console=$(fake console) || console=$(stat -f %Su /dev/console 2>/dev/null)   # root: the login window, nobody logged in
+      locked=$(fake locked) || { locked=no; ioreg -n Root -d 1 2>/dev/null | grep -q '"CGSSessionScreenIsLocked"=Yes' && locked=yes; }
       [ "$HELPER" != missing ] && [ "$HELPER" != stale ] && [ "$A_locked" = 1 ] && locked=yes
       if [ "$console" = root ] || [ "$console" = loginwindow ] || [ -z "$console" ]; then
         IN_IDLE=999999; IN_HOW="nobody is logged in (input watch: $HELPER)"
@@ -224,13 +229,16 @@ env:
         done | sort -u | paste -sd, -)
     }
     probe_pause() { [ -e "$SHARED/control/paused" ] && PAUSED=yes || PAUSED=no; }
+    probe_avail() {   # MB that could be used without pushing anything out: free + inactive + speculative + purgeable
+      AVAIL=$(fake avail_mb) || AVAIL=$(vm_stat 2>/dev/null | awk '/page size of/ {ps = $8} /^Pages (free|inactive|speculative|purgeable):/ {gsub(/\./, "", $NF); s += $NF} END {printf "%d", s * ps / 1048576}')
+    }
 
     # Sets HARD (reasons that stop a job at once), SOFT (reasons that stop it after two checks), ROWS (report).
-    MEMORY_MODE=warning
+    MEMORY_MODE=warning; NEEDS_MB=0
     evaluate() {
       HARD=; SOFT=; ROWS=
       local need=$((IDLE_MINUTES * 60)) cpu_lim=$((NCPU * BUSY_CPU_PERCENT)) gpu
-      probe_input; probe_power; probe_cpu; probe_gpu; probe_mem; probe_thermal; probe_video; probe_pause
+      probe_input; probe_power; probe_cpu; probe_gpu; probe_mem; probe_thermal; probe_video; probe_pause; probe_avail
       row() { ROWS="$ROWS$(printf '  %-12s %-4s %s' "$1" "$2" "$3")"$'\n'; }
       if [ "$IN_IDLE" -ge "$need" ]; then row "real input" ok "idle $((IN_IDLE / 60)) min (needs $IDLE_MINUTES) - $IN_HOW"
       else row "real input" WAIT "used $((IN_IDLE / 60)) min ago (needs $IDLE_MINUTES min idle) - $IN_HOW"; HARD="$HARD, someone is using the Mac"; fi
@@ -249,6 +257,10 @@ env:
         critical:2) row memory ok "memory pressure warning (this job stops only at critical)";;
         *) row memory WAIT "memory pressure $([ "$MEM" = 4 ] && echo critical || echo warning)"; SOFT="$SOFT, memory is tight";;
       esac
+      if [ "$NEEDS_MB" -gt 0 ] && [ "${START_CHECK:-0}" = 1 ]; then   # a (re)start only with room for the job
+        if [ "${AVAIL:-0}" -ge "$NEEDS_MB" ]; then row "free memory" ok "$((AVAIL / 1024)) GB free (this job needs $((NEEDS_MB / 1024)))"
+        else row "free memory" WAIT "$((AVAIL / 1024)) GB free, this job needs $((NEEDS_MB / 1024)) (your apps are using the rest)"; SOFT="$SOFT, not enough free memory"; fi
+      fi
       case $THERM in nominal|fair) row temperature ok "$THERM";; *) row temperature WAIT "$THERM"; SOFT="$SOFT, the Mac is hot";; esac
       if [ -z "$VIDEO" ]; then row "video/calls" ok "nothing is keeping the display awake"
       else row "video/calls" WAIT "$VIDEO is keeping the display awake (a video or a call?)"; SOFT="$SOFT, a video or call is on"; fi
@@ -299,6 +311,7 @@ env:
         case $1 in
           --name) NAME=$2; shift 2;; --max-active) MAX_ACTIVE=$(secs "$2"); shift 2;; --max-wall) MAX_WALL=$(secs "$2"); shift 2;;
           --evict-after) EVICT=$(secs "$2"); shift 2;; --memory) MEMORY_MODE=$2; shift 2;; --nice) NICE=$2; shift 2;;
+          --needs-gb) NEEDS_MB=$(awk -v g="$2" 'BEGIN {printf "%d", g * 1024}'); shift 2;;
           --) shift; break;; *) say "idlegate: unknown option $1"; return 64;;
         esac
       done
@@ -323,7 +336,7 @@ env:
           log "job \"$NAME\": time limit reached ($((ACTIVE / 60)) min running, $(((now - T0) / 60)) min in all); stopped"
           [ -n "$PID" ] && stop_tree; cleanup; return 124
         fi
-        GPU_JOB_RUNNING=$([ "$STATE" = running ] && echo 1 || echo 0)
+        GPU_JOB_RUNNING=$([ "$STATE" = running ] && echo 1 || echo 0); START_CHECK=$([ "$STATE" = waiting ] && echo 1 || echo 0)
         evaluate
         why="$HARD${HARD:+${SOFT:+, }}$SOFT"
         if [ -z "$why" ]; then GOOD=$((GOOD + 1)); BAD=0; else GOOD=0; BAD=$((BAD + 1)); fi
@@ -331,7 +344,7 @@ env:
           waiting)
             if [ "$GOOD" -ge 2 ]; then
               RUNS=$((RUNS + 1))
-              [ $RUNS -gt 20 ] && { log "job \"$NAME\": started 20 times; giving up"; cleanup; return 75; }
+              [ $RUNS -gt 30 ] && { log "job \"$NAME\": started 30 times; giving up"; cleanup; return 75; }
               nice -n "$NICE" "$@" &
               PID=$!
               awake_on; state running
@@ -387,7 +400,9 @@ env:
     #   4. Typd Worker Input Watch in your session: notes WHEN the real keyboard/mouse/trackpad was last used, never
     #      what (needs the Input Monitoring switch; it opens that page for you);
     #   5. Applications > Typd Worker: Status, Pause, Resume, Uninstall, README.
-    # Running it again repairs/updates everything and keeps the connection. Everything it adds, the uninstaller removes.
+    #   6. optionally (asked; default yes): stay awake while plugged in (pmset -c sleep 0; the screen still sleeps).
+    # It needs nobody logged in. Running it again repairs/updates everything and keeps the connection. Everything it
+    # adds, the uninstaller removes, and it puts the sleep setting back.
 
     set -u
     APP_DIR="/Applications/Typd Worker"
@@ -431,6 +446,7 @@ env:
       say "  4. Add \"Typd Worker Input Watch\": it notes WHEN you last used the real keyboard or trackpad, never what,"
       say "     so your own automation and AI agents do not count as you. It needs one switch in System Settings."
       say "  5. Put Status, Pause, Resume and Uninstall in Applications > Typd Worker."
+      say "  It needs nobody logged in: switch the Mac on, leave it plugged in, and it works."
       say ""
       if [ $dry = 1 ]; then say "(dry run: nothing changed)"; rm -rf "$stage"; return 0; fi
 
@@ -447,6 +463,17 @@ env:
         read -r -s -p "Connection code (hidden while you paste): " code; say ""
       fi
       code=$(printf '%s' "$code" | tr -d '[:space:]')
+      local running="" jf jp
+      for jf in "$LOGDIR"/jobs/*; do
+        [ -f "$jf" ] || continue
+        jp=$(sed -n 's/^gate_pid=//p' "$jf"); ps -p "$jp" >/dev/null 2>&1 && running=$(sed -n 's/^name=//p' "$jf")
+      done
+      if [ -n "$running" ]; then
+        say ""
+        say "A job is running now (\"$running\"). Updating stops it; GitHub then marks it failed and it can be run again."
+        local go=y; [ "${TYPD_WORKER_TEST:-}" = 1 ] || read -r -p "Update now anyway? [y/N] " go
+        case $go in [yY]*) ;; *) rm -rf "$stage"; die "nothing was changed; run this again when the job is done.";; esac
+      fi
       if [ -z "$code" ] && [ $installed = 0 ] && [ "${TYPD_WORKER_TEST:-}" != 1 ]; then rm -rf "$stage"; die "no connection code, so nothing was changed."; fi
       if [ -n "$code" ] && ! printf '%s' "$code" | grep -Eq '^[A-Za-z0-9]{20,100}$'; then
         rm -rf "$stage"; die "that does not look like a connection code (letters and digits, about 29 of them). Nothing was changed."
@@ -463,12 +490,32 @@ env:
       fi
 
       say ""
+      # Staying awake while plugged in (optional): only "sleep" on power changes; the screen still turns off
+      local awake=y cur
+      cur=$(pmset -g custom 2>/dev/null | awk '/^AC Power:/ {ac = 1; next} /^[A-Za-z].*:$/ {ac = 0} ac && $1 == "sleep" {print $2; exit}')
+      [ -n "$cur" ] || cur=$(pmset -g 2>/dev/null | awk '$1 == "sleep" {print $2; exit}')
+      say ""
+      if [ "$cur" = 0 ] && [ ! -f "$TW/pmset-ac-sleep.prev" ]; then
+        awake=keep; say "This Mac already stays awake while plugged in."
+      elif [ "${TYPD_WORKER_TEST:-}" = 1 ]; then
+        awake=${TYPD_WORKER_TEST_AWAKE:-y}
+      else
+        say "Keep this Mac awake while it's plugged in? The screen still turns off. (Now: sleeps after ${cur:-?} min.)"
+        read -r -p "[Y/n] " awake
+      fi
+      case $awake in [nN]*) awake=n;; keep) ;; *) awake=y;; esac
+      if fdesetup status 2>/dev/null | grep -q 'is On'; then
+        say ""
+        say "FileVault is on (good; it stays on). After a restart, type this Mac's password once at the startup"
+        say "screen; then it can sit at the login screen and still work."
+      fi
+      say ""
       say "Now your Mac password (the one for \"$owner\"), once. Nothing shows while you type it."
       sudo -v -p "Password: " || { rm -rf "$stage"; die "the password was not accepted; nothing was changed."; }
       ( while sleep 30; do kill -0 $$ 2>/dev/null || exit; sudo -n -v 2>/dev/null; done ) &
       local keep=$!
       say ""
-      printf '%s\n' "$code" | sudo -n /bin/bash "$stage/install.sh" --root-phase "$owner" "$stage"
+      printf '%s\n' "$code" | sudo -n /bin/bash "$stage/install.sh" --root-phase "$owner" "$stage" "$awake"
       local rc=$?
       code=""
       kill $keep 2>/dev/null
@@ -491,7 +538,8 @@ env:
         say "Done. Typd Worker is installed."
       fi
       say ""
-      say "  It works only while you are away, on power, and the Mac is quiet. You do not need to do anything."
+      say "  It works only while nobody uses the Mac, it is plugged in, and quiet. Nobody needs to be logged in."
+      say "  Keep the lid open (or an external display on): a closed MacBook sleeps."
       say "  See what it is doing:   Applications > Typd Worker > Typd Worker Status   (Terminal: typd-worker status)"
       say "  Pause it / resume it:   Applications > Typd Worker > Pause / Resume        (typd-worker pause / resume)"
       say "  Remove everything:      Applications > Typd Worker > Uninstall Typd Worker"
@@ -537,7 +585,7 @@ env:
 
     # ================================================================================================ as root
     root_phase() {
-      local owner=$1 stage=$2 code=""
+      local owner=$1 stage=$2 awake=${3:-keep} code=""
       IFS= read -r code || true
       . "$stage/worker.conf"
       local W=$WORKER_USER H=/Users/$WORKER_USER
@@ -578,7 +626,15 @@ env:
       install -d -o root -g wheel -m 755 "$TW" "$TW/bin" /usr/local/bin "$SHARED"
       local f
       for f in idlegate typd-worker status.sh runner-service; do install -o root -g wheel -m 755 "$stage/$f" "$TW/bin/$f"; done
-      { grep -v '^OWNER_USER=' "$stage/worker.conf"; echo "OWNER_USER=$owner"; } > "$TW/worker.conf"
+      local keep_repo="" keep_name="" keep_labels=""
+      if [ -z "$code" ] && [ -f "$TW/worker.conf" ]; then   # an update: the registration stays, so do its name and labels
+        keep_repo=$(sed -n 's/^REPO_URL=//p' "$TW/worker.conf"); keep_labels=$(sed -n 's/^RUNNER_LABELS=//p' "$TW/worker.conf")
+        keep_name=$(sed -n 's/.*"agentName": *"\([^"]*\)".*/\1/p' "$R/.runner" 2>/dev/null | head -1)
+        [ -n "$keep_name" ] || keep_name=$(sed -n 's/^RUNNER_NAME=//p' "$TW/worker.conf")
+      fi
+      { grep -vE '^(OWNER_USER|REPO_URL|RUNNER_NAME|RUNNER_LABELS)=' "$stage/worker.conf"
+        echo "REPO_URL=${keep_repo:-$REPO_URL}"; echo "RUNNER_NAME=${keep_name:-$RUNNER_NAME}"
+        echo "RUNNER_LABELS=${keep_labels:-$RUNNER_LABELS}"; echo "OWNER_USER=$owner"; } > "$TW/worker.conf"
       chown root:wheel "$TW/worker.conf"; chmod 644 "$TW/worker.conf"
       install -o root -g wheel -m 644 "$stage/README.md" "$TW/README.md"
       install -o root -g wheel -m 644 "$stage/input-watch.swift" "$TW/input-watch.swift"
@@ -598,6 +654,7 @@ env:
       install -o root -g admin -m 644 "$stage/README.md" "$APP_DIR/README.md"
 
       step "Typd Worker Input Watch ($TW/Typd Worker Input Watch.app)"
+      rm -rf "$TW/TypdInputWatch.app"   # the first kit's name for the same program
       local A="$TW/Typd Worker Input Watch.app" want got
       want=$(tr -d ' \n' < "$stage/typd-input-watch.sha256")
       got=$(shasum -a 256 "$stage/typd-input-watch" | cut -d' ' -f1)
@@ -669,6 +726,17 @@ env:
         if tail -c +$((mark + 1)) "$LOGDIR/runner.log" | grep -q 'Listening for Jobs'; then say "  connected to GitHub, waiting for jobs"
         else say "  not confirmed yet (it keeps trying; Typd Worker Status shows it)"; fi
       fi
+      local prevf=$TW/pmset-ac-sleep.prev now_sleep
+      now_sleep=$(pmset -g custom 2>/dev/null | awk '/^AC Power:/ {ac = 1; next} /^[A-Za-z].*:$/ {ac = 0} ac && $1 == "sleep" {print $2; exit}')
+      [ -n "$now_sleep" ] || now_sleep=$(pmset -g 2>/dev/null | awk '$1 == "sleep" {print $2; exit}')
+      if [ "$awake" = y ]; then
+        step "Staying awake while plugged in (pmset -c sleep 0; display sleep and battery settings unchanged)"
+        [ -f "$prevf" ] || echo "${now_sleep:-1}" > "$prevf"   # the owner's own value, put back by the uninstaller
+        pmset -c sleep 0 >&3 2>&1 || bad "could not change the sleep setting"
+      elif [ "$awake" = n ] && [ -f "$prevf" ]; then
+        step "Sleeping as before while plugged in (pmset -c sleep $(cat "$prevf"))"
+        pmset -c sleep "$(cat "$prevf")" >&3 2>&1 && rm -f "$prevf"
+      fi
       printf '%s [install] finished (%s)\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$rc" >&3
       printf '%s [install] installed by %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$owner" >> "$LOGDIR/worker.log"
       return $rc
@@ -690,6 +758,11 @@ env:
       local W=typdworker
       [ -r /Library/TypdWorker/worker.conf ] && W=$(sed -n 's/^WORKER_USER=//p' /Library/TypdWorker/worker.conf | head -1)
       W=${W:-typdworker}
+      if [ -f /Library/TypdWorker/pmset-ac-sleep.prev ]; then
+        local prev; prev=$(cat /Library/TypdWorker/pmset-ac-sleep.prev)
+        echo "- Putting the sleep setting back (sleep after $prev min while plugged in, as before)"
+        pmset -c sleep "$prev" >/dev/null 2>&1
+      fi
       echo "- Stopping the service and anything it runs"
       launchctl bootout "system/$DAEMON" >/dev/null 2>&1
       launchctl enable "system/$DAEMON" >/dev/null 2>&1   # forget a "stopped by you" mark
@@ -728,6 +801,7 @@ env:
       say "  - the typdworker account, with everything it downloaded (models, tools, results)"
       say "  - Typd Worker Input Watch, and its Input Monitoring entry"
       say "  - /Library/TypdWorker, its logs, /Users/Shared/TypdWorker and Applications > Typd Worker"
+      say "  and it puts the sleep setting back if Typd Worker changed it."
       say ""
       if [ "${TYPD_WORKER_YES:-}" != 1 ]; then
         read -r -p "Press Enter to remove Typd Worker completely (or close this window to keep it). " _
@@ -795,6 +869,7 @@ env:
   F_SRC_STATUS_SH: |
     #!/bin/bash
     # typd-worker status: what Typd Worker is doing right now, and why, in plain words. Needs no password.
+    # The first line says it at a glance: Ready / Working / Paused / Asleep risk / Off / Not connected.
     CONF=${TYPD_WORKER_CONF:-/Library/TypdWorker/worker.conf}
     WORKER_USER=typdworker; SHARED=/Users/Shared/TypdWorker; LOGDIR=/Library/Logs/TypdWorker
     [ -r "$CONF" ] || { echo "Typd Worker is not installed on this Mac."; exit 1; }
@@ -802,42 +877,71 @@ env:
     BIN=$(cd "$(dirname "$0")" && pwd)
     ago() { local d=$(( $(date +%s) - $1 )); [ $d -lt 90 ] && echo "${d} s" || { [ $d -lt 7200 ] && echo "$((d / 60)) min" || echo "$((d / 3600)) h"; }; }
     kv() { sed -n "s/^$1=//p" "$2" 2>/dev/null | head -1; }
+    row() { printf '  %-12s %s\n' "$1" "$2"; }
 
-    echo "Typd Worker - $(date '+%a %d %b %H:%M')"
-    # 1. the connection to GitHub
+    # the facts
     listener=$(pgrep -u "$WORKER_USER" -f Runner.Listener 2>/dev/null | head -1)
     service=$(pgrep -u "$WORKER_USER" -f runner-service 2>/dev/null | head -1)
     last=$(grep -E 'Listening for Jobs|Connected to GitHub|Running job|completed with result|Unauthorized|Failed to create session|registration has been deleted|not connected to GitHub|An error occurred|Retrying' "$LOGDIR/runner.log" "$LOGDIR/worker.log" 2>/dev/null | tail -1 | sed 's/^[^:]*://')
-    if [ -n "$listener" ]; then conn="on - connected to GitHub as $RUNNER_NAME, waiting for jobs"
-    elif [ -n "$service" ]; then conn="starting, or not connected - last note: ${last:-none}"
-    elif launchctl print-disabled system 2>/dev/null | grep -qE '"com.typd.worker.runner" => (true|disabled)'; then conn="OFF - stopped by you (typd-worker start turns it on)"
-    else conn="off - not running (last note: ${last:-none})"; fi
-    case $last in *Unauthorized*|*"registration has been deleted"*|*"Failed to create session"*) conn="$conn. GitHub refused the connection: a new connection code is needed (run the installer again).";; esac
-    printf '  %-12s %s\n' "Connection" "$conn"
-    # 2. the owner's pause
-    [ -e "$SHARED/control/paused" ] && p="PAUSED by you since $(date -r "$(stat -f %m "$SHARED/control/paused")" '+%a %H:%M') - typd-worker resume" || p="not paused"
-    printf '  %-12s %s\n' "Your pause" "$p"
-    # 3. jobs
+    disabled=no; launchctl print-disabled system 2>/dev/null | grep -qE '"com.typd.worker.runner" => (true|disabled)' && disabled=yes
+    paused=no; [ -e "$SHARED/control/paused" ] && paused=yes
+    chk=$("$BIN/idlegate" check 2>&1); verdict=$(printf '%s\n' "$chk" | sed -n 's/^verdict: //p')
+    battery=no; pmset -g batt 2>/dev/null | head -1 | grep -q "Battery Power" && battery=yes
+    ac_sleep=$(pmset -g custom 2>/dev/null | awk '/^AC Power:/ {ac = 1; next} /^[A-Za-z].*:$/ {ac = 0} ac && $1 == "sleep" {print $2; exit}')
+    [ -n "$ac_sleep" ] || ac_sleep=$(pmset -g 2>/dev/null | awk '$1 == "sleep" {print $2; exit}')
+    fv=$(fdesetup status 2>/dev/null | head -1)
+    job=""; jobstate=""
+    for f in "$LOGDIR"/jobs/*; do
+      [ -f "$f" ] || continue
+      ps -p "$(kv gate_pid "$f")" >/dev/null 2>&1 || continue   # (kill -0 cannot test another account's process)
+      job=$(kv name "$f"); jobstate=$(kv state "$f")
+      [ "$jobstate" = running ] && break
+    done
+
+    # at a glance
+    if [ -z "$listener" ] && [ "$disabled" = yes ]; then head="Off: stopped by you (typd-worker start turns it on)"
+    elif [ -z "$listener" ]; then head="Not connected: ${last:-starting up} (it keeps trying)"
+    elif [ "$battery" = yes ]; then head="Asleep risk: on battery - plug it in (nothing runs on battery, and the Mac may sleep)"
+    elif [ "$paused" = yes ]; then head="Paused: by you (typd-worker resume)"
+    elif [ "$jobstate" = running ]; then head="Working: $job"
+    elif [ "${verdict#idle}" = "$verdict" ]; then head="Paused: in use - ${verdict#wait - }"
+    else head="Ready: waiting for work"; fi
+    case $last in *Unauthorized*|*"registration has been deleted"*|*"Failed to create session"*)
+      head="Not connected: GitHub refused the connection; a new connection code is needed (run the installer again)";; esac
+    echo "Typd Worker - $(date '+%a %d %b %H:%M')"
+    echo "  >> $head"
+    echo
+
+    # the details
+    if [ -n "$listener" ]; then row "Connection" "connected to GitHub as $RUNNER_NAME, waiting for jobs"
+    elif [ -n "$service" ]; then row "Connection" "starting, or not connected - last note: ${last:-none}"
+    else row "Connection" "not running${last:+ (last note: $last)}"; fi
+    [ "$paused" = yes ] && row "Your pause" "PAUSED by you since $(date -r "$(stat -f %m "$SHARED/control/paused")" '+%a %H:%M') - typd-worker resume" || row "Your pause" "not paused"
     n=0
     for f in "$LOGDIR"/jobs/*; do
       [ -f "$f" ] || continue
-      pid=$(kv gate_pid "$f"); kill -0 "$pid" 2>/dev/null || continue
-      n=$((n + 1)); st=$(kv state "$f"); why=$(kv why "$f")
-      printf '  %-12s "%s": %s for %s%s (running time so far %s min)\n' "Job" "$(kv name "$f")" "$st" "$(ago "$(kv since "$f")")" "${why:+ - $why}" "$(( $(kv active_s "$f") / 60 ))"
-      printf '  %-12s %s\n' "" "$(kv run "$f")"
+      pid=$(kv gate_pid "$f"); ps -p "$pid" >/dev/null 2>&1 || continue
+      n=$((n + 1)); why=$(kv why "$f")
+      printf '  %-12s "%s": %s for %s%s (running time so far %s min)\n' "Job" "$(kv name "$f")" "$(kv state "$f")" "$(ago "$(kv since "$f")")" "${why:+ - $why}" "$(( $(kv active_s "$f") / 60 ))"
+      row "" "$(kv run "$f")"
     done
-    [ $n -eq 0 ] && printf '  %-12s %s\n' "Job" "none - nothing of Typd Worker is running besides the connection"
-    # 4. the idle check
-    echo "  Right now a job $( "$BIN/idlegate" check > "${TMPDIR:-/tmp}/tw-check.$$" 2>&1 && echo "MAY run (you are away and the Mac is quiet)" || echo "would WAIT"):"
-    sed 's/^/  /' "${TMPDIR:-/tmp}/tw-check.$$" | grep -v '^  verdict'; rm -f "${TMPDIR:-/tmp}/tw-check.$$"
-    # 5. the input watch
+    [ $n -eq 0 ] && row "Job" "none - nothing of Typd Worker is running besides the connection"
+    echo "  Right now a job $( [ "${verdict#idle}" != "$verdict" ] && echo "MAY run (nobody is using the Mac and it is quiet)" || echo "would WAIT"):"
+    printf '%s\n' "$chk" | grep -v '^verdict' | sed 's/^/  /'
     f=$SHARED/input/activity
     if [ -r "$f" ] && [ $(( $(date +%s) - $(kv heartbeat "$f") )) -le 180 ]; then
       if [ "$(kv access "$f")" = granted ]; then w="on - real keyboard/mouse/trackpad only; it sees $(kv devices_counted "$f") device(s), ignores $(kv devices_ignored "$f")"
-      else w="running, but the Input Monitoring switch is off (System Settings > Privacy & Security > Input Monitoring > Typd Worker Input Watch); using the simpler check"; fi
-    else w="not running (it runs while you are logged in); using the simpler check"; fi
-    printf '  %-12s %s\n' "Input watch" "$w"
-    [ -r "$LOGDIR/disk-kb" ] && printf '  %-12s %s\n' "Disk used" "$(awk '{printf "%.1f GB", $1 / 1048576}' "$LOGDIR/disk-kb") by the typdworker account (models and tools it downloaded; the uninstaller removes it)"
+      else w="running, but its Input Monitoring switch is off (System Settings > Privacy & Security > Input Monitoring > Typd Worker Input Watch); using the simpler check"; fi
+    else w="not running (it runs while someone is logged in; at the login window the Mac counts as unused)"; fi
+    row "Input watch" "$w"
+    case $ac_sleep in
+      0) row "Sleep" "stays awake while plugged in (the screen still turns off)";;
+      "") ;;
+      *) row "Sleep" "sleeps after $ac_sleep min without use, even plugged in: a job stops while it sleeps (the installer can change this)";;
+    esac
+    row "Lid" "keep it open (or use an external display): a closed MacBook sleeps"
+    case $fv in *"is On"*) row "FileVault" "on: after a restart, type the Mac's password once at the startup screen; then it works logged in or at the login screen";; esac
+    [ -r "$LOGDIR/disk-kb" ] && row "Disk used" "$(awk '{printf "%.1f GB", $1 / 1048576}' "$LOGDIR/disk-kb") by the typdworker account (models and tools it downloaded; the uninstaller removes it)"
     echo
     echo "Recent log ($LOGDIR/worker.log):"
     tail -n 8 "$LOGDIR/worker.log" 2>/dev/null | sed 's/^/  /'
@@ -1379,6 +1483,35 @@ env:
     "$G" run --name test7 --memory ignore -- true >/dev/null 2>&1 && ok "memory ignore: runs at warning" || bad "memory ignore"
     "$G" run --name test8 --memory critical -- true >/dev/null 2>&1 && ok "memory critical: runs at warning" || bad "memory critical"
 
+    # 9. "boot it and it works": nobody logged in / the login window, a locked screen, a stale or missing input watch
+    idle; rm -f "$F/input_idle"; echo 5 > "$F/hid"; echo no > "$F/locked"
+    export TYPD_ACTIVITY=$T/activity; rm -f "$T/activity"
+    echo root > "$F/console"
+    "$G" check > "$T/c.out"; [ $? = 0 ] && grep -q 'nobody is logged in' "$T/c.out" && ok "login window (no session, no input watch): idle" || { bad "login window"; cat "$T/c.out"; }
+    echo someone > "$F/console"
+    "$G" check > "$T/c.out"; [ $? = 1 ] && grep -q 'HIDIdleTime' "$T/c.out" && ok "logged in, input 5 s ago, no input watch: waits" || { bad "logged in, recent input"; cat "$T/c.out"; }
+    echo yes > "$F/locked"
+    "$G" check > "$T/c.out"; [ $? = 0 ] && grep -q 'screen is locked' "$T/c.out" && ok "screen locked: idle" || { bad "locked"; cat "$T/c.out"; }
+    echo no > "$F/locked"; now=$(date +%s)
+    printf 'version=1\nstarted=%s\nheartbeat=%s\naccess=granted\nlast_keyboard=%s\nlast_pointer=0\n' $((now - 3600)) "$now" $((now - 60)) > "$T/activity"
+    "$G" check > "$T/c.out"; [ $? = 1 ] && grep -q 'hardware watch: keyboard' "$T/c.out" && ok "input watch: a real key 1 min ago waits" || { bad "watch recent"; cat "$T/c.out"; }
+    printf 'version=1\nstarted=%s\nheartbeat=%s\naccess=granted\nlast_keyboard=%s\nlast_pointer=0\n' $((now - 7200)) "$now" $((now - 1200)) > "$T/activity"
+    echo 1 > "$F/hid"
+    "$G" check > "$T/c.out"; [ $? = 0 ] && ok "input watch: 20 min without real input is idle although automation input was 1 s ago" || { bad "watch idle"; cat "$T/c.out"; }
+    printf 'version=1\nstarted=%s\nheartbeat=%s\naccess=granted\nlast_keyboard=%s\nlast_pointer=0\n' $((now - 7200)) $((now - 900)) $((now - 60)) > "$T/activity"
+    echo root > "$F/console"
+    "$G" check > "$T/c.out"; [ $? = 0 ] && grep -q 'input watch: stale' "$T/c.out" && ok "logged out (watch stale): the login window counts as idle" || { bad "stale watch at login window"; cat "$T/c.out"; }
+    unset TYPD_ACTIVITY; rm -f "$F/hid" "$F/console" "$F/locked"
+
+    # 10. --needs-gb: a job waits while the owner's apps use the memory, starts when there is room
+    idle; echo 2000 > "$F/avail_mb"; rm -f "$T/count"
+    "$G" run --name test9 --needs-gb 4 -- /bin/bash -c "echo 1 >> $T/count" > "$T/run9.out" 2>&1 &
+    GP=$!
+    sleep 4; [ ! -f "$T/count" ] && grep -q 'not enough free memory' "$T/gate.log" && ok "needs-gb: waits with 2 GB free" || bad "needs-gb: started without room"
+    echo 8000 > "$F/avail_mb"; wait $GP; rc=$?
+    [ $rc = 0 ] && [ -f "$T/count" ] && ok "needs-gb: starts with 8 GB free" || bad "needs-gb: rc $rc"
+    rm -f "$F/avail_mb"
+
     echo; echo "gate log:"; sed 's/^/  /' "$T/gate.log" | tail -40
     echo; echo "RESULT: $PASS passed, $FAILN failed"
     rm -rf "$T"
@@ -1406,6 +1539,9 @@ env:
     echo "== owner: $(id -un), home $(stat -f '%Sp %Su:%Sg' "$HOME"), macOS $(sw_vers -productVersion)"
     echo "secret" > "$HOME/tw-secret.txt"; chmod 644 "$HOME/tw-secret.txt"; mkdir -p "$HOME/tw-project"; chmod 755 "$HOME/tw-project"
     OWNER_HOME_MODE=$(stat -f %Lp "$HOME")
+    ac_sleep() { pmset -g custom | awk '/^AC Power:/ {ac = 1; next} /^[A-Za-z].*:$/ {ac = 0} ac && $1 == "sleep" {print $2; exit}'; }
+    SLEEP0=$(ac_sleep); [ "$SLEEP0" != 0 ] || { sudo pmset -c sleep 7; SLEEP0=7; }   # a value to restore
+    echo "== AC sleep before: $SLEEP0 min; $(fdesetup status 2>&1 | head -1)"
 
     echo "== 1. dry run and refusals change nothing"
     /bin/bash "$I" --dry-run > "$L/dry.txt" 2>&1; rc=$?
@@ -1416,7 +1552,7 @@ env:
     nocheck "a refused code created nothing" id $W
 
     echo "== 2. install (fake code: everything installed, GitHub refuses the connection)"
-    TYPD_WORKER_TEST_CODE=$FAKE TYPD_WORKER_TEST_OPEN=1 TYPD_WORKER_TEST_WAIT=20 /bin/bash "$I" > "$L/install1.txt" 2>&1; rc=$?
+    TYPD_WORKER_TEST_CODE=$FAKE TYPD_WORKER_TEST_OPEN=1 TYPD_WORKER_TEST_WAIT=20 TYPD_WORKER_TEST_AWAKE=y /bin/bash "$I" > "$L/install1.txt" 2>&1; rc=$?
     shot settings-input-monitoring
     cat "$L/install1.txt"
     [ $rc = 3 ] && ok "install: finished, reports the code was not accepted (rc 3)" || bad "install rc $rc (want 3)"
@@ -1426,6 +1562,8 @@ env:
     sudo grep -rlI "$FAKE" /Library/TypdWorker /Library/Logs/TypdWorker /Users/Shared/TypdWorker /Users/$W /Library/LaunchDaemons "$HOME/Library/LaunchAgents" "/Applications/Typd Worker" 2>/dev/null > "$L/code-hits.txt"
     [ ! -s "$L/code-hits.txt" ] && ok "the code is in no file" || { bad "the code was written to: $(cat "$L/code-hits.txt")"; }
 
+    [ "$(ac_sleep)" = 0 ] && [ "$(cat /Library/TypdWorker/pmset-ac-sleep.prev 2>/dev/null)" = "$SLEEP0" ] && ok "keep awake: AC sleep 0, the old value ($SLEEP0) kept" || bad "keep awake: sleep $(ac_sleep), prev $(cat /Library/TypdWorker/pmset-ac-sleep.prev 2>&1)"
+    pmset -g custom | grep -E "^(AC|Battery) Power:|^ (sleep|displaysleep) " | sed "s/^/  /"
     echo "== 3. the account"
     check "account exists" id $W
     [ "$(dscl . -read /Users/$W UserShell | awk '{print $2}')" = /usr/bin/false ] && ok "no login shell" || bad "login shell"
@@ -1466,6 +1604,8 @@ env:
     check "four double-click files and the README in Applications" test -x "/Applications/Typd Worker/Uninstall Typd Worker.command" -a -x "/Applications/Typd Worker/Typd Worker Status.command" -a -f "/Applications/Typd Worker/README.md"
     typd-worker status > "$L/status1.txt" 2>&1; cat "$L/status1.txt"
     check "typd-worker status works for the owner" grep -q 'Right now a job' "$L/status1.txt"
+    grep -q '>> Not connected' "$L/status1.txt" && ok "status headline: Not connected (the fake code)" || bad "status headline: $(grep '>>' "$L/status1.txt")"
+    grep -q 'Sleep        stays awake while plugged in' "$L/status1.txt" && ok "status shows it stays awake" || bad "status sleep line"
     typd-worker pause; check "pause: flag set without a password" test -e /Users/Shared/TypdWorker/control/paused
     typd-worker status | grep -q 'PAUSED by you' && ok "status shows the pause" || bad "status pause"
     sudo -n -u $W /Library/TypdWorker/bin/idlegate check > "$L/check-paused.txt" 2>&1; grep -q 'paused by the owner' "$L/check-paused.txt" && ok "the gate (as $W) sees the pause" || bad "gate pause"
@@ -1476,7 +1616,7 @@ env:
     ps -U "$(id -u $W)" -o pid=,comm= 2>/dev/null | sed 's/^/  after stop: /'
     [ -z "$(ours)" ] && ok "stop: nothing of Typd Worker runs (macOS's own per-account agents aside)" || bad "stop: still running: $(ours | tr '\n' ' ')"
     sudo launchctl print-disabled system | grep -E 'com.typd.worker.runner' | head -2
-    typd-worker status | grep -q 'OFF - stopped by you' && ok "status shows it is off" || bad "status off"
+    typd-worker status | grep -q '>> Off: stopped by you' && ok "status headline: Off" || bad "status off"
     typd-worker start; sleep 4
     [ -n "$(pgrep -u $W -f runner-service)" ] && ok "start: running again" || bad "start"
 
@@ -1513,11 +1653,16 @@ env:
     fi
 
     echo "== 7. run again (repair; no new code: keeps everything)"
+    # a runner registered under another name (as the first kit's): an update must keep it
+    sudo sed -i '' 's/^RUNNER_NAME=.*/RUNNER_NAME=old-name/' /Library/TypdWorker/worker.conf
+    printf '{\n  "agentId": 1,\n  "agentName": "registered-name",\n  "poolId": 1\n}\n' | sudo -u $W tee /Users/$W/actions-runner/.runner >/dev/null
     TYPD_WORKER_TEST_CODE= /bin/bash "$I" > "$L/install2.txt" 2>&1; rc=$?
     cat "$L/install2.txt" | grep -E '^- |already|PROBLEM|Done|Almost'
-    [ $rc = 3 ] && ok "second run finished (rc 3: still not connected)" || bad "second run rc $rc"
+    [ $rc = 0 ] || [ $rc = 3 ] && ok "second run (an update, no code) finished (rc $rc)" || bad "second run rc $rc"
     grep -q 'already installed (unchanged' "$L/install2.txt" && ok "input watch kept as it was (its switch stays)" || bad "input watch reinstalled"
     [ "$(dscl . -list /Users | grep -cx $W)" = 1 ] && ok "still one account" || bad "accounts"
+    grep -q '^RUNNER_NAME=registered-name$' /Library/TypdWorker/worker.conf && ok "update keeps the registered runner name" || bad "runner name: $(grep RUNNER_NAME /Library/TypdWorker/worker.conf)"
+    sudo rm -f /Users/$W/actions-runner/.runner
 
     echo "== 8. Gatekeeper: what the owner meets when the file comes from the internet"
     Q=$L/gk; mkdir -p "$Q"; cp "$I" "$Q/Install Typd Worker.command"; cp "$D/TypdWorker.zip" "$Q/"
@@ -1552,6 +1697,7 @@ env:
     nocheck "agent gone" launchctl print "gui/$(id -u)/com.typd.worker.inputwatch"
     [ -z "$(pgrep -u $W 2>/dev/null)" ] && ok "no processes left" || bad "processes left"
     check "the owner's files untouched" test -f "$HOME/tw-secret.txt"
+    [ "$(ac_sleep)" = "$SLEEP0" ] && ok "uninstall put AC sleep back ($SLEEP0 min)" || bad "AC sleep after uninstall: $(ac_sleep), want $SLEEP0"
 
     echo "== 10. install and uninstall once more (a clean cycle)"
     TYPD_WORKER_TEST_CODE=$FAKE /bin/bash "$I" > "$L/install3.txt" 2>&1; rc=$?
@@ -1650,6 +1796,35 @@ env:
       done
       [ "$(gh_api "$API/repos/$GITHUB_REPOSITORY/releases/$rid" | jq -r .draft)" = true ]
     }
+
+    # ensure_app DIR: Typd's shipped Mac app (the dmg, cached and checked) unpacked into DIR; sets APP, APP_ASAR, LLAMA_SERVER
+    ensure_app() {
+      : "${DMG_URL:=https://typd-collect.mehmetdedeler.com/download/Typd-0.2.11-mac-arm64.dmg}"
+      : "${DMG_SHA:=e1d7f4bde9e10f8810f9a9a1555be18e4b01769157761475cd64625aa2806c5b}"
+      local d=$1 dmg=$CACHE/app/$(basename "$DMG_URL")
+      if [ -n "${DMG_FILE:-}" ] && [ ! -f "$dmg.ok" ]; then
+        mkdir -p "$CACHE/app"; cp "$DMG_FILE" "$dmg.part"; mv "$dmg.part" "$dmg"
+        [ "$(shasum -a 256 "$dmg" | cut -d' ' -f1)" = "$DMG_SHA" ] && echo "$DMG_SHA" > "$dmg.ok"
+      fi
+      fetch "$DMG_URL" "$dmg" "$DMG_SHA" || return 1
+      mkdir -p "$d/mnt"
+      hdiutil attach -nobrowse -noautoopen -readonly -mountpoint "$d/mnt" "$dmg" > "$d/attach.txt" 2>&1 || { cat "$d/attach.txt"; note "cannot open the dmg"; return 1; }
+      ditto "$d/mnt/Typd.app" "$d/Typd.app"; hdiutil detach "$d/mnt" -quiet; rmdir "$d/mnt" 2>/dev/null
+      APP=$d/Typd.app/Contents/MacOS/Typd
+      export APP_ASAR=$d/Typd.app/Contents/Resources/app.asar
+      LLAMA_SERVER=$d/Typd.app/Contents/Resources/llama/llama-server
+      echo "Typd $(defaults read "$d/Typd.app/Contents/Info.plist" CFBundleShortVersionString), dmg sha256 $DMG_SHA"
+    }
+    # ensure_model full|light [LOG]: the model through the app's own updater (public route, signed manifest, every
+    # sha256 checked), cached; prints its folder. Needs ensure_app first and $J (the jobs folder, for bench.js).
+    ensure_model() {
+      local v=$1 m=${TYPD_MODELS:-$CACHE/models} log=${2:-/dev/null}
+      if ! ls -d "$m/$v"/*/ 2>/dev/null | grep -qv partial; then
+        note "model $v through the app's updater (public route, signed manifest, sha256 checked)" >&2
+        ELECTRON_RUN_AS_NODE=1 perl -e 'alarm shift; exec @ARGV' 3600 "$APP" "$J/bench.js" fetch "$v" "$m/$v" > "$log" 2>&1 || { tail -5 "$log" >&2; return 1; }
+      fi
+      ls -d "$m/$v"/*/ 2>/dev/null | grep -v partial | head -1
+    }
   F_JOBS_BENCH_SH: |
     #!/bin/bash
     # Job (a): Typd on a real Apple-silicon Mac. The shipped app's own pipeline (its llama.cpp on the real Metal GPU),
@@ -1668,14 +1843,12 @@ env:
     . "$J/lib.sh"
     OUT=${1:?output folder}
     : "${MODES:=p2d_low p2d_normal light_low}" "${SETS:=A B}" "${IDLE_S:=30}" "${PHASE:=main}" "${SQUEEZE_GB:=8}" "${CLIPS:=all}"
-    : "${DMG_URL:=https://typd-collect.mehmetdedeler.com/download/Typd-0.2.11-mac-arm64.dmg}"
-    : "${DMG_SHA:=e1d7f4bde9e10f8810f9a9a1555be18e4b01769157761475cd64625aa2806c5b}"
     JFK_URL=https://raw.githubusercontent.com/ggml-org/whisper.cpp/master/samples/jfk.wav
     JFK_SHA=59dfb9a4acb36fe2a2affc14bacbee2920ff435cb13cc314a08c13f66ba7860e
     RADIO_URL=https://upload.wikimedia.org/wikipedia/commons/2/22/George_W._Bush%27s_weekly_radio_address_%28November_1%2C_2008%29.oga
     RADIO_SHA=b844a36b9b0c0d777c64f1d62356bf0b6cad6a0f753627f5a7e7abd17c843f0c
     L=$OUT/$PHASE
-    mkdir -p "$L"
+    rm -rf "$L"; mkdir -p "$L"   # a pass the gate stopped starts again clean
     T=$(mktemp -d "${TMPDIR:-/tmp}/typd-bench.XXXXXX")
     finish() {
       touch "$L/stop"; sleep 2
@@ -1697,16 +1870,9 @@ env:
       cat "$OUT/machine.txt"
     fi
 
-    note "the app: $(basename "$DMG_URL")"
-    dmg=$CACHE/app/$(basename "$DMG_URL")
-    if [ -n "${DMG_FILE:-}" ] && [ ! -f "$dmg.ok" ]; then mkdir -p "$CACHE/app"; cp "$DMG_FILE" "$dmg.part"; mv "$dmg.part" "$dmg"; [ "$(shasum -a 256 "$dmg" | cut -d' ' -f1)" = "$DMG_SHA" ] && echo "$DMG_SHA" > "$dmg.ok"; fi
-    fetch "$DMG_URL" "$dmg" "$DMG_SHA" || exit 1
-    mkdir -p "$T/mnt"
-    hdiutil attach -nobrowse -noautoopen -readonly -mountpoint "$T/mnt" "$dmg" > "$T/attach.txt" 2>&1 || { cat "$T/attach.txt"; note "cannot open the dmg"; exit 1; }
-    ditto "$T/mnt/Typd.app" "$T/Typd.app" && hdiutil detach "$T/mnt" -quiet; rmdir "$T/mnt" 2>/dev/null
-    APP=$T/Typd.app/Contents/MacOS/Typd
-    export APP_ASAR=$T/Typd.app/Contents/Resources/app.asar
-    echo "Typd $(defaults read "$T/Typd.app/Contents/Info.plist" CFBundleShortVersionString), dmg sha256 $DMG_SHA" | tee "$OUT/app.txt"
+    note "the app"
+    ensure_app "$T" | tee "$OUT/app.txt"; [ -x "$T/Typd.app/Contents/MacOS/Typd" ] || exit 1
+    APP=$T/Typd.app/Contents/MacOS/Typd; export APP_ASAR=$T/Typd.app/Contents/Resources/app.asar
 
     note "speech clips"
     C=$CACHE/clips
@@ -1721,15 +1887,9 @@ env:
     fi
     CL="$CL}"
 
-    M=${TYPD_MODELS:-$CACHE/models}
-    need=""; case " $MODES " in *" p2d_"*) need="full";; esac; case " $MODES " in *" light_"*) need="$need light";; esac
-    for v in $need; do
-      if ! ls -d "$M/$v"/*/ 2>/dev/null | grep -qv partial; then
-        note "model $v through the app's updater (public route, signed manifest, sha256 checked)"
-        ELECTRON_RUN_AS_NODE=1 perl -e 'alarm shift; exec @ARGV' 3600 "$APP" "$J/bench.js" fetch "$v" "$M/$v" > "$OUT/fetch-$v.log" 2>&1 || { tail -5 "$OUT/fetch-$v.log"; exit 1; }
-      fi
-    done
-    FULL=$(ls -d "$M/full"/*/ 2>/dev/null | grep -v partial | head -1); LIGHT=$(ls -d "$M/light"/*/ 2>/dev/null | grep -v partial | head -1)
+    FULL=""; LIGHT=""
+    case " $MODES " in *" p2d_"*) FULL=$(ensure_model full "$OUT/fetch-full.log") || exit 1;; esac
+    case " $MODES " in *" light_"*) LIGHT=$(ensure_model light "$OUT/fetch-light.log") || exit 1;; esac
     mdir() { case $1 in p2d_*) echo "$FULL";; *) echo "$LIGHT";; esac; }
     mlow() { case $1 in *_low) echo 1;; *) echo 0;; esac; }
 
@@ -1753,7 +1913,9 @@ env:
       avail_mb=$(vm_stat | awk '/page size of/ {ps = $8} /^Pages (free|inactive|speculative|purgeable):/ {gsub(/\./, "", $NF); s += $NF} END {printf "%d", s * ps / 1048576}')
       hog_mb=$(( total_mb - SQUEEZE_GB * 1024 )); [ $hog_mb -gt $((avail_mb - 1024)) ] && hog_mb=$((avail_mb - 1024))
       echo "squeeze: ${total_mb} MB Mac, ${avail_mb} MB available, another process holds ${hog_mb} MB (target: ${SQUEEZE_GB} GB for everything else)" | tee "$L/squeeze.txt"
-      if [ $hog_mb -gt 1024 ]; then
+      if [ $hog_mb -lt 2048 ]; then
+        echo "skipped: less than 2 GB could be held (other apps are using the memory); run it again on a quieter Mac" | tee -a "$L/squeeze.txt"
+      else
         echo hog > "$L/phase"
         perl -e 'alarm shift; exec @ARGV' 2400 "$UV" run -q --no-project --python 3.12 python -I "$J/hog.py" "$(awk -v m="$hog_mb" 'BEGIN{printf "%.2f", m / 1024}')" > "$L/hog.out" 2>&1 &
         echo $! > "$L/hog.pid"; sleep 40; cat "$L/hog.out"
@@ -2045,6 +2207,11 @@ env:
         ;;
       run)
         shard=$2 slots=${3:-6} qcheck=${4:-0}
+        gb=$(( $(sysctl -n hw.memsize) / 1073741824 ))
+        if [ "$gb" -lt "${TYPD_LABEL_MIN_GB:-48}" ]; then
+          note "not run: this Mac has $gb GB; Gemma-4-26B-A4B Q4_K_M needs 48 GB or more (17 GB of weights, Metal's two-thirds limit). Use the Kaggle route."
+          exit 3
+        fi
         R=$(results_dir); mkdir -p "$R/out"
         ensure_uv || exit 1
         py --with requests==2.32.5 python -I "$J/label.py" --kit "$W/$shard/kit" --in "$W/$shard/in" --out "$R/out" \
@@ -2356,12 +2523,219 @@ env:
     { echo "$2 - run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"; echo
       [ -f "$R/summary.md" ] && cat "$R/summary.md"
       [ -f "$R/label_stats.json" ] && { echo '```'; cat "$R/label_stats.json"; echo '```'; }
+      [ -f "$R/teacher_stats.json" ] && { echo '```'; cat "$R/teacher_stats.json"; echo '```'; }
     } > "$body"
     tar czf "$HOME/typd-results/$tag.tar.gz" -C "$R" .
     ls -la "$HOME/typd-results/$tag.tar.gz"
     draft_release "$tag" "$2 ($GITHUB_RUN_ID)" "$body" "$HOME/typd-results/$tag.tar.gz" || { note "could not create the draft release"; exit 1; }
     note "draft release $tag created"
     rm -rf "$R" "$HOME/typd-results/$tag.tar.gz" "$body"
+  F_JOBS_TEACHER_SH: |
+    #!/bin/bash
+    # Job (c) on the Mac worker: P2d's finished text for Phase 1 clips (distillation targets for the 0.6B student).
+    # Public-corpus audio in (Emilia, NaturalVoices, YODAS2, Localized Narratives), text out; never anyone's recordings.
+    #   teacher.sh fetch SHARD          the shard (FLACs + manifest) from this private repo's prerelease teacher-in-SHARD
+    #   teacher.sh run SHARD [SLOTS]    P2d on the shipped app's llama.cpp (Metal); resumable (teacher.py)
+    # The model: the full model through the app's own updater (public route, signed manifest: p2d_1p7b), cached; or,
+    # with MODEL_RELEASE=<tag>, a private release holding model.json ({"model": ..., "mmproj": ...}) and those two files.
+    set -u
+    J=$(cd "$(dirname "$0")" && pwd)
+    . "$J/lib.sh"
+    W=$HOME/typd-work/teacher
+    case ${1:-} in
+      fetch)
+        shard=$2
+        rm -rf "$W/$shard/in"; mkdir -p "$W/$shard/in"   # outputs of an earlier run of this shard stay: it resumes
+        release_get "teacher-in-$shard" "teacher-in-$shard.tar" "$W/$shard/in.tar" || exit 1
+        tar xf "$W/$shard/in.tar" -C "$W/$shard/in" && rm -f "$W/$shard/in.tar"
+        note "shard $shard: $(wc -l < "$W/$shard/in/manifest.jsonl" | tr -d ' ') clips, $(du -sh "$W/$shard/in" | cut -f1)"
+        ;;
+      run)
+        shard=$2 slots=${3:-4}
+        R=$(results_dir); mkdir -p "$R/out"
+        T=$(mktemp -d "${TMPDIR:-/tmp}/typd-teacher.XXXXXX")
+        trap 'rm -rf "$T"' EXIT
+        ensure_uv || exit 1
+        ensure_app "$T" | tee -a "$R/app.txt"; [ -x "$T/Typd.app/Contents/MacOS/Typd" ] || exit 1
+        APP=$T/Typd.app/Contents/MacOS/Typd; export APP_ASAR=$T/Typd.app/Contents/Resources/app.asar
+        LLAMA_SERVER=$T/Typd.app/Contents/Resources/llama/llama-server
+        if [ -n "${MODEL_RELEASE:-}" ]; then
+          MD=$CACHE/teacher-models/$MODEL_RELEASE
+          if [ ! -f "$MD/.ok" ]; then
+            mkdir -p "$MD"; release_get "$MODEL_RELEASE" model.json "$MD/model.json" || exit 1
+            for k in model mmproj; do f=$(jq -r ".$k" "$MD/model.json"); release_get "$MODEL_RELEASE" "$f" "$MD/$f" || exit 1; done
+            touch "$MD/.ok"
+          fi
+        else
+          MD=$(ensure_model "${TEACHER_VARIANT:-full}" "$R/fetch-model.log") || exit 1
+        fi
+        MD=${MD%/}
+        { echo "model folder: $MD"; cat "$MD/model.json"; } | tee -a "$R/app.txt"
+        py --with soundfile==0.14.0 --with numpy==2.4.6 python -I "$J/teacher.py" --in "$W/$shard/in" --out "$W/$shard/out" \
+          --model "$MD/$(jq -r .model "$MD/model.json")" --mmproj "$MD/$(jq -r .mmproj "$MD/model.json")" \
+          --server "$LLAMA_SERVER" --slots "$slots" ${TEACHER_ARGS:-}
+        rc=$?
+        cp -R "$W/$shard/out" "$R/"
+        for f in teacher_stats.json teacher_server.log summary.md; do [ -f "$W/$shard/$f" ] && mv -f "$W/$shard/$f" "$R/"; done
+        exit $rc
+        ;;
+      *) sed -n '2,7p' "$0"; exit 64;;
+    esac
+  F_JOBS_TEACHER_PY: |
+    """Job (c): P2d writes its finished text for Phase 1 clips, the distillation targets for the 0.6B student.
+    The request is eval/local_eval.py's (the research PC's own decode): no system prompt, the clip as WAV, the assistant
+    prefilled with "language English<asr_text>", temperature 0, up to 1024 tokens; llama-server is the one inside the
+    shipped Typd app (its llama.cpp with Typd's patches), on Metal, on 127.0.0.1 only. Audio in, text out.
+
+        teacher.py --in SHARD_DIR --out OUT_DIR --model GGUF --mmproj GGUF --server LLAMA_SERVER [--slots 4]
+
+    SHARD_DIR: manifest.jsonl ({id, source, duration_s, audio: "audio/<id>.flac"}) and the FLACs (16 kHz mono).
+    OUT_DIR/teacher.jsonl: {id, source, duration_s, teacher, lang, model, ms, out_tok}; resumable (ids already written are
+    skipped). OUT_DIR/../teacher_stats.json: throughput (clips/h, audio hours per hour) and the estimate for all of
+    Phase 1 (92,085 clips, 581.4 h in data/author/inputs_p1/_index.json).
+    """
+    import argparse, base64, hashlib, io, json, os, re, socket, subprocess, sys, threading, time, urllib.request
+    from concurrent.futures import ThreadPoolExecutor
+    from pathlib import Path
+
+    import soundfile as sf
+
+    T0 = time.time()
+    PHASE1_CLIPS, PHASE1_HOURS = 92085, 581.4
+
+
+    def say(*a):
+        print(time.strftime("%H:%M:%S") + f" [{time.time() - T0:6.0f}s] " + " ".join(str(x) for x in a), flush=True)
+
+
+    def wav_b64(path):
+        w, sr = sf.read(path, dtype="float32")
+        if sr != 16000:
+            raise ValueError(f"{path}: {sr} Hz, want 16000")
+        buf = io.BytesIO()
+        sf.write(buf, w, 16000, format="WAV", subtype="PCM_16")
+        return base64.b64encode(buf.getvalue()).decode(), len(w) / 16000
+
+
+    def main():
+        ap = argparse.ArgumentParser()
+        ap.add_argument("--in", dest="inp", required=True)
+        ap.add_argument("--out", required=True)
+        ap.add_argument("--model", required=True)
+        ap.add_argument("--mmproj", required=True)
+        ap.add_argument("--server", required=True)
+        ap.add_argument("--slots", type=int, default=4)
+        ap.add_argument("--ctx", type=int, default=4096, help="per slot")
+        ap.add_argument("--prefill", default="language English<asr_text>")
+        ap.add_argument("--max-tokens", type=int, default=1024)
+        ap.add_argument("--limit", type=int, default=0)
+        a = ap.parse_args()
+        inp, out = Path(a.inp), Path(a.out)
+        out.mkdir(parents=True, exist_ok=True)
+        rows = [json.loads(l) for l in open(inp / "manifest.jsonl", encoding="utf-8") if l.strip()]
+        dst = out / "teacher.jsonl"
+        done = set()
+        if dst.exists():
+            for l in open(dst, encoding="utf-8"):
+                try:
+                    done.add(json.loads(l)["id"])
+                except ValueError:
+                    pass   # a torn last line from a stopped run
+        todo = [r for r in rows if r["id"] not in done]
+        if a.limit:
+            todo = todo[: a.limit]
+        model_id = Path(a.model).name
+        say(f"{len(rows)} clips in the shard, {len(done)} already written, {len(todo)} to do; model {model_id}")
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        args = [a.server, "-m", a.model, "--mmproj", a.mmproj, "--host", "127.0.0.1", "--port", str(port), "-ngl", "99",
+                "-c", str(a.ctx * a.slots), "-np", str(a.slots), "--cache-ram", "0", "--no-webui"]
+        say("server:", " ".join(Path(x).name if "/" in x else x for x in args[1:]))
+        logf = open(out.parent / "teacher_server.log", "a")
+        p = subprocess.Popen(args, stdout=logf, stderr=subprocess.STDOUT, cwd=str(Path(a.server).parent))
+        base = f"http://127.0.0.1:{port}"
+        t = time.time()
+        while True:
+            if p.poll() is not None:
+                sys.exit(f"llama-server exited ({p.returncode}); see teacher_server.log")
+            try:
+                if urllib.request.urlopen(base + "/health", timeout=3).status == 200:
+                    break
+            except Exception:   # noqa: BLE001 - loading
+                pass
+            if time.time() - t > 600:
+                p.kill()
+                sys.exit("llama-server not ready in 10 min")
+            time.sleep(1)
+        say(f"server ready after {time.time() - t:.0f} s")
+        lock = threading.Lock()
+        stats = {"clips": 0, "audio_s": 0.0, "fail": 0, "out_tok": 0}
+
+        def one(r):
+            b64, dur = wav_b64(inp / r["audio"])
+            msgs = [{"role": "system", "content": r.get("system", "")},
+                    {"role": "user", "content": [{"type": "input_audio", "input_audio": {"data": b64, "format": "wav"}}]}]
+            if a.prefill:
+                msgs.append({"role": "assistant", "content": a.prefill})
+            body = json.dumps({"messages": msgs, "temperature": 0, "max_tokens": a.max_tokens}).encode()
+            t1 = time.time()
+            o = json.loads(urllib.request.urlopen(urllib.request.Request(base + "/v1/chat/completions", body, {"Content-Type": "application/json"}),
+                                                  timeout=600).read())
+            raw = o["choices"][0]["message"]["content"] or ""
+            lang = re.match(r"^\s*language (\w+)<asr_text>", raw)
+            text = re.sub(r"^\s*language \w+<asr_text>", "", raw).strip()
+            row = {"id": r["id"], "source": r.get("source"), "duration_s": round(dur, 3), "teacher": text,
+                   "lang": lang.group(1) if lang else ("English" if a.prefill.startswith("language English") else None),
+                   "model": model_id, "ms": round((time.time() - t1) * 1000), "out_tok": (o.get("usage") or {}).get("completion_tokens"),
+                   "finish": o["choices"][0].get("finish_reason")}
+            return row, dur
+
+        t_start = time.time()
+        with open(dst, "a", encoding="utf-8") as f, ThreadPoolExecutor(a.slots) as ex:
+            futs = [ex.submit(one, r) for r in todo]
+            for k, fu in enumerate(futs, 1):
+                try:
+                    row, dur = fu.result()
+                except Exception as e:   # noqa: BLE001 - one bad clip must not stop the shard
+                    stats["fail"] += 1
+                    say("clip failed:", todo[k - 1]["id"], repr(e)[:200])
+                    continue
+                with lock:
+                    f.write(json.dumps(row, ensure_ascii=False) + "\n")
+                    f.flush()
+                    stats["clips"] += 1; stats["audio_s"] += dur; stats["out_tok"] += row["out_tok"] or 0
+                if k % 50 == 0 or k == len(futs):
+                    el = time.time() - t_start
+                    say(f"{k}/{len(futs)} clips, {stats['audio_s'] / 3600:.2f} h of audio in {el / 60:.1f} min "
+                        f"= {stats['audio_s'] / max(el, 1):.1f}x real time, {stats['clips'] / max(el, 1) * 3600:.0f} clips/h")
+        el = time.time() - t_start
+        p.terminate()
+        try:
+            p.wait(20)
+        except subprocess.TimeoutExpired:
+            p.kill()
+        rtfx = stats["audio_s"] / max(el, 1e-9) if stats["clips"] else 0
+        cph = stats["clips"] / max(el, 1e-9) * 3600 if stats["clips"] else 0
+        st = {"shard_clips": len(rows), "written_now": stats["clips"], "failed_now": stats["fail"], "written_total": len(done) + stats["clips"],
+              "audio_hours_now": round(stats["audio_s"] / 3600, 3), "wall_minutes": round(el / 60, 1), "slots": a.slots,
+              "x_real_time": round(rtfx, 1), "clips_per_hour": round(cph), "out_tok_per_s": round(stats["out_tok"] / max(el, 1e-9), 1),
+              "model": model_id, "prefill": a.prefill,
+              "estimate_all_phase1_hours_by_audio": round(PHASE1_HOURS / rtfx, 1) if rtfx else None,
+              "estimate_all_phase1_hours_by_clips": round(PHASE1_CLIPS / cph, 1) if cph else None,
+              "machine": subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string", "hw.memsize"], capture_output=True, text=True).stdout.split("\n")[:2]}
+        (out.parent / "teacher_stats.json").write_text(json.dumps(st, indent=1), encoding="utf-8")
+        with open(out.parent / "summary.md", "a", encoding="utf-8") as f:
+            f.write(f"P2d teacher outputs: {st['written_now']} clips now ({st['written_total']} of {len(rows)} in the shard), "
+                    f"{st['audio_hours_now']} h of audio in {st['wall_minutes']} min = {st['x_real_time']}x real time, "
+                    f"{st['clips_per_hour']} clips/h, {stats['fail']} failed. All of Phase 1 (92,085 clips, 581 h) at this pace: "
+                    f"~{st['estimate_all_phase1_hours_by_audio']} h of idle time.\n")
+        say("STATS", json.dumps(st))
+        return 0 if stats["fail"] == 0 else 2
+
+
+    if __name__ == "__main__":
+        sys.exit(main())
   F_TESTS_CI_KIT_SCRIPTS_P1_AUTHOR_PY: |
     """CI stand-in for the kit's author.py (the real one is private): the same command line and output rows for what
     label.py uses, so the Mac job's plumbing (llama.cpp, model download, server, resume) is tested end to end."""
@@ -2582,7 +2956,7 @@ jobs:
           set +e
           OUT=/Users/typdworker/typd-results/$GITHUB_RUN_ID
           E="TYPD_WORKER_CONF=/Users/Shared/mr/ci-gate.conf MODES=light_low CLIPS=jfk IDLE_S=5 DMG_FILE=/Users/Shared/mr/Typd-0.2.11-mac-arm64.dmg"
-          cd /tmp && sudo -u typdworker -H env $E /Library/TypdWorker/bin/idlegate run --name "ci bench" --nice 0 --max-active 40m -- /bin/bash /Users/Shared/mr/jobs/bench.sh "$OUT" 2>&1 | tee "$L/bench-main.txt"
+          cd /tmp && sudo -u typdworker -H env $E /Library/TypdWorker/bin/idlegate run --name "ci bench" --needs-gb 2 --nice 0 --max-active 40m -- /bin/bash /Users/Shared/mr/jobs/bench.sh "$OUT" 2>&1 | tee "$L/bench-main.txt"
           a=${PIPESTATUS[0]}
           cd /tmp && sudo -u typdworker -H env $E PHASE=squeeze SQUEEZE_GB=5 SETS=A /Library/TypdWorker/bin/idlegate run --name "ci bench squeeze" --evict-after 0 --memory ignore --nice 0 --max-active 30m -- /bin/bash /Users/Shared/mr/jobs/bench.sh "$OUT" 2>&1 | tee "$L/bench-squeeze.txt"
           b=${PIPESTATUS[0]}
@@ -2659,12 +3033,18 @@ jobs:
           cd /tmp && sudo -u typdworker -H env GITHUB_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_API_URL="$GITHUB_API_URL" \
             /bin/bash /Users/Shared/mr/jobs/label.sh fetch "ci$R" "ci-kit-$R" 2>&1 | tee "$L/label-fetch.txt"
 
+      - name: Job (b) refuses on this 7 GB VM (it needs 48 GB)
+        run: |
+          set +e
+          cd /tmp; sudo -u typdworker -H /bin/bash /Users/Shared/mr/jobs/label.sh run "ci$GITHUB_RUN_ID" 2 0 2>&1 | tee "$L/label-refusal.txt"
+          test "${PIPESTATUS[0]}" = 3 && grep -q "needs 48 GB or more" "$L/label-refusal.txt"
+
       - name: Job (b) as typdworker through the gate (Gemma 3 270M stand-in, no LoRA, 3 rows), then again (resume)
         run: |
           set +e
           R=$GITHUB_RUN_ID
           for k in 1 2; do
-            cd /tmp && sudo -u typdworker -H env TYPD_WORKER_CONF=/Users/Shared/mr/ci-gate.conf GITHUB_RUN_ID="$R" LABEL_ARGS="--model-repo ggml-org/gemma-3-270m-it-GGUF --model-file gemma-3-270m-it-Q8_0.gguf --model-sha 0ef57d2c838458a1952664260dcba38e5bdda37494f3af732f06e4add24068e3" \
+            cd /tmp && sudo -u typdworker -H env TYPD_WORKER_CONF=/Users/Shared/mr/ci-gate.conf GITHUB_RUN_ID="$R" LABEL_ARGS="--model-repo ggml-org/gemma-3-270m-it-GGUF --model-file gemma-3-270m-it-Q8_0.gguf --model-sha 0ef57d2c838458a1952664260dcba38e5bdda37494f3af732f06e4add24068e3" TYPD_LABEL_MIN_GB=0 \
               /Library/TypdWorker/bin/idlegate run --name "ci label $k" --evict-after 20m --max-active 30m -- /bin/bash /Users/Shared/mr/jobs/label.sh run "ci$R" 2 0 2>&1 | tee "$L/label-run$k.txt"
             echo "run $k: ${PIPESTATUS[0]}"
           done
@@ -2691,3 +3071,94 @@ jobs:
           gh release create "macrunner-${GITHUB_RUN_ID}-label" --draft --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --title "Mac worker test label ${GITHUB_RUN_ID} (logs)" --notes "Draft: logs of the Mac worker test (label). Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
             "macrunner-label.tar.gz" $(ls "$L"/*.png "$M/typd-input-watch" 2>/dev/null)
+
+  teacher:
+    if: github.repository == 'SameRainbows/typd-app' && contains(inputs.parts, 'teacher')
+    runs-on: macos-15
+    timeout-minutes: 60
+    permissions:
+      contents: write   # the CI build's draft (the dmg), the test's input draft, the output draft, the logs
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Unpack the files under test
+        run: |
+          set -e
+          M="$RUNNER_TEMP/mr"; mkdir -p "$M" "$RUNNER_TEMP/logs"
+          while read -r v p; do [ -n "$v" ] || continue; mkdir -p "$M/$(dirname "$p")"; printf '%s' "${!v}" > "$M/$p"; done <<< "$F_MANIFEST"
+          chmod 755 "$M"/src/idlegate "$M"/src/*.sh "$M"/src/typd-worker "$M"/src/runner-service "$M"/jobs/*.sh "$M"/tests/*.sh
+          echo "M=$M" >> "$GITHUB_ENV"; echo "L=$RUNNER_TEMP/logs" >> "$GITHUB_ENV"
+          sw_vers; uname -m; sysctl -n machdep.cpu.brand_string hw.memsize hw.ncpu; /bin/bash --version | head -1
+
+      - name: Build the input watch and the installer (as for the owner, with the CI settings)
+        run: |
+          set -e
+          cd "$M"
+          swiftc -O -target arm64-apple-macos13.0 src/input-watch.swift -o typd-input-watch
+          swiftc -O tests/synth.swift -o synth
+          file typd-input-watch; otool -L typd-input-watch; shasum -a 256 typd-input-watch | tee "$L/typd-input-watch.sha256"
+          python3 build.py --src src --conf tests/ci.conf --helper typd-input-watch --readme tests/README-ci.md --out dist | tee "$L/build.txt"
+
+      - name: Install Typd Worker (fake code; everything but the GitHub connection)
+        run: |
+          set +e
+          TYPD_WORKER_TEST=1 TYPD_WORKER_TEST_CODE=TYPDTESTFAKECODE7Q3X9K2M4W8XY /bin/bash "$M/dist/Install Typd Worker.command" > "$L/install.txt" 2>&1
+          rc=$?; tail -25 "$L/install.txt"; test $rc = 3 || exit 1
+          sudo mkdir -p /Users/Shared/mr && sudo cp -R "$M/jobs" "$M/tests" /Users/Shared/mr/ && sudo chmod -R a+rX /Users/Shared/mr
+          { echo WORKER_USER=typdworker; echo IDLE_MINUTES=0; echo BUSY_CPU_PERCENT=1000; echo BUSY_GPU_PERCENT=100
+            echo CHECK_SECONDS=5; echo RESPECT_VIDEO=0; } | sudo tee /Users/Shared/mr/ci-gate.conf
+          cd /tmp && sudo -u typdworker -H env TYPD_WORKER_CONF=/Users/Shared/mr/ci-gate.conf /Library/TypdWorker/bin/idlegate check
+
+      - name: The app (the CI build draft) and a shard of public-domain speech as the Mac job gets it
+        run: |
+          set -e
+          R=$GITHUB_RUN_ID
+          gh release download build-40047208604 --repo "$GITHUB_REPOSITORY" --pattern Typd-0.2.11-mac-arm64.dmg --dir "$RUNNER_TEMP/rel"
+          sudo cp "$RUNNER_TEMP/rel/Typd-0.2.11-mac-arm64.dmg" /Users/Shared/mr/; sudo chmod 644 /Users/Shared/mr/Typd-0.2.11-mac-arm64.dmg
+          S="$RUNNER_TEMP/shard"; mkdir -p "$S/audio"
+          curl -fsSL -o "$RUNNER_TEMP/jfk.wav" https://raw.githubusercontent.com/ggml-org/whisper.cpp/master/samples/jfk.wav
+          test "$(shasum -a 256 "$RUNNER_TEMP/jfk.wav" | cut -d' ' -f1)" = 59dfb9a4acb36fe2a2affc14bacbee2920ff435cb13cc314a08c13f66ba7860e
+          for k in 1 2 3 4 5 6; do afconvert -f flac -d flac "$RUNNER_TEMP/jfk.wav" "$S/audio/ci_t$k.flac" || { python3 -m pip install -q --user --break-system-packages soundfile numpy; python3 -c "import soundfile as sf, sys; w, sr = sf.read(sys.argv[1]); sf.write(sys.argv[2], w, sr, format='FLAC')" "$RUNNER_TEMP/jfk.wav" "$S/audio/ci_t$k.flac"; }; echo "{"id": "ci_t$k", "source": "public_domain", "duration_s": 11.0, "audio": "audio/ci_t$k.flac"}" >> "$S/manifest.jsonl"; done
+          ls -la "$S/audio"; tar cf "$RUNNER_TEMP/teacher-in-ci$R.tar" -C "$S" .
+          echo "CI test input" > "$RUNNER_TEMP/notes.md"
+          export GITHUB_TOKEN="$GH_TOKEN"; . "$M/jobs/lib.sh"
+          draft_release "teacher-in-ci$R" "CI teacher input $R" "$RUNNER_TEMP/notes.md" "$RUNNER_TEMP/teacher-in-ci$R.tar"
+          cd /tmp; sudo -u typdworker -H env GITHUB_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_API_URL="$GITHUB_API_URL" \
+            /bin/bash /Users/Shared/mr/jobs/teacher.sh fetch "ci$R" 2>&1 | tee "$L/teacher-fetch.txt"
+
+      - name: Job (c) as typdworker through the gate (the light model standing in for P2d; 4 clips, then the rest = resume)
+        run: |
+          set +e
+          R=$GITHUB_RUN_ID
+          E="TYPD_WORKER_CONF=/Users/Shared/mr/ci-gate.conf GITHUB_RUN_ID=$R TEACHER_VARIANT=light DMG_FILE=/Users/Shared/mr/Typd-0.2.11-mac-arm64.dmg"
+          cd /tmp; sudo -u typdworker -H env $E TEACHER_ARGS="--limit 4" /Library/TypdWorker/bin/idlegate run --name "ci teacher 1" --needs-gb 2 --evict-after 30m --max-active 30m -- \
+            /bin/bash /Users/Shared/mr/jobs/teacher.sh run "ci$R" 2 2>&1 | tee "$L/teacher-run1.txt"
+          a=${PIPESTATUS[0]}
+          cd /tmp; sudo -u typdworker -H env $E /Library/TypdWorker/bin/idlegate run --name "ci teacher 2" --needs-gb 2 --evict-after 30m --max-active 30m -- \
+            /bin/bash /Users/Shared/mr/jobs/teacher.sh run "ci$R" 2 2>&1 | tee "$L/teacher-run2.txt"
+          b=${PIPESTATUS[0]}
+          sudo sh -c "cat /Users/typdworker/typd-work/teacher/ci$R/out/teacher.jsonl" | tee "$L/teacher-out.jsonl"
+          sudo sh -c "cat /Users/typdworker/typd-results/$R/teacher_stats.json" | tee "$L/teacher_stats.json"
+          echo "run 1: $a, run 2: $b"
+          grep -q '4 already written, 2 to do' "$L/teacher-run2.txt" && echo "resume: the second run did only the other 2"
+          test $a = 0 && test $b = 0 && test "$(wc -l < "$L/teacher-out.jsonl" | tr -d ' ')" = 6 && grep -q '4 already written, 2 to do' "$L/teacher-run2.txt"
+
+      - name: The results job's script (publish.sh as typdworker -> a draft release), then clean up
+        run: |
+          set -e
+          R=$GITHUB_RUN_ID
+          cd /tmp; sudo -u typdworker -H env GITHUB_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_RUN_ID="$R" GITHUB_SHA="$GITHUB_SHA" \
+            GITHUB_API_URL="$GITHUB_API_URL" GITHUB_SERVER_URL="$GITHUB_SERVER_URL" /bin/bash /Users/Shared/mr/jobs/publish.sh "teacher-out-ci$R" "CI test of the Mac job (c)"
+          gh release view "teacher-out-ci$R-$R" --repo "$GITHUB_REPOSITORY" --json isDraft,assets,body --jq '{isDraft, assets: [.assets[].name], body: .body[0:600]}'
+          gh release delete "teacher-in-ci$R" --yes --repo "$GITHUB_REPOSITORY"
+
+      - name: Keep the logs in a draft release (maintainers only)
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          cd "$RUNNER_TEMP"; tar czf "macrunner-teacher.tar.gz" -C "$L" .
+          gh release create "macrunner-${GITHUB_RUN_ID}-teacher" --draft --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "Mac worker test teacher ${GITHUB_RUN_ID} (logs)" --notes "Draft: logs of the Mac worker test (teacher). Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            "macrunner-teacher.tar.gz" $(ls "$L"/*.png "$M/typd-input-watch" 2>/dev/null)
