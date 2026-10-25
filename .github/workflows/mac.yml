@@ -1528,7 +1528,7 @@ env:
     echo "quarantine after ditto: $(xattr -p com.apple.quarantine "$Q/ditto/Typd Worker/Install Typd Worker.command" 2>&1)"
     echo "quarantine after unzip: $(xattr -p com.apple.quarantine "$Q/unzip/Typd Worker/Install Typd Worker.command" 2>&1)"
     check "the zip keeps the .command files executable" test -x "$Q/ditto/Typd Worker/Install Typd Worker.command"
-    open "$Q/Install Typd Worker.command"; sleep 6; shot gatekeeper-double-click
+    lim 15 open "$Q/Install Typd Worker.command" & sleep 8; shot gatekeeper-double-click   # open waits for the dialog's answer
     lim 30 osascript -e 'tell application "System Events" to get name of every window of every process whose visible is true' > "$Q/windows.txt" 2>&1; cat "$Q/windows.txt"
     lim 30 osascript -e 'tell application "System Events" to get value of static text of window 1 of process "CoreServicesUIAgent"' > "$Q/gk-text.txt" 2>&1; echo "Gatekeeper dialog text: $(cat "$Q/gk-text.txt")"
     pkill -x CoreServicesUIAgent 2>/dev/null; pkill -x Terminal 2>/dev/null
@@ -2113,7 +2113,7 @@ env:
             tgz = fetch(f"https://github.com/ggml-org/llama.cpp/releases/download/{tag}/llama-{tag}-bin-macos-arm64.tar.gz",
                         cache / "llama" / f"llama-{tag}-bin-macos-arm64.tar.gz", sha)
             with tarfile.open(tgz) as t:
-                t.extractall(d)
+                t.extractall(d, filter="data")
             exe = next(iter(sorted(d.rglob("llama-server"))))
         return exe
 
@@ -2664,9 +2664,9 @@ jobs:
               /Library/TypdWorker/bin/idlegate run --name "ci label $k" --evict-after 20m --max-active 30m -- /bin/bash /Users/Shared/mr/jobs/label.sh run "ci$R" 2 0 2>&1 | tee "$L/label-run$k.txt"
             echo "run $k: ${PIPESTATUS[0]}"
           done
-          sudo cat /Users/typdworker/typd-results/$R/out/*.jsonl | tee "$L/label-out.jsonl"
+          sudo sh -c "cat /Users/typdworker/typd-results/$R/out/*.jsonl" | tee "$L/label-out.jsonl"
           grep -q '3 were done' "$L/label-run2.txt" && echo "resume: the second run wrote nothing new"
-          test "$(sudo cat /Users/typdworker/typd-results/$R/out/*.jsonl | wc -l | tr -d ' ')" = 3
+          test "$(wc -l < "$L/label-out.jsonl" | tr -d ' ')" = 3
 
       - name: The results job's script (publish.sh as typdworker -> a draft release), then clean up
         run: |
