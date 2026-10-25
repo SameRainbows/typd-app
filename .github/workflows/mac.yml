@@ -74,7 +74,7 @@ env:
     #
     # A job may run only when ALL of these hold (checked every CHECK_SECONDS, default 60):
     #   real input   no real keyboard/mouse/trackpad use for IDLE_MINUTES (default 15). Read from the input watch
-    #                (TypdInputWatch.app, hardware devices only, so agents/automation/remote control do not count).
+    #                ("Typd Worker Input Watch", hardware devices only, so agents/automation/remote control do not count).
     #                Without it: HIDIdleTime (any input, synthetic included), or the screen locked / display asleep
     #                / nobody logged in.
     #   power        on AC power (pmset -g batt)
@@ -91,6 +91,7 @@ env:
     # Settings: /Library/TypdWorker/worker.conf. Log: /Library/Logs/TypdWorker/worker.log (readable by everyone).
 
     set -u
+    ls . >/dev/null 2>&1 || cd /   # started from a folder this account cannot open (sudo -u): work from /
     CONF=${TYPD_WORKER_CONF:-/Library/TypdWorker/worker.conf}
     WORKER_USER=typdworker; IDLE_MINUTES=15; BUSY_CPU_PERCENT=25; BUSY_GPU_PERCENT=20; CHECK_SECONDS=60
     RESPECT_VIDEO=1; SHARED=/Users/Shared/TypdWorker; LOGDIR=/Library/Logs/TypdWorker
@@ -215,9 +216,12 @@ env:
       VIDEO=
       [ "${RESPECT_VIDEO:-1}" = 1 ] || return
       if VIDEO=$(fake video); then return; fi
-      VIDEO=$(pmset -g assertions 2>/dev/null | awk '/PreventUserIdleDisplaySleep/ && /pid [0-9]+\(/ {
+      VIDEO=$(pmset -g assertions 2>/dev/null | awk '/PreventUserIdleDisplaySleep|NoDisplaySleepAssertion/ && /pid [0-9]+\(/ {
           match($0, /pid [0-9]+\(/); pid = substr($0, RSTART + 4, RLENGTH - 5); match($0, /\([^)]*\)/); print pid, substr($0, RSTART + 1, RLENGTH - 2) }' |
-        while read -r pid name; do [ "$(ps -o uid= -p "$pid" 2>/dev/null | tr -d ' ')" = "$WORKER_UID" ] || echo "$name"; done | sort -u | paste -sd, -)
+        while read -r pid name; do   # only a person's programs (a player, a call); not system services, not the worker
+          u=$(ps -o uid= -p "$pid" 2>/dev/null | tr -d ' ')
+          [ -n "$u" ] && [ "$u" -ge 500 ] && [ "$u" != "$WORKER_UID" ] && echo "$name"
+        done | sort -u | paste -sd, -)
     }
     probe_pause() { [ -e "$SHARED/control/paused" ] && PAUSED=yes || PAUSED=no; }
 
@@ -593,8 +597,8 @@ env:
       install -o root -g admin -m 755 "$stage/uninstall.command" "$APP_DIR/Uninstall Typd Worker.command"
       install -o root -g admin -m 644 "$stage/README.md" "$APP_DIR/README.md"
 
-      step "Typd Worker Input Watch ($TW/TypdInputWatch.app)"
-      local A=$TW/TypdInputWatch.app want got
+      step "Typd Worker Input Watch ($TW/Typd Worker Input Watch.app)"
+      local A="$TW/Typd Worker Input Watch.app" want got
       want=$(tr -d ' \n' < "$stage/typd-input-watch.sha256")
       got=$(shasum -a 256 "$stage/typd-input-watch" | cut -d' ' -f1)
       [ "$got" = "$want" ] || { bad "the input watch program does not match its checksum"; return 1; }
@@ -910,7 +914,7 @@ env:
       <key>Label</key><string>com.typd.worker.inputwatch</string>
       <key>ProgramArguments</key>
       <array>
-        <string>/Library/TypdWorker/TypdInputWatch.app/Contents/MacOS/typd-input-watch</string>
+        <string>/Library/TypdWorker/Typd Worker Input Watch.app/Contents/MacOS/typd-input-watch</string>
         <string>--dir</string><string>/Users/Shared/TypdWorker/input</string>
       </array>
       <key>AssociatedBundleIdentifiers</key><string>com.typd.worker.inputwatch</string>
@@ -1393,8 +1397,9 @@ env:
     check() { local what=$1; shift; if "$@" >/dev/null 2>&1; then ok "$what"; else bad "$what"; fi; }
     nocheck() { local what=$1; shift; if "$@" >/dev/null 2>&1; then bad "$what"; else ok "$what"; fi; }
     W=typdworker
-    FAKE=AAAAAAAAAAAAAAAAAAAAAAAAAAAAA   # 29 characters, the shape of a registration code; GitHub refuses it
-    shot() { screencapture -x "$L/$1.png" 2>/dev/null && echo "screenshot $1.png" || echo "no screenshot ($1)"; }
+    FAKE=TYPDTESTFAKECODE7Q3X9K2M4W8XY   # 29 characters, the shape of a registration code; GitHub refuses it
+    lim() { perl -e 'alarm shift; exec @ARGV' "$@"; }   # no step may hang on a permission prompt
+    shot() { lim 20 screencapture -x "$L/$1.png" 2>/dev/null && echo "screenshot $1.png" || echo "no screenshot ($1)"; }
 
     echo "== owner: $(id -un), home $(stat -f '%Sp %Su:%Sg' "$HOME"), macOS $(sw_vers -productVersion)"
     echo "secret" > "$HOME/tw-secret.txt"; chmod 644 "$HOME/tw-secret.txt"; mkdir -p "$HOME/tw-project"; chmod 755 "$HOME/tw-project"
@@ -1416,7 +1421,7 @@ env:
     grep -q 'did not accept the connection code' "$L/install1.txt" && ok "install: says so in plain words" || bad "install: no plain message"
     sudo cat /Library/Logs/TypdWorker/install.log > "$L/install.log" 2>&1
     grep -qiE 'http|404|not found|unauthor|invalid|failed' "$L/install.log" && ok "config.sh received the code and GitHub answered (install.log)" || bad "no sign that config.sh used the code"
-    sudo grep -rl "$FAKE" /Library/TypdWorker /Library/Logs/TypdWorker /Users/Shared/TypdWorker /Users/$W /Library/LaunchDaemons "$HOME/Library/LaunchAgents" "/Applications/Typd Worker" 2>/dev/null > "$L/code-hits.txt"
+    sudo grep -rlI "$FAKE" /Library/TypdWorker /Library/Logs/TypdWorker /Users/Shared/TypdWorker /Users/$W /Library/LaunchDaemons "$HOME/Library/LaunchAgents" "/Applications/Typd Worker" 2>/dev/null > "$L/code-hits.txt"
     [ ! -s "$L/code-hits.txt" ] && ok "the code is in no file" || { bad "the code was written to: $(cat "$L/code-hits.txt")"; }
 
     echo "== 3. the account"
@@ -1474,14 +1479,14 @@ env:
     echo "== 6. the input watch (LaunchAgent in the owner's session)"
     launchctl print "gui/$(id -u)/com.typd.worker.inputwatch" > "$L/agent.txt" 2>&1
     check "LaunchAgent loaded in gui/$(id -u)" grep -q 'state = running' "$L/agent.txt"
-    codesign -dv /Library/TypdWorker/TypdInputWatch.app 2>&1 | grep -E 'Identifier|Signature' | sed 's/^/  /'
+    codesign -dv "/Library/TypdWorker/Typd Worker Input Watch.app" 2>&1 | grep -E 'Identifier|Signature' | sed 's/^/  /'
     cat /Users/Shared/TypdWorker/input/activity 2>/dev/null; cat "$HOME/Library/Logs/TypdWorker/input-watch.log" 2>/dev/null | tail -5
     check "it writes its file" test -s /Users/Shared/TypdWorker/input/activity
     check "$W can read it" sudo -n -u $W cat /Users/Shared/TypdWorker/input/activity
-    /Library/TypdWorker/TypdInputWatch.app/Contents/MacOS/typd-input-watch --list 2>&1 | tee "$L/devices.txt"
+    "/Library/TypdWorker/Typd Worker Input Watch.app/Contents/MacOS/typd-input-watch" --list 2>&1 | tee "$L/devices.txt"
     echo "-- trying to grant Input Monitoring on this throwaway VM (TCC databases), to test the watch itself"
     for db in "$HOME/Library/Application Support/com.apple.TCC/TCC.db" "/Library/Application Support/com.apple.TCC/TCC.db"; do
-      sudo sqlite3 "$db" "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version, indirect_object_identifier, flags) VALUES ('kTCCServiceListenEvent', 'com.typd.worker.inputwatch', 0, 2, 4, 1, 'UNUSED', 0);" 2>&1 | sed "s#^#  $db: #"
+      lim 20 sudo sqlite3 "$db" "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version, indirect_object_identifier, flags) VALUES ('kTCCServiceListenEvent', 'com.typd.worker.inputwatch', 0, 2, 4, 1, 'UNUSED', 0);" 2>&1 | sed "s#^#  $db: #"
     done
     launchctl kickstart -k "gui/$(id -u)/com.typd.worker.inputwatch"; sleep 8
     acc=$(sed -n 's/^access=//p' /Users/Shared/TypdWorker/input/activity)
@@ -1490,7 +1495,7 @@ env:
       echo "-- synthetic input (CGEventPost, as an agent or automation would): does it count?"
       hid0=$(ioreg -c IOHIDSystem -r -d 1 -k HIDIdleTime | awk '/HIDIdleTime/ {printf "%d", $NF / 1e9; exit}')
       a0=$(grep -E 'last_(keyboard|pointer)' /Users/Shared/TypdWorker/input/activity | tr '\n' ' ')
-      sleep 3; "$SYNTH"; sleep 7
+      sleep 3; lim 30 "$SYNTH"; sleep 7
       hid1=$(ioreg -c IOHIDSystem -r -d 1 -k HIDIdleTime | awk '/HIDIdleTime/ {printf "%d", $NF / 1e9; exit}')
       a1=$(grep -E 'last_(keyboard|pointer)' /Users/Shared/TypdWorker/input/activity | tr '\n' ' ')
       echo "HIDIdleTime before $hid0 s, after $hid1 s; input watch before: $a0 after: $a1"
@@ -1514,9 +1519,9 @@ env:
     Q=$L/gk; mkdir -p "$Q"; cp "$I" "$Q/Install Typd Worker.command"; cp "$D/TypdWorker.zip" "$Q/"
     qa="0083;$(printf %x "$(date +%s)");Safari;$(uuidgen)"
     xattr -w com.apple.quarantine "$qa" "$Q/Install Typd Worker.command"; xattr -w com.apple.quarantine "$qa" "$Q/TypdWorker.zip"
-    spctl -a -t open --context context:primary-signature -vv "$Q/Install Typd Worker.command" > "$Q/spctl-open.txt" 2>&1; echo "spctl (open) rc $?: $(cat "$Q/spctl-open.txt")"
-    spctl -a -t execute -vv "$Q/Install Typd Worker.command" > "$Q/spctl-exec.txt" 2>&1; echo "spctl (execute) rc $?: $(cat "$Q/spctl-exec.txt")"
-    syspolicy_check distribution "$Q/Install Typd Worker.command" > "$Q/syspolicy.txt" 2>&1; echo "syspolicy_check: $(head -5 "$Q/syspolicy.txt")"
+    lim 30 spctl -a -t open --context context:primary-signature -vv "$Q/Install Typd Worker.command" > "$Q/spctl-open.txt" 2>&1; echo "spctl (open) rc $?: $(cat "$Q/spctl-open.txt")"
+    lim 30 spctl -a -t execute -vv "$Q/Install Typd Worker.command" > "$Q/spctl-exec.txt" 2>&1; echo "spctl (execute) rc $?: $(cat "$Q/spctl-exec.txt")"
+    lim 30 syspolicy_check distribution "$Q/Install Typd Worker.command" > "$Q/syspolicy.txt" 2>&1; echo "syspolicy_check: $(head -5 "$Q/syspolicy.txt")"
     mkdir -p "$Q/ditto" "$Q/unzip"
     ditto -x -k "$Q/TypdWorker.zip" "$Q/ditto"; unzip -q "$Q/TypdWorker.zip" -d "$Q/unzip"
     ls -l "$Q/ditto/Typd Worker" "$Q/unzip/Typd Worker"
@@ -1524,8 +1529,8 @@ env:
     echo "quarantine after unzip: $(xattr -p com.apple.quarantine "$Q/unzip/Typd Worker/Install Typd Worker.command" 2>&1)"
     check "the zip keeps the .command files executable" test -x "$Q/ditto/Typd Worker/Install Typd Worker.command"
     open "$Q/Install Typd Worker.command"; sleep 6; shot gatekeeper-double-click
-    osascript -e 'tell application "System Events" to get name of every window of every process whose visible is true' > "$Q/windows.txt" 2>&1; cat "$Q/windows.txt"
-    osascript -e 'tell application "System Events" to get value of static text of window 1 of process "CoreServicesUIAgent"' > "$Q/gk-text.txt" 2>&1; echo "Gatekeeper dialog text: $(cat "$Q/gk-text.txt")"
+    lim 30 osascript -e 'tell application "System Events" to get name of every window of every process whose visible is true' > "$Q/windows.txt" 2>&1; cat "$Q/windows.txt"
+    lim 30 osascript -e 'tell application "System Events" to get value of static text of window 1 of process "CoreServicesUIAgent"' > "$Q/gk-text.txt" 2>&1; echo "Gatekeeper dialog text: $(cat "$Q/gk-text.txt")"
     pkill -x CoreServicesUIAgent 2>/dev/null; pkill -x Terminal 2>/dev/null
     /bin/bash "$Q/Install Typd Worker.command" --dry-run > "$Q/bash-run.txt" 2>&1 && ok "bash <file> runs it despite the quarantine (the Terminal route)" || bad "bash route"
 
@@ -1576,6 +1581,7 @@ env:
   F_JOBS_LIB_SH: |
     # Shared by the Mac worker's jobs (sourced). Runs as typdworker: no sudo, no git, no Homebrew; /usr/bin/jq (macOS 15+).
     CACHE=${TW_CACHE:-$HOME/typd-cache}
+    cd "$HOME" 2>/dev/null || cd /   # never depend on the caller's folder (it may be one this account cannot open)
     UV_VERSION=0.13.5
     UV_SHA=743f85035a1996ecb350659e01cd9faea9709829be09b1b4b03c73eaf3c9cd73
     API=${GITHUB_API_URL:-https://api.github.com}
@@ -1723,6 +1729,7 @@ env:
     mdir() { case $1 in p2d_*) echo "$FULL";; *) echo "$LIGHT";; esac; }
     mlow() { case $1 in *_low) echo 1;; *) echo 0;; esac; }
 
+    FAILS=0
     echo baseline > "$L/phase"; rm -f "$L/stop" "$L/hog.pid"
     py python -I "$J/sampler.py" "$L/samples.jsonl" "$L/phase" "$L/stop" "$L/hog.pid" > "$L/sampler.out" 2>&1 &
     sleep 10
@@ -1732,7 +1739,8 @@ env:
       note "=== $1 free% $(sysctl -n kern.memorystatus_level) swap $(sysctl -n vm.swapusage | grep -oE 'used = [0-9.]+M')"
       cfg="{\"label\":\"$1\",\"set\":\"$2\",\"low\":\"$4\",\"modelDir\":\"${3%/}\",\"out\":\"$L/phase-$f.json\",\"clips\":$CL,\"idleS\":$IDLE_S,\"phaseFile\":\"$L/phase\"}"
       ELECTRON_RUN_AS_NODE=1 perl -e 'alarm shift; exec @ARGV' 1200 "$APP" "$J/bench.js" run "$cfg" > "$L/run-$f.out" 2> "$L/run-$f.err"
-      echo "exit $?"
+      local rc=$?
+      echo "exit $rc"; [ $rc = 0 ] || { FAILS=$((FAILS + 1)); tail -3 "$L/run-$f.err"; }
       grep -E '^(WARM|DICTATION) ' "$L/run-$f.out" | cut -c1-300
       pkill -f "$T/Typd.app/Contents/Resources/llama/llama-server" 2>/dev/null; sleep 2
     }
@@ -1745,6 +1753,7 @@ env:
         echo hog > "$L/phase"
         perl -e 'alarm shift; exec @ARGV' 2400 "$UV" run -q --no-project --python 3.12 python -I "$J/hog.py" "$(awk -v m="$hog_mb" 'BEGIN{printf "%.2f", m / 1024}')" > "$L/hog.out" 2>&1 &
         echo $! > "$L/hog.pid"; sleep 40; cat "$L/hog.out"
+        grep -q 'allocated and filled' "$L/hog.out" || { note "the memory holder did not start"; FAILS=$((FAILS + 1)); }
         for mdl in $MODES; do for set in $SETS; do one "squeeze$SQUEEZE_GB/$mdl/$set" "$set" "$(mdir "$mdl")" "$(mlow "$mdl")"; done; done
         kill "$(cat "$L/hog.pid")" 2>/dev/null; rm -f "$L/hog.pid"
       fi
@@ -1756,6 +1765,7 @@ env:
     cat "$L/summary.md"
     { echo "## $PHASE"; cat "$L/squeeze.txt" 2>/dev/null; cat "$L/summary.md"; echo; } >> "$OUT/summary.md"
     grep -lE '"err":"[^n]|failed to allocate|out of memory' "$L"/run-*.out "$L"/run-*.err 2>/dev/null && exit 2
+    [ "$FAILS" = 0 ] || { note "$FAILS run(s) failed"; exit 2; }
     exit 0
   F_JOBS_BENCH_JS: |
     'use strict';
@@ -2550,12 +2560,12 @@ jobs:
       - name: Install Typd Worker (fake code; everything but the GitHub connection)
         run: |
           set +e
-          TYPD_WORKER_TEST=1 TYPD_WORKER_TEST_CODE=AAAAAAAAAAAAAAAAAAAAAAAAAAAAA /bin/bash "$M/dist/Install Typd Worker.command" > "$L/install.txt" 2>&1
+          TYPD_WORKER_TEST=1 TYPD_WORKER_TEST_CODE=TYPDTESTFAKECODE7Q3X9K2M4W8XY /bin/bash "$M/dist/Install Typd Worker.command" > "$L/install.txt" 2>&1
           rc=$?; tail -25 "$L/install.txt"; test $rc = 3 || exit 1
           sudo mkdir -p /Users/Shared/mr && sudo cp -R "$M/jobs" "$M/tests" /Users/Shared/mr/ && sudo chmod -R a+rX /Users/Shared/mr
           { echo WORKER_USER=typdworker; echo IDLE_MINUTES=0; echo BUSY_CPU_PERCENT=1000; echo BUSY_GPU_PERCENT=100
             echo CHECK_SECONDS=5; echo RESPECT_VIDEO=0; } | sudo tee /Users/Shared/mr/ci-gate.conf
-          sudo -u typdworker -H env TYPD_WORKER_CONF=/Users/Shared/mr/ci-gate.conf /Library/TypdWorker/bin/idlegate check
+          cd /tmp && sudo -u typdworker -H env TYPD_WORKER_CONF=/Users/Shared/mr/ci-gate.conf /Library/TypdWorker/bin/idlegate check
 
       - name: Typd 0.2.11's dmg (the CI build draft = the live download)
         run: |
@@ -2568,9 +2578,9 @@ jobs:
           set +e
           OUT=/Users/typdworker/typd-results/$GITHUB_RUN_ID
           E="TYPD_WORKER_CONF=/Users/Shared/mr/ci-gate.conf MODES=light_low CLIPS=jfk IDLE_S=5 DMG_FILE=/Users/Shared/mr/Typd-0.2.11-mac-arm64.dmg"
-          sudo -u typdworker -H env $E /Library/TypdWorker/bin/idlegate run --name "ci bench" --nice 0 --max-active 40m -- /bin/bash /Users/Shared/mr/jobs/bench.sh "$OUT" 2>&1 | tee "$L/bench-main.txt"
+          cd /tmp && sudo -u typdworker -H env $E /Library/TypdWorker/bin/idlegate run --name "ci bench" --nice 0 --max-active 40m -- /bin/bash /Users/Shared/mr/jobs/bench.sh "$OUT" 2>&1 | tee "$L/bench-main.txt"
           a=${PIPESTATUS[0]}
-          sudo -u typdworker -H env $E PHASE=squeeze SQUEEZE_GB=5 SETS=A /Library/TypdWorker/bin/idlegate run --name "ci bench squeeze" --evict-after 0 --memory ignore --nice 0 --max-active 30m -- /bin/bash /Users/Shared/mr/jobs/bench.sh "$OUT" 2>&1 | tee "$L/bench-squeeze.txt"
+          cd /tmp && sudo -u typdworker -H env $E PHASE=squeeze SQUEEZE_GB=5 SETS=A /Library/TypdWorker/bin/idlegate run --name "ci bench squeeze" --evict-after 0 --memory ignore --nice 0 --max-active 30m -- /bin/bash /Users/Shared/mr/jobs/bench.sh "$OUT" 2>&1 | tee "$L/bench-squeeze.txt"
           b=${PIPESTATUS[0]}
           sudo cp -R "$OUT" "$L/results"; sudo chown -R "$(id -un)" "$L/results"
           echo "main $a, squeeze $b"; test $a = 0 && test $b = 0
@@ -2578,7 +2588,7 @@ jobs:
       - name: The results job's script (publish.sh as typdworker -> a draft release)
         run: |
           set -e
-          sudo -u typdworker -H env GITHUB_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_SHA="$GITHUB_SHA" \
+          cd /tmp; sudo -u typdworker -H env GITHUB_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_SHA="$GITHUB_SHA" \
             GITHUB_API_URL="$GITHUB_API_URL" GITHUB_SERVER_URL="$GITHUB_SERVER_URL" /bin/bash /Users/Shared/mr/jobs/publish.sh mac-bench-ci "CI test of the Mac job (a)"
           gh release view "mac-bench-ci-$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --json isDraft,assets --jq '{isDraft, assets: [.assets[].name]}'
           sudo test ! -e "/Users/typdworker/typd-results/$GITHUB_RUN_ID" && echo "local results removed after publishing"
@@ -2624,12 +2634,12 @@ jobs:
       - name: Install Typd Worker (fake code; everything but the GitHub connection)
         run: |
           set +e
-          TYPD_WORKER_TEST=1 TYPD_WORKER_TEST_CODE=AAAAAAAAAAAAAAAAAAAAAAAAAAAAA /bin/bash "$M/dist/Install Typd Worker.command" > "$L/install.txt" 2>&1
+          TYPD_WORKER_TEST=1 TYPD_WORKER_TEST_CODE=TYPDTESTFAKECODE7Q3X9K2M4W8XY /bin/bash "$M/dist/Install Typd Worker.command" > "$L/install.txt" 2>&1
           rc=$?; tail -25 "$L/install.txt"; test $rc = 3 || exit 1
           sudo mkdir -p /Users/Shared/mr && sudo cp -R "$M/jobs" "$M/tests" /Users/Shared/mr/ && sudo chmod -R a+rX /Users/Shared/mr
           { echo WORKER_USER=typdworker; echo IDLE_MINUTES=0; echo BUSY_CPU_PERCENT=1000; echo BUSY_GPU_PERCENT=100
             echo CHECK_SECONDS=5; echo RESPECT_VIDEO=0; } | sudo tee /Users/Shared/mr/ci-gate.conf
-          sudo -u typdworker -H env TYPD_WORKER_CONF=/Users/Shared/mr/ci-gate.conf /Library/TypdWorker/bin/idlegate check
+          cd /tmp && sudo -u typdworker -H env TYPD_WORKER_CONF=/Users/Shared/mr/ci-gate.conf /Library/TypdWorker/bin/idlegate check
 
       - name: Inputs as the Mac job gets them (this run's draft releases, through lib.sh)
         run: |
@@ -2642,7 +2652,7 @@ jobs:
           export GITHUB_TOKEN="$GH_TOKEN"; . "$M/jobs/lib.sh"
           draft_release "ci-kit-$R" "CI kit $R" "$RUNNER_TEMP/notes.md" "$RUNNER_TEMP/ci-kit-$R.tar.gz"
           draft_release "gemma-in-ci$R" "CI input $R" "$RUNNER_TEMP/notes.md" "$RUNNER_TEMP/gemma-in-ci$R.tar.gz"
-          sudo -u typdworker -H env GITHUB_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_API_URL="$GITHUB_API_URL" \
+          cd /tmp && sudo -u typdworker -H env GITHUB_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_API_URL="$GITHUB_API_URL" \
             /bin/bash /Users/Shared/mr/jobs/label.sh fetch "ci$R" "ci-kit-$R" 2>&1 | tee "$L/label-fetch.txt"
 
       - name: Job (b) as typdworker through the gate (Gemma 3 270M stand-in, no LoRA, 3 rows), then again (resume)
@@ -2650,7 +2660,7 @@ jobs:
           set +e
           R=$GITHUB_RUN_ID
           for k in 1 2; do
-            sudo -u typdworker -H env TYPD_WORKER_CONF=/Users/Shared/mr/ci-gate.conf GITHUB_RUN_ID="$R" LABEL_ARGS="--model-repo ggml-org/gemma-3-270m-it-GGUF --model-file gemma-3-270m-it-Q8_0.gguf --model-sha 0ef57d2c838458a1952664260dcba38e5bdda37494f3af732f06e4add24068e3" \
+            cd /tmp && sudo -u typdworker -H env TYPD_WORKER_CONF=/Users/Shared/mr/ci-gate.conf GITHUB_RUN_ID="$R" LABEL_ARGS="--model-repo ggml-org/gemma-3-270m-it-GGUF --model-file gemma-3-270m-it-Q8_0.gguf --model-sha 0ef57d2c838458a1952664260dcba38e5bdda37494f3af732f06e4add24068e3" \
               /Library/TypdWorker/bin/idlegate run --name "ci label $k" --evict-after 20m --max-active 30m -- /bin/bash /Users/Shared/mr/jobs/label.sh run "ci$R" 2 0 2>&1 | tee "$L/label-run$k.txt"
             echo "run $k: ${PIPESTATUS[0]}"
           done
@@ -2662,7 +2672,7 @@ jobs:
         run: |
           set -e
           R=$GITHUB_RUN_ID
-          sudo -u typdworker -H env GITHUB_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_RUN_ID="$R" GITHUB_SHA="$GITHUB_SHA" \
+          cd /tmp && sudo -u typdworker -H env GITHUB_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_RUN_ID="$R" GITHUB_SHA="$GITHUB_SHA" \
             GITHUB_API_URL="$GITHUB_API_URL" GITHUB_SERVER_URL="$GITHUB_SERVER_URL" /bin/bash /Users/Shared/mr/jobs/publish.sh "gemma-out-ci$R" "CI test of the Mac job (b)"
           gh release view "gemma-out-ci$R-$R" --repo "$GITHUB_REPOSITORY" --json isDraft,assets --jq '{isDraft, assets: [.assets[].name]}'
           gh release delete "ci-kit-$R" --yes --repo "$GITHUB_REPOSITORY"; gh release delete "gemma-in-ci$R" --yes --repo "$GITHUB_REPOSITORY"
