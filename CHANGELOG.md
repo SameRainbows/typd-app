@@ -2,7 +2,7 @@
 
 ## 0.2.12 · October 2026
 
-- **Typd starts hearing you sooner.** Typd now opens the microphone with a small program of its own instead of through the browser engine it is built on. On a test laptop the microphone hears about a tenth of a second after you press the key, even with the processor fully busy (before: a quarter of a second to almost a second, and more under heavy load). If that program can't start for any reason, Typd quietly uses the old way.
+- **Typd starts hearing you sooner, even on a busy computer.** Typd now opens the microphone with a small program of its own instead of through the browser engine it is built on. On a test laptop with its processor fully busy, the microphone now hears about a tenth of a second after you press the key, where it used to take a third of a second to almost a second (the first dictation after starting Typd took longest). If that program can't start for any reason, Typd quietly uses the old way.
 - **The pill tells you when it's listening.** Its meter stays dimmed, and the start sound waits, until the microphone's first sound has arrived. When you hear the sound, talk.
 - **The microphone stays on for 30 seconds after a dictation,** so the next one starts instantly. Nothing it hears in those 30 seconds is kept, written down or sent anywhere: it is thrown away the moment it arrives. Your computer's microphone indicator stays on until the 30 seconds are up, then goes off.
 
