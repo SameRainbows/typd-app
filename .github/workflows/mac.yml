@@ -1362,6 +1362,7 @@ env:
     #   /bin/bash gate_test.sh PATH/TO/idlegate
     set -u
     G=${1:?idlegate}
+    GS=${2:-}   # jobs/gate.sh (read now: the checks below reuse "set --")
     T=$(mktemp -d /tmp/gatetest.XXXXXX)
     F=$T/fake; mkdir -p "$F" "$T/shared/control" "$T/jobs"
     cat > "$T/conf" <<EOF
@@ -1514,7 +1515,6 @@ env:
     rm -f "$F/avail_mb"
 
     # 11. jobs/gate.sh with the first kit's idlegate (no --needs-gb): it waits for memory itself, then hands over
-    GS=${2:-}
     if [ -n "$GS" ]; then
       OLD=$T/old-idlegate; grep -v -- '--needs-gb' "$G" > "$OLD"; chmod +x "$OLD"
       "$OLD" run --needs-gb 1 -- true >/dev/null 2>&1; [ $? = 64 ] && ok "the stand-in old idlegate rejects --needs-gb (exit 64)" || bad "stand-in old idlegate"
