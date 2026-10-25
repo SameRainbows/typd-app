@@ -56,7 +56,7 @@ lp=$!
 sleep 2
 say "starting $APP as Finder does, fresh profile, microphone never answered"
 open "$APP" --env TYPD_DEBUG=1 --env TYPD_NO_MODEL_UPDATE=1 --env TYPD_NO_APP_UPDATE=1 --env TYPD_NO_SHARE=1 --env TYPD_MIC_WAIT_MS=20000 \
-  ${TYPD_MODEL_DIR:+--env "TYPD_MODEL_DIR=$TYPD_MODEL_DIR"} --stdout "$OUT" --stderr "$OUT.err"
+  --env TYPD_TEST_MIC=1 ${TYPD_MODEL_DIR:+--env "TYPD_MODEL_DIR=$TYPD_MODEL_DIR"} --stdout "$OUT" --stderr "$OUT.err"
 
 # 1. macOS prompts, as Typd
 ok=0
@@ -106,6 +106,21 @@ else
   [ $ok = 1 ] && say "4. the check ran again after the answer: $(grep -a 'checked for the microphone answer' "$OUT" | tail -1)" || bad "4. no check after macOS's answer (the other switches unexplained)"
   r=$(rows | tr '\n' ' ')
   if echo "$r" | grep -q 'kTCCServiceMicrophone 2'; then say "4. TCC: kTCCServiceMicrophone allowed for ai.typd.app (Typd is in the Microphone list)"; else bad "4. no TCC row for ai.typd.app's microphone ($r)"; fi
+
+  # 4b. (0.2.12) The microphone helper, typd-mic, after the Allow: TYPD_TEST_MIC makes one capture through
+  #     it once macOS has said yes (src/main/index.js testMic). Gates: no second microphone prompt, and any
+  #     request from the helper is Typd's own (responsible ai.typd.app), never one of its own or of another
+  #     app. Whether the runner has a device that delivers sound is informational.
+  after=$(wc -l < "$TLOG")
+  ok=0
+  for _ in $(seq 1 20); do grep -aq '\[typd:test-mic\]' "$OUT" && { ok=1; break; }; sleep 1; done
+  if [ $ok = 1 ]; then say "4b. $(grep -a '\[typd:test-mic\]' "$OUT" | tail -1 | sed 's/^\[typd:test-mic\] //')"; else say "4b. (no test capture within 20 s)"; life microphone; fi
+  sleep 2
+  if tail -n +"$((after + 1))" "$TLOG" | grep -aqE 'AUTHREQ_PROMPTING: .*service=kTCCServiceMicrophone'; then bad "4b. macOS prompted for the microphone again after the Allow"; else say "4b. no second microphone prompt"; fi
+  req=$(grep -aE 'access request to kTCCServiceMicrophone' "$TLOG" | grep -aE 'typd-mic|ai\.typd\.app\.mic' || true)
+  if [ -z "$req" ]; then say "4b. no TCC request of the helper's own (macOS asks about the app responsible for it: Typd)"
+  elif echo "$req" | grep -avqE 'Sub:\{ai\.typd\.app\}'; then bad "4b. a microphone request from the helper not attributed to Typd"; echo "$req" | head -3 | cut -c1-400
+  else say "4b. the helper's microphone request is Typd's (Sub:{ai.typd.app})"; echo "$req" | head -2 | cut -c1-300 | sed 's/^/  /'; fi
 fi
 
 pkill -f "$BIN" 2>/dev/null; sleep 2

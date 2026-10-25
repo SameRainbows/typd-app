@@ -143,6 +143,29 @@ showErrorBox, an uncaughtException listener of Typd's own (Electron's fallback i
 Also the walkthrough's mic card (no "Ask again" once allowed) and the publisher in package.json.
 The Mac CI's first-run check asserts the real thing: no click, model ready.
 
+## mic-helper.js, mic-capture.js, mic-latency.js — the native microphone helper (0.2.12)
+
+```bash
+node scripts/build-mic.js win          # or: mac arm64 x64 (on a Mac) -- vendor/mic, vendor/mic-mac
+node bench/mic-helper.js               # in npm run bench; TYPD_MIC_BENCH_DEVICE=0 never opens a microphone
+node bench/mic-capture.js              # in npm run bench
+npx electron bench/mic-latency.js --path helper     # key press -> first audio, in main
+npx electron bench/mic-latency.js --path chromium   # the same through the pill's page (before 0.2.12)
+```
+
+`mic-helper.js`: the real `typd-mic` (hello, list, bad lines, open/first-audio/16 kHz, sync after the
+audio, **not one audio byte while held**, the warm window closing the device by itself on time, warm
+reopen within 100 ms, cold again after) and `mic.js` against it; then `mic.js`'s fall backs against
+`bench/fake-mic.js` (no file, error on open, exits -> restarted 3 times then off, no audio in 3 s,
+garbage, no hello) and `pickDevice` (Chromium's " (vid:pid)" and macOS transport suffixes). With
+`TYPD_MIC_BENCH_SILENT_DEVICE=<name>` also exact zeros from a real device through the helper.
+`mic-capture.js`: `capture.js` as index.js runs it, with the fake helper: the stream and the
+recording get exactly the helper's samples in order, hearing/level to the pill, revision without a
+stream, "silent" after 24,576 zeros (a Mac: the page takes over), every fall back to the pill's page
+(from the start and mid-dictation, the helper's part kept first), the Settings device, cancel. Plus
+the wiring in the sources. `mic-latency.js` makes Typd's pill window hidden (sounds off) and presses
+nothing: the "key press" is capture.begin + session:start, as beginSession does.
+
 ## lang-guard.js — English or Turkish only
 
 ```bash

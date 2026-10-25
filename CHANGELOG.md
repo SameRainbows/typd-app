@@ -1,5 +1,11 @@
 # What's new
 
+## 0.2.12 · October 2026
+
+- **Typd starts hearing you sooner.** Typd now opens the microphone with a small program of its own instead of through the browser engine it is built on. On a test laptop the microphone hears about a tenth of a second after you press the key, even with the processor fully busy (before: a quarter of a second to almost a second, and more under heavy load). If that program can't start for any reason, Typd quietly uses the old way.
+- **The pill tells you when it's listening.** Its meter stays dimmed, and the start sound waits, until the microphone's first sound has arrived. When you hear the sound, talk.
+- **The microphone stays on for 30 seconds after a dictation,** so the next one starts instantly. Nothing it hears in those 30 seconds is kept, written down or sent anywhere: it is thrown away the moment it arrives. Your computer's microphone indicator stays on until the 30 seconds are up, then goes off.
+
 ## 0.2.11 · October 2026
 
 - **Macs: the first download no longer waits for a click.** On a new Mac, Typd's message about turning on Accessibility and Input Monitoring could hold everything up, the speech model's download included, until you clicked it. It no longer appears over the walkthrough, which shows those switches itself. When it does appear, it's attached to the Typd window and Typd keeps working underneath. The same goes for the offer to move Typd to your Applications folder.

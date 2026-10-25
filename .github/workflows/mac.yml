@@ -1,8 +1,10 @@
-# Build Typd for macOS: the official build, signed with Typd's own certificate. (Branch main, Typd
-# 0.2.11: the same checks as the release-0.2.11 branch -- the microphone and icon checks, the patched
-# llama.cpp encoder that scripts/fetch-llama-mac.js builds, the copy pop-up's bench, a look at what
-# macOS Accessibility says about the focused element in a few real apps, and the no-modal bench: none
-# of Typd's dialogs may stop Typd.)
+# Build Typd for macOS: the official build, signed with Typd's own certificate. (Typd 0.2.12, branch
+# release-0.2.12: 0.2.11's workflow plus the native microphone helper -- typd-mic built with clang for
+# each arch, its benches, its signature, entitlement and usage string checked in the app, and the
+# microphone check's capture through it after macOS's Allow, with no second prompt. 0.2.11's: 0.2.10's checks -- the microphone and icon checks, the patched llama.cpp encoder
+# that scripts/fetch-llama-mac.js builds, the copy pop-up's bench and a look at what macOS
+# Accessibility says about the focused element in a few real apps -- plus the no-modal bench: none of
+# Typd's dialogs may stop Typd (0.2.10's switches dialog held the first model download on a new Mac).)
 #
 # Only a maintainer can start it (Actions > macOS > Run workflow, or `gh workflow run mac.yml`).
 # It never runs on a push or a pull request, so code from a fork never runs with its secrets.
@@ -146,6 +148,21 @@ jobs:
         # each arch. node-gyp-build loads it in place of the shipped prebuild.
         run: node scripts/build-uiohook-mac.js $ARCHS
 
+      - name: Build the microphone helper (typd-mic, clang, each arch)
+        # 0.2.12: native/mic/typd-mic.c + miniaudio (Core Audio), into vendor/mic-mac/<arch>; after-pack.js
+        # refuses an app without it and signs it with Typd's identity and the audio-input entitlement.
+        run: |
+          set -e
+          node scripts/build-mic.js mac $ARCHS
+          node scripts/build-mic.js mac $ARCHS --check
+          for a in $ARCHS; do vendor/mic-mac/$a/typd-mic --version 2>/dev/null || arch -x86_64 vendor/mic-mac/$a/typd-mic --version || true; done
+
+      - name: Bench, the microphone helper and a dictation's capture (no microphone opened)
+        # The real helper's protocol (hello, list, bad lines, close, stdin closing ends it), mic.js's fall backs
+        # and capture.js with a stand-in helper (bench/fake-mic.js). TYPD_MIC_BENCH_DEVICE=0: macOS would ask
+        # for this shell's microphone.
+        run: TYPD_MIC_BENCH_DEVICE=0 node bench/mic-helper.js && node bench/mic-capture.js
+
       - name: Typd's signing certificate, in a keychain of its own
         # scripts/after-pack.js and scripts/app-update-package.js sign with it (TYPD_MAC_SIGN_*).
         env:
@@ -218,6 +235,20 @@ jobs:
             want="icon_128x128.png=128 icon_128x128@2x.png=256 icon_16x16.png=16 icon_16x16@2x.png=32 icon_256x256.png=256 icon_256x256@2x.png=512 icon_32x32.png=32 icon_32x32@2x.png=64 icon_512x512.png=512 icon_512x512@2x.png=1024 "
             echo "iconutil reads back: $got"
             [ "$got" = "$want" ] || { echo "the icon is not a full iconset at the right sizes"; exit 1; }
+            # The microphone helper (0.2.12): this arch, Typd's identity, its own identifier, the audio-input
+            # entitlement, the app's usage string embedded, and it runs (--list needs no permission).
+            h="$app/Contents/Resources/mic/typd-mic"
+            test -x "$h"
+            lipo -archs "$h" | grep -qx "$( [ "$a" = arm64 ] && echo arm64 || echo x86_64 )"
+            codesign --verify --strict --verbose=2 "$h"
+            codesign -dv "$h" 2>&1 | grep -q 'Identifier=ai.typd.app.mic'
+            codesign -d -r- "$h" 2>&1 | grep -qi "$(node -p "require('./scripts/mac-signing.json').sha1")"
+            codesign -d --entitlements - --xml "$h" 2>/dev/null > "$RUNNER_TEMP/mic-ent.plist"
+            [ "$(/usr/libexec/PlistBuddy -c "Print :com.apple.security.device.audio-input" "$RUNNER_TEMP/mic-ent.plist" 2>/dev/null)" = true ] || { echo "typd-mic: no audio-input entitlement"; exit 1; }
+            codesign -dv "$h" 2>&1 | grep -E 'Identifier|Info.plist' || true
+            grep -aq "$mic" "$h" || { echo "typd-mic: the app's NSMicrophoneUsageDescription is not embedded"; exit 1; }
+            if [ "$a" = arm64 ]; then "$h" --version; "$h" --list || true; else arch -x86_64 "$h" --version || true; fi
+            echo "- $a: typd-mic signed (ai.typd.app.mic), audio-input entitlement, usage string embedded" >> "$GITHUB_STEP_SUMMARY"
             ls -la "$app/Contents/Resources/llama" "$app/Contents/Resources/models/typd-dictate"
             # Model-less: no model.json and no .gguf anywhere in the app.
             test ! -e "$app/Contents/Resources/models/typd-dictate/model.json"
@@ -584,6 +615,7 @@ jobs:
           node scripts/fetch-model.js --accept-license | tail -3
           node scripts/fetch-llama-mac.js arm64
           node scripts/build-uiohook-mac.js arm64
+          node scripts/build-mic.js mac arm64
 
       - name: Package (arm64, signed ad hoc, no dmg)
         run: |

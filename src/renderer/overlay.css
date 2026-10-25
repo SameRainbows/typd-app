@@ -232,7 +232,10 @@ body {
   opacity: 1; transform: translateY(0);
   transition: opacity 180ms var(--ease-spring) 80ms, transform 180ms var(--ease-spring) 80ms;
 }
-.meter-slot canvas { width: 100%; height: 100%; display: block; }
+.meter-slot canvas { width: 100%; height: 100%; display: block; transition: opacity 120ms var(--ease-spring); }
+/* 0.2.12: "listening" only once the microphone's first audio is here. Until then the meter's resting
+   rule is dimmed (the pill is up, the microphone is still opening); it comes up with the start cue. */
+.overlay[data-state="listening"][data-hearing="false"] .meter-slot canvas { opacity: .35; }
 
 /* Only failure puts words in the pill now. It is the one moment worth
    interrupting for: the user has already looked away, and nothing happened. */

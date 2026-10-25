@@ -172,9 +172,13 @@ function dictationLine(o = {}) {
   const outcome = ['pasted', 'copied', 'offered'].includes(o.outcome) ? o.outcome : 'other';
   const model = String(o.model || 'unknown').replace(/[^A-Za-z0-9._+-]/g, '').slice(0, 60) || 'unknown';
   const device = o.device === 'GPU' || o.device === 'CPU' ? o.device : 'device unknown';
+  // 0.2.12: the microphone path (the native helper, warm or not, or Chromium's capture) and the key press
+  // to its first audio. Only when given, so older lines read the same.
+  const MICS = ['helper', 'helper (warm)', 'helper, then Chromium', 'Chromium'];
+  const mic = o.mic && MICS.includes(o.mic.how) ? ', mic ' + o.mic.how + ' ' + num(o.mic.firstMs) + ' ms' : '';
   return mode + ', ' + num(o.audioSeconds, 1) + ' s audio, ' + num(o.chars) + ' chars, release to text ' +
     num(o.releaseToTextMs) + ' ms, text to paste ' + num(o.textToPasteMs) + ' ms, ' + outcome +
-    ', model ' + model + ', ' + device + (o.lowMemory === true ? ', low memory' : '');
+    ', model ' + model + ', ' + device + (o.lowMemory === true ? ', low memory' : '') + mic;
 }
 
 module.exports = { init, log, ended, tail, clean, errorLine, dumps, dictationLine, get file() { return file; } };

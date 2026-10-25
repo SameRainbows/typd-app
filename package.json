@@ -1,6 +1,6 @@
 {
   "name": "typd",
-  "version": "0.2.11",
+  "version": "0.2.12",
   "private": true,
   "description": "Voice dictation you can talk back to.",
   "license": "GPL-3.0-only",
@@ -12,7 +12,7 @@
     "start": "electron .",
     "dev": "electron . --dev",
     "stub": "electron . --stub",
-    "bench": "node bench/wiring.js && node bench/hotkeys.js && node bench/home.js && node bench/revise.js && node bench/formatting.js && node bench/revise-guards.js && node bench/long.js && node bench/lang-guard.js --no-model && node bench/vocab.js && node bench/learn.js && node bench/updates.js && node bench/model-choice.js && node bench/first-launch.js && node bench/lifelog.js && node bench/lora.js --no-model && node bench/sharing.js && node bench/backfill.js && node bench/first-run.js && node bench/cuda-pack.js && node bench/light-first.js && node bench/update-cadence.js && node bench/versions.js && node bench/app-update.js && node bench/public-build.js && node bench/pill.js && node bench/share-e2e.js && node bench/low-memory.js && node bench/share-choice.js && node bench/mac-mic.js && node bench/copy-popup.js && node bench/no-modal.js",
+    "bench": "node bench/wiring.js && node bench/hotkeys.js && node bench/home.js && node bench/revise.js && node bench/formatting.js && node bench/revise-guards.js && node bench/long.js && node bench/lang-guard.js --no-model && node bench/vocab.js && node bench/learn.js && node bench/updates.js && node bench/model-choice.js && node bench/first-launch.js && node bench/lifelog.js && node bench/lora.js --no-model && node bench/sharing.js && node bench/backfill.js && node bench/first-run.js && node bench/cuda-pack.js && node bench/light-first.js && node bench/update-cadence.js && node bench/versions.js && node bench/app-update.js && node bench/public-build.js && node bench/pill.js && node bench/share-e2e.js && node bench/low-memory.js && node bench/share-choice.js && node bench/mac-mic.js && node bench/copy-popup.js && node bench/no-modal.js && node bench/mic-helper.js && node bench/mic-capture.js",
     "bench:revise": "node bench/revise.js",
     "bench:guards": "node bench/revise-guards.js",
     "bench:long": "node bench/long.js",
@@ -26,6 +26,10 @@
     "bench:copy-popup": "node bench/copy-popup.js",
     "bench:lang-guard": "node bench/lang-guard.js",
     "bench:no-modal": "node bench/no-modal.js",
+    "bench:mic": "node bench/mic-helper.js && node bench/mic-capture.js",
+    "bench:mic-latency": "electron bench/mic-latency.js",
+    "build:mic:win": "node scripts/build-mic.js win",
+    "build:mic:mac": "node scripts/build-mic.js mac arm64 x64",
     "build:mtmd:win": "node scripts/build-mtmd.js win",
     "bench:learn": "node bench/learn.js",
     "bench:hotkeys": "node bench/hotkeys.js",
@@ -49,7 +53,7 @@
     "smoke": "node scripts/smoke-llama.js",
     "dist:win": "electron-builder --win --x64",
     "dist:win:public": "node scripts/public-build.js win",
-    "dist:mac": "node scripts/fetch-llama-mac.js && node scripts/build-uiohook-mac.js arm64 x64 && electron-builder --mac",
+    "dist:mac": "node scripts/fetch-llama-mac.js && node scripts/build-uiohook-mac.js arm64 x64 && node scripts/build-mic.js mac arm64 x64 && electron-builder --mac",
     "build:icons": "electron scripts/build-icons.js && python scripts/build-icons.py",
     "fetch:model": "node scripts/fetch-model.js"
   },
@@ -93,7 +97,10 @@
     "App updates (src/main/appUpdate.js): the helper scripts in src/main/app-update/ are read out of",
     "app.asar and written to <userData>/app-update/ before they run (a script inside the app it is",
     "replacing could not move that app), so they need no asarUnpack. The update packages themselves",
-    "are made after packaging by scripts/app-update-package.js (README.md \"App updates\")."
+    "are made after packaging by scripts/app-update-package.js (README.md \"App updates\").",
+    "extraResources (0.2.12): the microphone helper typd-mic (native/mic, built by scripts/build-mic.js into vendor/mic",
+    "and vendor/mic-mac/<arch>; vendor/ is not in git) at <resources>/mic. It is spawned by path, so it lives outside",
+    "app.asar; scripts/after-pack.js refuses a build without it and, on a Mac, signs it with Typd's identity."
   ],
   "build": {
     "appId": "ai.typd.app",
@@ -140,6 +147,13 @@
         {
           "from": "dist/.stage/llama",
           "to": "llama"
+        },
+        {
+          "from": "vendor/mic",
+          "to": "mic",
+          "filter": [
+            "typd-mic.exe"
+          ]
         }
       ]
     },
@@ -178,6 +192,13 @@
         {
           "from": "vendor/llama-mac/${arch}",
           "to": "llama"
+        },
+        {
+          "from": "vendor/mic-mac/${arch}",
+          "to": "mic",
+          "filter": [
+            "typd-mic"
+          ]
         }
       ],
       "icon": "build/icon.icns"

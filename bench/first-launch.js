@@ -196,6 +196,19 @@ check('0.2.11 installed over 0.2.10 by the installer (settings and a model kept)
 r = launch(folder({}), false, '0.2.11');
 check('0.2.11, a fresh install: due', r.fresh === true && r.now === 'due', r);
 
+// 0.2.12 (the native microphone helper): an update from 0.2.11 -- or from 0.2.10 / 0.2.9 if 0.2.11 was
+// skipped -- never the walkthrough; installed over 0.2.11 by the installer: never; a fresh install: due.
+for (const from of ['0.2.11', '0.2.10', '0.2.9']) {
+  r = launch(folder({ 'typd/settings.json': S028, ...HISTORY, ...MODEL, ...PACK, 'typd/app-update/': '', 'typd/app-update/pending.json': { from, to: '0.2.12' } }), true, '0.2.12');
+  check(`0.2.12: update from ${from} (walkthrough done, a downloaded model, the app update pending): never`, r.fresh === false && r.now === 'done' && r.saved === 'done', r);
+}
+r = launch(folder({ 'typd/settings.json': { ...S028, walkthrough: 'due' }, ...MODEL, 'typd/app-update/': '', 'typd/app-update/pending.json': { from: '0.2.11', to: '0.2.12' } }), true, '0.2.12');
+check('0.2.12: update from a 0.2.11 install that never got to show it: never', r.now === 'done', r);
+r = launch(folder({ 'typd/settings.json': S028, ...MODEL }), false, '0.2.12');
+check('0.2.12 installed over 0.2.11 by the installer (settings and a model kept): never', r.fresh === false && r.now === 'done', r);
+r = launch(folder({}), false, '0.2.12');
+check('0.2.12, a fresh install: due', r.fresh === true && r.now === 'due', r);
+
 {
   // A fresh install's next launches: due until it is shown, then done for good.
   const d = folder({});

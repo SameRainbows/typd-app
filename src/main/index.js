@@ -47,6 +47,8 @@ try {
   console.log('[typd] crash reporter:', err && err.message);
 }
 const life = require('./lifelog');
+const micHelper = require('./mic');             // the native microphone helper, typd-mic (0.2.12)
+const { createCapture } = require('./capture'); // a dictation's microphone: the helper, or Chromium's capture
 
 /**
  * Keep each dictation's audio with everything needed to replay it -- the text Typd
@@ -125,7 +127,8 @@ function logDictation(current, chars, result, pastedAt) {
       outcome: result && result.ok ? 'pasted' : result && result.offered ? 'offered' : 'copied',
       model,
       device,
-      lowMemory: lowMemory ? Boolean(lowMemory.on) : null
+      lowMemory: lowMemory ? Boolean(lowMemory.on) : null,
+      mic: capture.timing(current)   // which microphone path, and the key press to its first audio
     }));
   } catch (err) {
     if (process.env.TYPD_DEBUG) console.log('[typd:life]', err);
@@ -179,6 +182,31 @@ let flagKey = null;         // "That was wrong" (registerFlagHotkey); null when 
 let session = null;
 let firstRunNote = false;   // the pill says "Ready — tap … and talk" once, on the very first launch
 let popup = null;           // the copy pop-up (copy-popup.js), made the first time a dictation is not pasted
+
+/*
+ * The microphone (0.2.12): the native helper (mic.js) is started at launch with the device closed; a key
+ * press opens it from here, and capture.js feeds its audio to the session. Without the helper -- not
+ * there, failing, or a Mac that has not said yes to the microphone yet -- the pill's page captures, as
+ * before. TYPD_MIC=chromium turns the helper off (tests, and a way out if it ever misbehaves).
+ */
+const mic = micHelper.createNativeMic({
+  exe: process.env.TYPD_MIC === 'chromium' ? null : micHelper.helperPath({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, root: require('path').join(__dirname, '..', '..') }),
+  log: (line) => life.log('microphone', line),
+  debug: (...a) => { if (process.env.TYPD_DEBUG) console.log('[typd:mic]', ...a); },
+  warmMs: Number.isFinite(Number(process.env.TYPD_MIC_WARM_MS)) && process.env.TYPD_MIC_WARM_MS !== '' ? Number(process.env.TYPD_MIC_WARM_MS) : micHelper.WARM_MS
+});
+const capture = createCapture({
+  mic,
+  send: (channel, payload) => send(channel, payload),
+  log: (line) => life.log('microphone', line),
+  debug: (...a) => { if (process.env.TYPD_DEBUG) console.log(...a); },
+  isMac: MAC,
+  macMicGranted: () => { try { return systemPreferences.getMediaAccessStatus('microphone') === 'granted'; } catch { return false; } },
+  privacyBlocked: () => { try { return systemPreferences.getMediaAccessStatus('microphone') === 'denied'; } catch { return false; } },
+  settings: { id: () => settings.get('mic'), label: () => settings.get('micLabel') },
+  openStream: (current) => pipeline.openStream(current.controller.signal, () => current.contextBlock),
+  problem: (current, kind, why) => { if (session === current) micProblem(kind, why); }
+});
 
 /* -------------------------------------------------------------------- quit */
 
@@ -312,7 +340,7 @@ function beginSession() {
     note(status.describe().line, 6000);
     return;
   }
-  if (session) session.controller.abort();
+  if (session) { capture.stop(session); session.controller.abort(); }
 
   const controller = new AbortController();
   session = {
@@ -372,11 +400,14 @@ function beginSession() {
       pipeline.wake(current.contextBlock);
     });
 
+  // The microphone first: the helper's open is under way before the overlay is even shown. `native`
+  // tells the pill's page not to open its own (capture.js).
+  const opened = capture.begin(current);
   ensureOverlay();
   positionOverlay(overlay);
   passThrough();
   showOverlay(overlay);   // on top of everything, never takes focus from the app being dictated into
-  send('session:start', { mode: current.mode });
+  send('session:start', { mode: current.mode, native: opened.native });
 }
 
 /**
@@ -421,6 +452,13 @@ async function endSession() {
   const current = session;
   current.endedAt = Date.now();
   send('session:capture-end', {});
+  // The helper's recording, once its last samples are in (capture.js); null when the pill's page
+  // captured, whose recording arrives by overlay:audio as before.
+  capture.end(current).then((audio) => {
+    if (!audio || current.audio) return;
+    current.audio = audio;
+    if (current.onAudio) current.onAudio(audio);
+  }, (err) => life.log('microphone', 'end failed: ' + life.errorLine(err)));
   status.set({ live: false });   // the microphone is closed; the model is writing
   // Escape still means "never mind" while the model works, not only while recording.
   hotkeys.holdWork(() => { if (session === current) cancelSession(); });
@@ -568,7 +606,7 @@ async function endSession() {
 }
 
 function cancelSession() {
-  if (session) session.controller.abort();
+  if (session) { capture.stop(session); session.controller.abort(); }
   session = null;
   status.set({ live: false });
   hotkeys.releaseWork();
@@ -1178,6 +1216,10 @@ app.whenReady().then(() => {
   overlay = createOverlayWindow({ dev });
   overlay.webContents.on('did-finish-load', markRendererReady);
   if (!stub) startAppUpdate();
+  // The microphone helper, idle with the device closed until a key press (mic.js). Not for the pill's
+  // design preview, which never records.
+  if (!preview) mic.start();
+  if (process.env.TYPD_TEST_MIC) testMic();
 
   // Warm the injector during launch so the first paste does not pay the ~450 ms
   // shell start, and the speech model so the first dictation does not pay for
@@ -1464,27 +1506,24 @@ app.whenReady().then(() => {
       .slice(0, 32)
       .map((d) => ({ deviceId: d.deviceId, label: String(d.label || '').slice(0, 120) }));
     trayUi.setDevices(devices);
+    mic.refresh();   // the helper's list too: a chosen microphone is found in it by name (capture.js)
   });
 
-  // Live PCM while the user talks, 256 ms at a time (pipeline.openStream): a model
-  // trained on audio in pieces has them primed, any other has a dictation past 20 s
-  // written while the user talks (local.openLong). Revision never uses it --
-  // the instruction is short and the span decides what it means.
+  // Live PCM while the user talks, from the pill's page when it captures (no helper, or after a fall
+  // back), 64 ms at a time, into the same stream the helper's audio feeds (capture.js, pipeline.openStream):
+  // a model trained on audio in pieces has them primed, any other has a dictation past 20 s written while
+  // the user talks (local.openLong). Revision never uses it -- the instruction is short and the span
+  // decides what it means.
   ipcMain.on('overlay:chunk', (_e, payload) => {
     const current = session;
     if (!current || !payload || !payload.buffer || payload.sampleRate !== 16000) return;
-    if (current.mode !== 'dictate') return;
-    if (current.stream === undefined) {
-      current.stream = pipeline.openStream(current.controller.signal, () => current.contextBlock);
-    }
-    if (!current.stream) return;
     const raw = payload.buffer;
-    current.stream.push(Buffer.isBuffer(raw)
+    capture.rendererChunk(current, Buffer.isBuffer(raw)
       ? new Float32Array(raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength))
       : new Float32Array(raw));
   });
 
-  // Captured PCM, arriving once per session after the renderer stops the mic.
+  // Captured PCM, arriving once per session after the renderer stops the mic (when it had it).
   ipcMain.on('overlay:audio', (_e, payload) => {
     if (!session || !payload || !payload.buffer) return;
 
@@ -1495,7 +1534,9 @@ app.whenReady().then(() => {
       ? new Float32Array(raw.buffer, raw.byteOffset, Math.floor(raw.byteLength / 4))
       : new Float32Array(raw);
 
-    const audio = { samples, sampleRate: payload.sampleRate || 16000 };
+    // Null when the helper had the microphone; after a fall back, the helper's part comes first.
+    const audio = capture.rendererAudio(session, samples);
+    if (!audio || session.audio) return;
     session.audio = audio;
     if (session.onAudio) session.onAudio(audio);
   });
@@ -1515,31 +1556,7 @@ app.whenReady().then(() => {
   // nothing but exact zeros ('silent') -- never by the privacy status alone. On a Mac the status then
   // says why: a microphone macOS was never asked about (or whose prompt is still up) gets macOS's
   // prompt again, at once, and a pill that says so; macOS hands a refused app exact zeros.
-  ipcMain.on('overlay:mic', (_e, kind, why) => {
-    if (!session || session.endedAt) return;
-    hotkeys.settle();
-    session.controller.abort();
-    session = null;
-    status.set({ live: false });
-    passThrough();
-    checkMic(false);
-    const mic = MAC ? require('./permissions-mac').micState() : null;
-    life.log('microphone', 'capture ' + (kind === 'silent' ? 'gave only silence' : 'did not open') + (why ? ' (' + String(why).slice(0, 40) + ')' : '') +
-      (MAC ? '; macOS status ' + mic : '; privacy ' + status.get().mic));
-    let message;
-    if (MAC && (mic === 'not-determined' || mic === 'asking')) {
-      require('./permissions-mac').requestMic('a dictation found no microphone', { again: true }).then(checkMacPermissions);
-      message = 'Allow the microphone in macOS’s dialog';
-    } else if (MAC && (mic === 'denied' || mic === 'restricted')) {
-      message = 'Microphone off for Typd in macOS — Fix…';
-      require('./permissions-mac').ensure('microphone');
-    } else {
-      const blocked = status.get().mic === 'blocked';
-      message = blocked ? 'Mic blocked by ' + (MAC ? 'macOS' : 'Windows') + ' privacy'
-        : kind === 'silent' ? 'Mic silent — check mute or privacy' : 'No microphone — check Settings';
-    }
-    send('session:error', { message });
-  });
+  ipcMain.on('overlay:mic', (_e, kind, why) => micProblem(kind, why));
 
   ipcMain.on('overlay:cancel', () => {
     if (hotkeys.settle()) cancelSession();
@@ -1561,6 +1578,70 @@ app.whenReady().then(() => {
     });
   }
 });
+
+/*
+ * CI only (scripts/mac-mic-check.sh). TYPD_TEST_MIC=1: once the helper may take the microphone (on a Mac:
+ * once macOS has said yes), one capture through capture.js as a dictation makes it, 1.5 s, without the
+ * pill; one line on stdout and in the life log (which path, the first audio, how many samples). Nothing is
+ * kept. Nothing runs without the variable.
+ */
+function testMic() {
+  let done = false;
+  const tick = setInterval(async () => {
+    if (done) return;
+    const granted = !MAC || (() => { try { return systemPreferences.getMediaAccessStatus('microphone') === 'granted'; } catch { return false; } })();
+    if (!granted || !mic.usable() || session) return;
+    done = true;
+    clearInterval(tick);
+    const cur = { mode: 'revise', controller: new AbortController() };
+    const r = capture.begin(cur);
+    await new Promise((res) => setTimeout(res, 1500));
+    const audio = r.native ? await capture.end(cur) : null;
+    capture.stop(cur);
+    const s = audio ? audio.samples : new Float32Array(0);
+    let nz = 0;
+    for (let i = 0; i < s.length; i++) if (s[i] !== 0) nz++;
+    const t = capture.timing(cur);
+    const line = 'test capture: ' + (r.native ? 'the helper' : 'not the helper') + ', first audio ' +
+      (t && t.firstMs !== null ? Math.round(t.firstMs) + ' ms' : 'none') + ', ' + s.length + ' samples, ' + nz + ' not zero' +
+      (cur.capture.switched ? ', fell back (' + cur.capture.switched + ')' : '') + (mic.info ? ', typd-mic ' + mic.info.version + ' ' + mic.info.backend : '');
+    life.log('microphone', line);
+    console.log('[typd:test-mic] ' + line);
+    // TYPD_TEST_MIC=quit: then leave, as the tray's Quit does (a smoke test of the real app).
+    if (process.env.TYPD_TEST_MIC === 'quit') setTimeout(() => quit('the microphone test (TYPD_TEST_MIC=quit)'), 500);
+  }, 1000);
+}
+
+/**
+ * A dead microphone ends the session at once with the reason, instead of after the user has finished
+ * talking ("No audio captured"). From the pill's page (overlay:mic) or the helper's silence (capture.js).
+ */
+function micProblem(kind, why) {
+  if (!session || session.endedAt) return;
+  capture.stop(session);
+  hotkeys.settle();
+  session.controller.abort();
+  session = null;
+  status.set({ live: false });
+  passThrough();
+  checkMic(false);
+  const mic = MAC ? require('./permissions-mac').micState() : null;
+  life.log('microphone', 'capture ' + (kind === 'silent' ? 'gave only silence' : 'did not open') + (why ? ' (' + String(why).slice(0, 40) + ')' : '') +
+    (MAC ? '; macOS status ' + mic : '; privacy ' + status.get().mic));
+  let message;
+  if (MAC && (mic === 'not-determined' || mic === 'asking')) {
+    require('./permissions-mac').requestMic('a dictation found no microphone', { again: true }).then(checkMacPermissions);
+    message = 'Allow the microphone in macOS’s dialog';
+  } else if (MAC && (mic === 'denied' || mic === 'restricted')) {
+    message = 'Microphone off for Typd in macOS — Fix…';
+    require('./permissions-mac').ensure('microphone');
+  } else {
+    const blocked = status.get().mic === 'blocked';
+    message = blocked ? 'Mic blocked by ' + (MAC ? 'macOS' : 'Windows') + ' privacy'
+      : kind === 'silent' ? 'Mic silent — check mute or privacy' : 'No microphone — check Settings';
+  }
+  send('session:error', { message });
+}
 
 /*
  * CI only (mac.yml, "Close the Typd window, stay running"). TYPD_TEST_CLOSE_HOME=<file>: open
@@ -1617,6 +1698,7 @@ app.on('will-quit', () => {
   stopHook();
   inject.stop();
   pipeline.stop();
+  mic.quit();   // the device closes and the helper ends (it also ends by itself when Typd's pipe closes)
 });
 
 // A dictation overlay is a background utility. Closing its only window is not a

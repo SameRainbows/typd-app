@@ -34,6 +34,8 @@
  *   cuda_ok             Windows: resources/llama/cuda.json names the CUDA backend and its pack, and
  *                       either every file it names is there (bundled_cuda) or none is (the CUDA pack
  *                       is fetched: the default since 0.2.5). --expect-cuda yes|no makes the kind a check.
+ *   mic_helper          since 0.2.12: the native microphone helper is at <resources>/mic (scripts/build-mic.js);
+ *                       on Windows, when vendor/mic/BUILD.json is here, it is that build of this tree's source.
  *   patched_mtmd        since 0.2.7: llama.cpp's mtmd library in the app (mtmd.dll, libmtmd.0.dylib) is Typd's
  *                       patched build (scripts/build-mtmd.js: it carries MTMD_QWEN3A_CONV_GROUP), so the audio
  *                       encoder runs one conv chunk at a time (src/main/pipeline/local.js). The stock one would
@@ -287,6 +289,23 @@ function verify({ app, platform, installer, expectModel = null, expectCuda = nul
     else if (!checks.patched_mtmd) problems.push(path.basename(lib) + ' is the stock build: run scripts/build-mtmd.js (Windows) / scripts/fetch-llama-mac.js on a Mac');
   }
 
+  // 3d. the native microphone helper (0.2.12, scripts/build-mic.js): there, and the build of this source
+  // when its record is beside it in vendor/ (the app carries the executable only).
+  {
+    const exe = path.join(resources, 'mic', mac ? 'typd-mic' : 'typd-mic.exe');
+    checks.mic_helper = sizeOf(exe) > 0;
+    if (!checks.mic_helper) problems.push('the microphone helper (resources/mic/' + path.basename(exe) + ') is missing: run scripts/build-mic.js');
+    else if (!mac) {
+      let rec = null;
+      try { rec = JSON.parse(fs.readFileSync(path.join(ROOT, 'vendor', 'mic', 'BUILD.json'), 'utf8')); } catch { /* no record here (CI) */ }
+      if (rec) {
+        checks.mic_helper_sha256 = sha256File(exe);
+        if (rec.sha256 !== checks.mic_helper_sha256) problems.push('resources/mic/typd-mic.exe is not vendor/mic\'s build (BUILD.json)');
+        else if (rec.source !== require('./build-mic').sourceRecord().source) problems.push('vendor/mic/typd-mic.exe was built from another native/mic/typd-mic.c: run scripts/build-mic.js win');
+      }
+    }
+  }
+
   // 4. every key this machine knows, byte for byte, in every file
   const keys = knownKeys();
   checks.known_keys_scanned = keys.length;
@@ -356,6 +375,7 @@ function buildWin({ dir, out, withModel, withCuda }) {
   }
   if (withCuda) delete env.TYPD_NO_BUNDLED_CUDA; else env.TYPD_NO_BUNDLED_CUDA = '1';
   if (!fs.existsSync(path.join(ROOT, 'vendor', 'llama', 'llama-server.exe'))) fail('vendor/llama/llama-server.exe is missing');
+  { const m = require('./build-mic').check(path.join(ROOT, 'vendor', 'mic'), 'typd-mic.exe'); if (!m.ok) fail(m.why + ': run node scripts/build-mic.js win'); }
   const cli = path.join(ROOT, 'node_modules', 'electron-builder', 'cli.js');
   if (!fs.existsSync(cli)) fail('node_modules/electron-builder is missing: npm ci first');
   const version = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;

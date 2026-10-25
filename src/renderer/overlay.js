@@ -106,10 +106,28 @@
   var micLabel = '';   // its name, to find it again if the id changes
   var SILENT_BLOCKS = 24;   // 24 x 64 ms ≈ 1.5 s
 
+  // 0.2.12: main usually has the microphone (its native helper, src/main/capture.js) and sends only the
+  // level for the meter (session:level) and the moment its first audio arrived (session:hearing). This
+  // page captures only when main says so: no helper (session:start native false), or main falling back
+  // to it mid-session (session:mic-fallback). `owned`: this page captured in this session, so it has a
+  // recording to hand over at the end.
+  var native = false;
+  var nativeLevel = 0;
+  var owned = false;
+  var hearing = false;   // the microphone's first audio is here: "listening", and the start cue
+
+  function markHearing() {
+    if (hearing || state !== 'listening') return;
+    hearing = true;
+    overlay.setAttribute('data-hearing', 'true');
+    window.typdSound.play('start');
+  }
+
   async function startMic() {
     synthetic = false;
     chunks = [];
     capturing = true;
+    owned = true;
     heard = false; zeroBlocks = 0;
 
     try {
@@ -160,6 +178,7 @@
       recorder.onaudioprocess = function (e) {
         if (!capturing) return;
         var block = new Float32Array(e.inputBuffer.getChannelData(0));
+        markHearing();
         if (!heard) {
           for (var z = 0; z < block.length && !heard; z++) if (block[z] !== 0) heard = true;
           if (!heard && ++zeroBlocks === SILENT_BLOCKS) window.typd.micProblem('silent');
@@ -184,13 +203,16 @@
       synthetic = Boolean(window.__typdSynthetic);
       analyser = null;
       capturing = false;
-      if (!window.__typdSynthetic) window.typd.micProblem('unavailable', (err && err.name) || '');
+      if (window.__typdSynthetic) markHearing();
+      else window.typd.micProblem('unavailable', (err && err.name) || '');
     }
   }
 
-  /** Stop capture and hand the audio to main. */
+  /** Stop capture and hand the audio to main -- only when this page had the microphone. */
   function stopMic(deliver) {
     capturing = false;
+    var had = owned;
+    owned = false;
 
     if (recorder) {
       recorder.onaudioprocess = null;
@@ -206,7 +228,7 @@
     // Nothing reads the context until the next startMic, which resumes it.
     if (audioCtx && audioCtx.state === 'running') audioCtx.suspend();
 
-    if (!deliver) { chunks = []; return; }
+    if (!deliver || !had) { chunks = []; return; }
 
     var total = 0;
     for (var i = 0; i < chunks.length; i++) total += chunks[i].length;
@@ -225,6 +247,11 @@
     // state can be inspected without anyone having to talk into the machine.
     if (window.__typdSynthetic) synthetic = true;
 
+    if (native && !window.__typdSynthetic) {
+      // The helper's level, measured in main (session:level), read the same way as the analyser's.
+      peak = Math.max(peak * 0.995, nativeLevel);
+      return Math.min(1, nativeLevel / Math.max(peak, 0.015));
+    }
     if (analyser && sampleBuf && !window.__typdSynthetic) {
       analyser.getFloatTimeDomainData(sampleBuf);
       var sum = 0;
@@ -506,10 +533,25 @@
     colour = null;   // the scheme can change between sessions (TYPD_PREVIEW_THEME)
     acted = false;
     controlsLive = true;
+    native = Boolean(p.native);
+    nativeLevel = 0;
+    hearing = false;
+    overlay.setAttribute('data-hearing', 'false');
     overlay.setAttribute('data-visible', 'true');
     setState('listening');
     reportHits();
-    window.typdSound.play('start');
+    // The start cue plays with the first audio (markHearing): it means "talk now", and now is when the
+    // microphone hears. Main says so for its helper; this page's own capture says so on its first block.
+    if (!native) startMic();
+  });
+
+  window.typd.on('session:hearing', function () { if (native) markHearing(); });
+  window.typd.on('session:level', function (p) { if (native && typeof p.rms === 'number' && isFinite(p.rms)) nativeLevel = Math.max(0, p.rms); });
+  // The helper failed during this dictation: this page captures from here on (main keeps what came before).
+  window.typd.on('session:mic-fallback', function () {
+    if (!native || state !== 'listening' || !controlsLive) return;   // never after the key is let go
+    native = false;
+    nativeLevel = 0;
     startMic();
   });
 

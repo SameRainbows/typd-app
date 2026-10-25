@@ -169,6 +169,15 @@ async function afterPack(context) {
     }
   }
 
+  // --- every platform: the microphone helper (0.2.12, scripts/build-mic.js) -----------------
+  // Typd falls back to Chromium's capture without it, so a build missing it would still dictate, just
+  // slower to start; refused all the same, so it can never be left out by accident.
+  const micHelper = path.join(resources, 'mic', mac ? 'typd-mic' : 'typd-mic.exe');
+  if (!fs.existsSync(micHelper) || fs.statSync(micHelper).size === 0) {
+    throw new Error(`Packaged app is missing the microphone helper ${micHelper}: run node scripts/build-mic.js ${mac ? 'mac ' + arch : 'win'}`);
+  }
+  console.log(`  • typd: microphone helper ${path.basename(micHelper)} (${fs.statSync(micHelper).size} B)`);
+
   // --- tester builds: TYPD_TESTER_CONFIG names a tester.json to ship ---------------------
   // Only <resources>/tester.json makes a tester build (src/main/sharing.js), so an ordinary
   // build (variable unset) is a public build: it shares with no tester's key (on by default,
@@ -194,6 +203,11 @@ async function afterPack(context) {
   if (!m.fat && CPU[arch] && m.cpu !== CPU[arch]) {
     throw new Error(`${server} is not built for ${arch} (cpu type 0x${m.cpu.toString(16)}); run node scripts/fetch-llama-mac.js ${arch}`);
   }
+  const mm = machOMagic(micHelper);
+  if (!mm) throw new Error(`${micHelper} is not a Mach-O binary`);
+  if (!mm.fat && CPU[arch] && mm.cpu !== CPU[arch]) {
+    throw new Error(`${micHelper} is not built for ${arch} (cpu type 0x${mm.cpu.toString(16)}); run node scripts/build-mic.js mac ${arch}`);
+  }
 
   const machos = walk(resources).filter((f) => machOMagic(f));
   for (const f of machos) fs.chmodSync(f, 0o755);
@@ -210,7 +224,13 @@ async function afterPack(context) {
   // Extended attributes (quarantine, Finder info) make codesign refuse the bundle.
   try { run('xattr', ['-cr', app]); } catch { /* nothing to clear */ }
   const how = signArgs();
-  for (const f of machos) run('codesign', ['--force', ...how.args, f]);
+  // The microphone helper like the app's own helpers: Typd's identity, the audio-input entitlement, and
+  // an identifier of its own (its embedded Info.plist carries the app's NSMicrophoneUsageDescription).
+  // macOS attributes its microphone use to Typd, the app responsible for it, whose switch it uses.
+  for (const f of machos) {
+    if (f === micHelper) run('codesign', ['--force', ...how.args, '--identifier', 'ai.typd.app.mic', ...entitlementArgs(), f]);
+    else run('codesign', ['--force', ...how.args, f]);
+  }
   // The bundle and, through --deep, its helpers and frameworks: with the microphone entitlement. Still
   // no hardened runtime (no --options runtime): see scripts/mac-entitlements.plist.
   run('codesign', ['--force', '--deep', ...how.args, ...entitlementArgs(), app]);
