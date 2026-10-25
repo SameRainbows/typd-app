@@ -2,22 +2,55 @@
 
 Voice dictation that runs on your computer.
 
-Tap a key and talk the way you actually think. One small speech model, running locally, hears you
-and writes the finished text — fillers gone, self-corrections resolved, lists and numbers written
-properly — and pastes it into whatever app you were typing in. Highlight some text first and what
-you say is taken as an instruction instead: "make this shorter", "turn this into a list".
+[![Typd turning spoken sentences, fillers and restarts included, into finished text](https://github.com/SameRainbows/typd-app/releases/download/launch-video/typd_flip_loop.gif)](https://github.com/SameRainbows/typd-app/releases/download/launch-video/typd_launch_16x9.mp4)
 
-Typd is a desktop app for Windows and macOS, built with Electron, with the model served by
-[llama.cpp](https://github.com/ggml-org/llama.cpp). Website and demo video:
-[typd.mehmetdedeler.com](https://typd.mehmetdedeler.com).
+Real recordings, real Typd output, a stylized reconstruction. [Watch the video with sound (MP4, 39 s)](https://github.com/SameRainbows/typd-app/releases/download/launch-video/typd_launch_16x9.mp4).
+
+Tap a key and talk the way you actually think. One speech model, running locally, hears you and
+writes the finished text — fillers gone, self-corrections resolved, lists and numbers written
+properly — and pastes it into the app you were typing in. Highlight some text first and what you
+say is taken as an instruction instead: "make this shorter", "turn this into a list".
 
 This repository is the app's source code, under the **GPL-3.0** ([LICENSE](LICENSE)).
+
+## Download
+
+**Typd 0.2.11** for Windows 10/11 (x64) and Apple-silicon Macs:
+**[typd.mehmetdedeler.com](https://typd.mehmetdedeler.com/download/)**.
+
+- The installer has no model in it. On first launch Typd downloads the one that suits your
+  computer, once:
+  - **Full**: P2d, 1.7B parameters (1.4 GB), on a PC with an NVIDIA GPU with 4 GB of memory or
+    more, or a Mac with 16 GB of memory or more;
+  - **Light**: 0.6B parameters (0.6 GB), everywhere else.
+
+  **Model** in Settings changes it.
+- After that download, dictation works offline.
+- The installers are not signed by Apple or Microsoft yet: macOS wants **Open Anyway** in System
+  Settings, Windows shows a security warning (**Run**). The download page shows both steps.
+- **Language:** English. The model is trained on English dictation; while it writes, it is held to
+  English or Turkish, so a short phrase never comes out in another language or script.
+
+## How accurate
+
+The full model (P2d) against Wispr Flow (Pro). Word error rate on the words that carry meaning
+(case, punctuation and number style ignored); lower is better. Wispr Flow's outputs were only
+scored, never trained on.
+
+| Test | Typd (P2d) | Wispr Flow |
+|---|---:|---:|
+| 70 real dictations, one speaker (the developer) | **3.5 %** | 6.1 % |
+| AASR-Bench: 407 English dictations full of self-corrections, synthetic voices | **8.5 %** | 8.75 % |
+| … AASR-Bench clips where real content was dropped | **4** | 6 |
+
+One speaker is a small sample, and on AASR-Bench the two are close. The light model is a little
+less accurate (4.0 % and 9.1 % on the same two tests).
 
 ## What is here, and what is not
 
 | | |
 |---|---|
-| **Here (GPL-3.0)** | The desktop app: hotkeys, recording, the dictation pipeline, pasting, the overlay and the Typd window, history and dictionary, sharing (on by default, off in Settings), model and app updates, packaging scripts, benches and docs. |
+| **Here (GPL-3.0)** | The desktop app: hotkeys, recording, the dictation pipeline, pasting, the overlay and the Typd window, history and dictionary, sharing (asked on first launch), model and app updates, packaging scripts, benches and docs. |
 | **Not here** | The dictation model's weights. They are downloaded separately and licensed under [MODEL_LICENSE.txt](MODEL_LICENSE.txt), not the GPL. |
 | **Not here** | The research and training that produced the model, and the server code behind sharing and updates. The app talks to that server only through the public routes described below. |
 
@@ -29,10 +62,16 @@ revise:   mic ─► typd-dictate, with the highlighted text and your spoken ins
 ```
 
 - **One model, not two.** `typd-dictate` is [Qwen3-ASR](https://github.com/QwenLM/Qwen3-ASR)
-  (Apache-2.0) fine-tuned to write what you meant rather than every word you said. It runs in
-  llama.cpp's `llama-server`, started at launch and kept resident, so no dictation waits for a load.
-  It uses the GPU when there is one (CUDA on Windows, Metal on Apple chips) and works on the CPU
-  alone, more slowly.
+  (Apache-2.0, 1.7B or 0.6B) fine-tuned to write what you meant rather than every word you said.
+  It runs in [llama.cpp](https://github.com/ggml-org/llama.cpp)'s `llama-server`, started at launch
+  and kept resident, so no dictation waits for a load. It uses the GPU when it can (CUDA on Windows,
+  whose libraries are downloaded after the model on a PC with an NVIDIA GPU; Metal on a Mac) and
+  works on the CPU alone, more slowly.
+- **Long dictations arrive about as fast as short ones.** From about 20 seconds on, the full model
+  starts writing while you are still talking.
+- **Low-memory mode.** With the light model, or on a computer with less than 8 GB of memory, the
+  model uses about 0.8 GB, with a small llama.cpp patch to its audio encoder
+  (`patches/llama.cpp/`, built by `scripts/build-mtmd.js`).
 - **Revising** runs on the same local model when the model supports it (`"revise": true` in its
   `model.json`, with an optional LoRA adapter switched on for revise requests only). Otherwise it
   falls back to a cloud model (`src/main/pipeline/cleanup.js`, which needs `POOLSIDE_API_KEY`).
@@ -46,6 +85,8 @@ revise:   mic ─► typd-dictate, with the highlighted text and your spoken ins
 - **Pasting.** Windows has no "type this into the focused app" API, so Typd stashes the clipboard,
   writes the text, sends Ctrl+V through one long-lived PowerShell helper (`src/main/inject.ps1`)
   and puts your clipboard back. On a Mac it uses a small helper of its own (`src/main/inject-mac.js`).
+  When there is no text field to paste into, a small card offers **Copy** instead
+  (`src/main/pasteTarget.js`).
 - **The hotkey.** Right Alt on Windows (only a clean tap counts, so AltGr chords keep working),
   Right ⌘ on a Mac; any other key can be chosen in Settings. The rules are
   `src/main/hotkey-logic.js`.
@@ -58,14 +99,16 @@ revise:   mic ─► typd-dictate, with the highlighted text and your spoken ins
 - **Dictation runs on your computer.** The model runs locally and needs no network to dictate;
   history and the dictionary stay in your user folder (`%APPDATA%\typd` on Windows,
   `~/Library/Application Support/typd` on a Mac).
-- **Sharing is on by default** (since 0.2.4). After a dictation's text is pasted, a packaged Typd
-  sends that dictation in the background to help train the model; the walkthrough's first screen
-  says so, and **Share dictations** in Settings turns it off at once (an earlier "off" stays off).
-  A shared item is the audio, the pasted text (not for a revision of selected text), the app's
-  process name, the model and its version, timings, OS and versions; never what is on your screen,
-  your selection or window titles. At most 50 dictations or 20 MB a day. **Delete what I've
-  shared** deletes everything stored for your install on the server. The code is
-  `src/main/sharing.js` and `src/main/collect.js`; `TYPD_NO_SHARE=1` turns it off for one run.
+- **Sharing is opt-in, asked on first launch.** The walkthrough's first screen asks whether to
+  share your dictations (audio and text) to help train the model, with **Share** and **Don't
+  share** and nothing pre-selected; nothing is shared until you choose **Share**. An install from
+  0.2.4–0.2.6, when sharing was on by default, is asked once too, and **Don't share** there also
+  deletes what it had shared. **Share dictations** in Settings changes it anytime.
+- **What a shared dictation is:** the audio, the text Typd pasted or copied (not a revision of
+  selected text), the app's process name, the model and its version, timings, OS and versions;
+  never what is on your screen, your selection or window titles. At most 50 dictations or 20 MB a
+  day. **Delete what I've shared** deletes everything stored for your install on the server. The
+  code is `src/main/sharing.js` and `src/main/collect.js`; `TYPD_NO_SHARE=1` turns it off for one run.
 - **Update checks** (packaged builds only) send the app version, the model version, the OS and an
   anonymous random install ID, so the developer can count which versions are in use
   (`src/main/versionStats.js`). Runs from source send none of it.
@@ -73,7 +116,7 @@ revise:   mic ─► typd-dictate, with the highlighted text and your spoken ins
 ## Updates
 
 - **Model updates** (`src/main/modelUpdate.js`). A packaged Typd reads the published model
-  manifest every 6 hours and follows it only if its **Ed25519 signature** verifies with a key built
+  manifest every hour and follows it only if its **Ed25519 signature** verifies with a key built
   into the app (`src/main/modelManifestKey.js`). It downloads a new version in the background
   (resumable, every file checked against the manifest's size and sha256) and switches to it only
   when you are not dictating. If the new model fails to start or fails its self-test, the previous
@@ -94,20 +137,23 @@ You need [Node.js](https://nodejs.org/) 24 and Git, on Windows 10/11 (x64) or ma
 
 ```bash
 npm ci
-node scripts/fetch-model.js --accept-license   # the model, ~1.5 GB, into models/typd-dictate/ (read MODEL_LICENSE.txt first)
+node scripts/fetch-model.js --accept-license   # the full model, ~1.4 GB, into models/typd-dictate/ (read MODEL_LICENSE.txt first)
 ```
 
 `fetch-model.js` downloads what a packaged Typd downloads for its model updates: it checks the
 manifest's signature with the app's own code and every file's sha256 (`--check` only reads and
 verifies the manifest).
 
-Then llama.cpp's server:
+Then llama.cpp's server, release b11351:
 
-- **macOS:** `npm run fetch:llama-mac` downloads the official llama.cpp release (b11351), checks
-  its SHA-256 and keeps what `llama-server` needs in `vendor/llama-mac/<arch>/`.
-- **Windows:** put `llama-server.exe` and its DLLs from a llama.cpp Windows release (the CUDA 12
-  x64 build for an NVIDIA GPU, with its `cudart` package; or the CPU build) into `vendor/llama/`.
-  Use a build at least as new as the one the Mac script pins, since Qwen3-ASR audio support is recent.
+- **macOS:** `npm run fetch:llama-mac` downloads the official llama.cpp release, checks its SHA-256
+  and keeps what `llama-server` needs in `vendor/llama-mac/<arch>/`.
+- **Windows:** put `llama-server.exe` and its DLLs from the llama.cpp b11351 Windows release (the
+  CUDA 12 x64 build for an NVIDIA GPU, with its `cudart` package; or the CPU build) into
+  `vendor/llama/`.
+- Optional, for low-memory mode's smaller audio encoder: the patched `mtmd` library,
+  `npm run build:mtmd:win` on Windows (Visual Studio 2022) or `node scripts/build-mtmd.js mac arm64`
+  on a Mac (Xcode tools and cmake). An unpatched llama.cpp works too, with more memory.
 
 ```bash
 npm start              # run Typd
@@ -137,7 +183,9 @@ node bench/home.js         # history, undo, the dictionary
 node bench/learn.js        # which corrections are learned, and which edits are not
 node bench/updates.js      # model updates: download, resume, verify, switch, revert; the self-test
 node bench/lora.js --no-model   # the revise adapter's requests, against a fake server
-node bench/sharing.js      # on by default, an explicit off kept, enrollment, limits, flags, delete (a fake server)
+node bench/sharing.js      # sharing: enrollment, limits, flags, delete (a fake server)
+node bench/share-choice.js # sharing is asked; nothing is shared before Share (a headless Chrome or Edge, if there is one)
+node bench/no-modal.js     # none of Typd's dialogs can stop Typd
 node bench/versions.js     # version headers on update checks; nothing from source runs
 node bench/app-update.js   # signed app updates, idle gating, real installs and rollbacks with the helper, in a temp folder
 node bench/public-build.js # a public build carries no key
@@ -155,6 +203,7 @@ src/main/pipeline/   the local model (local.js), prompts, context, the cloud fal
 src/main/app-update/ the helper scripts that swap in an app update
 src/renderer/        the overlay pill, the Typd window (with the walkthrough), the flag window
 scripts/             packaging hooks, icon builds, llama.cpp and model fetchers
+patches/             the llama.cpp patch (low-memory mode)
 bench/               the tests and measurements that decided the design
 design/              standalone design studies, openable in a browser
 parked/              working code taken out of the app for now
@@ -166,9 +215,9 @@ docs/                UX plan, macOS notes, the tester kit
 ## Contributing
 
 Issues and pull requests are welcome. Typd is developed in a private repository and copied here,
-one commit per sync: an accepted pull request is applied there by hand and comes back here with the
-next sync. Continuous integration runs in the private repository; this one has none.
-Security problems: see [SECURITY.md](SECURITY.md).
+one commit per private commit: an accepted pull request is applied there by hand and comes back
+here with the next sync. The benches run in the private repository; this one runs only the
+maintainer-started macOS build. Security problems: see [SECURITY.md](SECURITY.md).
 
 ## Licence
 
@@ -178,3 +227,5 @@ Security problems: see [SECURITY.md](SECURITY.md).
   base model, Qwen3-ASR, is Apache-2.0.
 - Dependencies keep their own licences (Electron and uiohook-napi: MIT; llama.cpp, downloaded
   separately: MIT).
+- The launch video's speech clips: Earnings-22 (CC BY-SA 4.0), AMI Meeting Corpus (CC BY 4.0),
+  Common Voice Spontaneous Speech (CC0).
