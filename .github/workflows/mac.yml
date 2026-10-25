@@ -3118,7 +3118,7 @@ jobs:
           S="$RUNNER_TEMP/shard"; mkdir -p "$S/audio"
           curl -fsSL -o "$RUNNER_TEMP/jfk.wav" https://raw.githubusercontent.com/ggml-org/whisper.cpp/master/samples/jfk.wav
           test "$(shasum -a 256 "$RUNNER_TEMP/jfk.wav" | cut -d' ' -f1)" = 59dfb9a4acb36fe2a2affc14bacbee2920ff435cb13cc314a08c13f66ba7860e
-          for k in 1 2 3 4 5 6; do afconvert -f flac -d flac "$RUNNER_TEMP/jfk.wav" "$S/audio/ci_t$k.flac" || { python3 -m pip install -q --user --break-system-packages soundfile numpy; python3 -c "import soundfile as sf, sys; w, sr = sf.read(sys.argv[1]); sf.write(sys.argv[2], w, sr, format='FLAC')" "$RUNNER_TEMP/jfk.wav" "$S/audio/ci_t$k.flac"; }; echo "{"id": "ci_t$k", "source": "public_domain", "duration_s": 11.0, "audio": "audio/ci_t$k.flac"}" >> "$S/manifest.jsonl"; done
+          for k in 1 2 3 4 5 6; do afconvert -f flac -d flac "$RUNNER_TEMP/jfk.wav" "$S/audio/ci_t$k.flac" || { python3 -m pip install -q --user --break-system-packages soundfile numpy; python3 -c "import soundfile as sf, sys; w, sr = sf.read(sys.argv[1]); sf.write(sys.argv[2], w, sr, format='FLAC')" "$RUNNER_TEMP/jfk.wav" "$S/audio/ci_t$k.flac"; }; printf '{"id": "ci_t%s", "source": "public_domain", "duration_s": 11.0, "audio": "audio/ci_t%s.flac"}\n' $k $k >> "$S/manifest.jsonl"; done
           ls -la "$S/audio"; tar cf "$RUNNER_TEMP/teacher-in-ci$R.tar" -C "$S" .
           echo "CI test input" > "$RUNNER_TEMP/notes.md"
           export GITHUB_TOKEN="$GH_TOKEN"; . "$M/jobs/lib.sh"
