@@ -20,7 +20,7 @@ This repository is the app's source code, under the **GPL-3.0** ([LICENSE](LICEN
 
 - The installer has no model in it. On first launch Typd downloads the one that suits your
   computer, once:
-  - **Full**: P2d, 1.7B parameters (1.4 GB), on a PC with an NVIDIA GPU with 4 GB of memory or
+  - **Full**: P2g, 1.7B parameters (1.4 GB), on a PC with an NVIDIA GPU with 4 GB of memory or
     more, or a Mac with 16 GB of memory or more;
   - **Light**: 0.6B parameters (0.6 GB), everywhere else.
 
@@ -33,18 +33,23 @@ This repository is the app's source code, under the **GPL-3.0** ([LICENSE](LICEN
 
 ## How accurate
 
-The full model (P2d) against Wispr Flow (Pro). Word error rate on the words that carry meaning
+The full model (P2g) against Wispr Flow (Pro). Word error rate on the words that carry meaning
 (case, punctuation and number style ignored); lower is better. Wispr Flow's outputs were only
 scored, never trained on.
 
-| Test | Typd (P2d) | Wispr Flow |
+| Test | Typd (P2g) | Wispr Flow |
 |---|---:|---:|
-| 70 real dictations, one speaker (the developer) | **3.5 %** | 6.1 % |
-| AASR-Bench: 407 English dictations full of self-corrections, synthetic voices | **8.5 %** | 8.75 % |
+| 70 real dictations, one speaker (the developer) | **4.2 %** | 6.1 % |
+| AASR-Bench: 407 English dictations full of self-corrections, synthetic voices | **8.7 %** | 8.75 % |
 | … AASR-Bench clips where real content was dropped | **4** | 6 |
 
-One speaker is a small sample, and on AASR-Bench the two are close. The light model is a little
-less accurate (4.0 % and 9.1 % on the same two tests).
+One speaker is a small sample, and on AASR-Bench the two are level. The light model scores 4.0 %
+and 9.1 % on the same two tests.
+
+Against local Whisper + LLM setups on the same laptop (RTX 3050 Ti, 4 GB): Whisper base, turbo or
+large-v3 followed by Qwen3.5 4B or 9B with OpenWhispr's cleanup prompt. Every one of them got more
+words wrong than Typd's full model on all four test sets (AASR-Bench: 13.0 % for the best of them),
+and took 2.5 to 36 s per dictation against Typd's 0.5 s: two models do not fit in 4 GB of GPU memory.
 
 ## What is here, and what is not
 
