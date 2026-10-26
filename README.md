@@ -59,6 +59,16 @@ and took 2.5 to 36 s per dictation against Typd's 0.5 s: two models do not fit i
 | **Not here** | The dictation model's weights. They are downloaded separately and licensed under [MODEL_LICENSE.txt](MODEL_LICENSE.txt), not the GPL. |
 | **Not here** | The research and training that produced the model, and the server code behind sharing and updates. The app talks to that server only through the public routes described below. |
 
+## Training data and credits
+
+`typd-dictate` is fine-tuned from [Qwen3-ASR](https://github.com/QwenLM/Qwen3-ASR) (Apache-2.0, Alibaba Cloud).
+It learned from openly licensed speech: Emilia-YODAS (CC BY 4.0), YODAS2, YODAS-Granary and YODAS (CC BY 3.0),
+NaturalVoices (CC BY and public-domain episodes only), Localized Narratives (CC BY 4.0), Common Voice Spontaneous
+Speech (CC0) and FLEURS (CC BY 4.0), plus, for the light model, AMI (CC BY 4.0), VoxPopuli (CC0) and
+DisfluencySpeech. Scripted practice dictations were voiced with 20 LibriTTS-R speakers (CC BY 4.0). The audio was
+segmented, transcribed and given finished text, and used only to train the model; none of it is redistributed.
+Creators, links and licences: **[typd.mehmetdedeler.com/credits](https://typd.mehmetdedeler.com/credits/)**.
+
 ## How it works
 
 ```
