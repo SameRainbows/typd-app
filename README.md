@@ -20,7 +20,7 @@ This repository is the app's source code, under the **GPL-3.0** ([LICENSE](LICEN
 
 - The installer has no model in it. On first launch Typd downloads the one that suits your
   computer, once:
-  - **Full**: P2g, 1.7B parameters (1.4 GB), on a PC with an NVIDIA GPU with 4 GB of memory or
+  - **Full**: P2g, 1.7B parameters (1.5 GB), on a PC with an NVIDIA GPU with 4 GB of memory or
     more, or a Mac with 16 GB of memory or more;
   - **Light**: 0.6B parameters (0.6 GB), everywhere else.
 
@@ -142,7 +142,7 @@ You need [Node.js](https://nodejs.org/) 24 and Git, on Windows 10/11 (x64) or ma
 
 ```bash
 npm ci
-node scripts/fetch-model.js --accept-license   # the full model, ~1.4 GB, into models/typd-dictate/ (read MODEL_LICENSE.txt first)
+node scripts/fetch-model.js --accept-license   # the full model, ~1.5 GB, into models/typd-dictate/ (read MODEL_LICENSE.txt first)
 ```
 
 `fetch-model.js` downloads what a packaged Typd downloads for its model updates: it checks the
