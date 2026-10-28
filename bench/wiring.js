@@ -187,13 +187,24 @@ const notPasted = (main.match(/if \(!result\.ok\) \{[\s\S]*?\n {8}\}/) || [''])[
 check('a dictation not pasted is shared too (pasted: false), only when it was copied or offered in the copy pop-up',
   /if \(result\.copied \|\| result\.offered\) sharing\.add\(current, event\.text, \{ pasted: false \}\);/.test(notPasted) && (main.match(/sharing\.add\(/g) || []).length === 2);
 
-// Sharing in public builds, asked since 0.2.7 (settings.js shareRule; bench/first-launch.js runs it).
-section('sharing asked (public builds, 0.2.7)');
+// Sharing in public builds, asked since 0.2.7, and since 0.2.12 on only where a person chose it
+// (settings.js shareRule; bench/first-launch.js runs it).
+section('sharing asked (public builds, 0.2.7; every install that never chose, 0.2.12)');
 const sSrc = read('src/main/settings.js'), shSrc = read('src/main/sharing.js'), hwSrc = read('src/main/home-window.js');
-check("settings: 'share' and 'shareAsk' decided once by shareRule (fresh install, the cutoff, an explicit off)",
-  /const sh = shareRule\(saved, \{ fresh: \(\) => decideFresh\(\), firstLaunch: firstLaunchAt \}\);/.test(sSrc) &&
-  /const SHARE_CUTOFF = Date\.parse\('2026-10-18T15:00:00Z'\);/.test(sSrc) && /if \(sh\.decided && !firstRun\) write\(cache\);/.test(sSrc));
+check("settings: 'share', 'shareAsk' and 'shareChosen' decided once by shareRule (fresh install, a recorded choice, an explicit off); no cutoff",
+  /const sh = shareRule\(saved, \{ fresh: \(\) => decideFresh\(\) \}\);/.test(sSrc) && /cache\.shareChosen = sh\.shareChosen;/.test(sSrc) &&
+  !/SHARE_CUTOFF|firstLaunch/.test(sSrc) && /if \(sh\.decided && !firstRun\) write\(cache\);/.test(sSrc));
 check("settings: only 'on' or 'off' can be set ('ask' is never set back)", /if \(key === 'share' && !\['on', 'off'\]\.includes\(value\)\) return false;/.test(sSrc));
+check("settings: setting 'share' records it as a choice in the same write; shareChosen is never set on its own",
+  /if \(key === 'share'\) s\.shareChosen = true;\s*write\(s\);/.test(sSrc) && /if \(key === 'shareChosen'\) return false;/.test(sSrc) &&
+  /if \(s\[key\] === value && \(key !== 'share' \|\| s\.shareChosen\)\) return true;/.test(sSrc));
+check("only sharing.js sets 'share' (its choice.set), and Settings' generic set cannot",
+  fs.readdirSync(path.join(root, 'src/main')).filter((f) => f.endsWith('.js') && /settings\.set\('share'/.test(read('src/main/' + f))).join() === 'sharing.js' &&
+  /set: \(v\) => settings\.set\('share', v\)/.test(shSrc) && !/'share'/.test((hwSrc.match(/\['mic', 'micLabel'[^\]]*\]/) || [''])[0]));
+check('a shared dictation carries no program name: sharing.add and backfill pass none, collect.js writes none and strips it from older items',
+  !/\bapp:/.test((shSrc.match(/s\.add\(\{[\s\S]*?\n {4}\}\);/) || ['app:'])[0]) && !/\bapp:/.test((read('src/main/backfill.js').match(/rec: \{[\s\S]*?\n {6}\}/) || ['app:'])[0]) &&
+  !/\bapp:/.test((read('src/main/collect.js').match(/function makeMeta[\s\S]*?\n {2}\}/) || ['app:'])[0]) &&
+  /const NEVER_SENT = \['app', /.test(read('src/main/collect.js')) && /const meta = metaToSend\(raw\);/.test(read('src/main/collect.js')));
 check("sharing: only 'on' is on for a public build ('ask' and 'off' share nothing); a tester build keeps its key and pause",
   /const sharingOn = \(\) => \(mode === 'tester' \? !paused\(\) : choice\.get\(\) === 'on'\);/.test(shSrc));
 check("every answer goes through sharing.answer (Don't share deletes what 0.2.6's default shared)",
@@ -203,7 +214,8 @@ check('Settings: the switch works at once both ways (no window in between)',
 const rowAt = hHtml.indexOf('id="betaRow"'), recAt = hHtml.indexOf('id="recTitle"'), modelAt = hHtml.indexOf('id="modelRow"');
 check('Settings: "Share dictations" sits right after "Keep recordings", before the model rows', recAt > 0 && rowAt > recAt && rowAt < modelAt);
 check('Settings: "What\u2019s shared" opens the list in place, with what is never shared and the update-check line',
-  /id="betaWhat" hidden/.test(hHtml) && /\$\('betaWhat'\)\.hidden = !open;/.test(hJs) && /Never shared: what\u2019s on your screen, text you had selected, window titles, or anything when you\u2019re not dictating\./.test(hHtml));
+  /id="betaWhat" hidden/.test(hHtml) && /\$\('betaWhat'\)\.hidden = !open;/.test(hJs) && /Never shared: what\u2019s on your screen, text you had selected, window titles, which program you dictated into, or anything when you\u2019re not dictating\./.test(hHtml) &&
+  !/For each dictation:[^<]*program/.test(hHtml));
 const Q = 'Help make Typd better?', LINE = 'Share your dictations (audio and text) to train the model. Never sold or published. You can change this anytime in Settings.';
 const plain = (t) => t.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ');
 const sHtml = read('src/renderer/share.html');

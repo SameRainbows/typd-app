@@ -5,9 +5,12 @@
  * fake of typd-collect.
  *
  *   - public builds ask (0.2.7): not answered ('ask') queues nothing and sends nothing, not even an
- *     enrollment; Share (answer 'on') enrolls and every dictation goes; 'on' (an install from before
- *     the cutoff) shares; an explicit 'off' stays off: nothing queued, not one request
- *   - Don't share: nothing shared yet -> off, not one request; after 0.2.6's default shared some ->
+ *     enrollment; Share (answer 'on') enrolls and every dictation goes; 'on' (settings.js keeps it
+ *     only when a person chose it, 0.2.12) shares; an explicit 'off' stays off: nothing queued, not
+ *     one request
+ *   - never the program's name (0.2.12): not on a live dictation, not on an item an earlier Typd
+ *     left waiting in the outbox (collect.js metaToSend), not on a flag
+ *   - Don't share: nothing shared yet -> off, not one request; after an earlier default shared some ->
  *     DELETE /v1/me, the outbox emptied, the key forgotten; a delete that fails is retried at the
  *     next launch (deleteWanted in share.json) until it goes, unless the person turns sharing on
  *   - the automatic backfill's verdict (autoBackfillWhy): waits while not answered, never for a tester,
@@ -175,7 +178,7 @@ const outboxFiles = (dir, ext) => { try { return fs.readdirSync(dir).filter((f) 
   section('public builds: sharing is asked; not answered shares nothing; Share shares; "off" stays off');
   {
     server.reset();
-    const t = make(server, { choice: 'ask' });   // a fresh 0.2.7 install, or one from after the cutoff, not answered yet
+    const t = make(server, { choice: 'ask' });   // a fresh install, or any install that never chose (0.2.12), not answered yet
     check('not answered: off, choice "ask", nothing shared', t.s.status().state === 'off' && t.s.status().choice === 'ask' && t.s.status().shared === false, t.s.status());
     check('no consent step left in the API', !('needsConsent' in t.s));
     await t.s.start();
@@ -192,11 +195,12 @@ const outboxFiles = (dir, ext) => { try { return fs.readdirSync(dir).filter((f) 
     const it = [...server.items.values()][0] || { meta: {} };
     check('consent "all", never the screen context, the span or a title', it.meta.consent === 'all' &&
       !('context' in it.meta) && !('span' in it.meta) && !('title' in it.meta) && !JSON.stringify(it.meta).includes('SCREEN'), it.meta);
+    check('no program name (0.2.12): no "app" field, and "notepad" nowhere in it', !('app' in it.meta) && !JSON.stringify(it.meta).includes('notepad'), it.meta);
     check('the key is kept in share.json', Boolean(readKeyFile(t.keyFile)) && t.s.status().shared === true);
     const info = t.s.lastInfo();
     check('the last dictation is held for a flag, already shared', info && info.text === 'first words' && info.needsConsent === false, info);
 
-    const on = make(server, { choice: 'on' });   // an install from before the cutoff (settings.js shareRule)
+    const on = make(server, { choice: 'on' });   // an install whose person chose Share (settings.js keeps a recorded 'on')
     check('"on": on', on.s.status().state === 'on' && on.s.add(dictation('a tester from before')) === true);
     check('and sent: the first send enrolls', await until(() => server.items.size === 2) && server.count('/v1/enroll') === 2);
     check('only "on" is on: "" and anything else is off here (settings.js turns an old "" into on or ask)',
@@ -224,8 +228,8 @@ const outboxFiles = (dir, ext) => { try { return fs.readdirSync(dir).filter((f) 
     const r0 = await n0.s.answer('off');
     check("Don't share with nothing shared: off, not one request (no delete)", r0.ok && n0.choice() === 'off' && server.requests.length === 0 && !r0.deletedShared, r0);
 
-    // An install from after the cutoff that 0.2.6 shared from by default: a key, two items on the
-    // server, one still waiting in the outbox when 0.2.7 starts.
+    // An install that shared under an earlier default (0.2.4-0.2.6's, or an 'on' 0.2.7-0.2.11 kept
+    // without asking): a key, two items on the server, one still waiting in the outbox at the update.
     server.reset();
     const old = make(server, { choice: 'on' });
     old.s.add(dictation('shared by 0.2.6 one'));
@@ -236,12 +240,12 @@ const outboxFiles = (dir, ext) => { try { return fs.readdirSync(dir).filter((f) 
     await until(() => outboxFiles(old.outbox, '.json').length === 1);
     const k = readKeyFile(old.keyFile);
     server.uploadStatus = null;
-    const now7 = make(server, { choice: 'ask', home: old.home });   // the 0.2.7 launch: asked, not answered yet
+    const now7 = make(server, { choice: 'ask', home: old.home });   // the update's launch: asked, not answered yet
     const before = server.requests.length;
     await now7.s.start();
     now7.s.wake(0);
     await sleep(500);
-    check('0.2.7, not answered: the waiting item does not go', server.requests.length === before && outboxFiles(old.outbox, '.json').length === 1);
+    check('the update, not answered: the waiting item does not go', server.requests.length === before && outboxFiles(old.outbox, '.json').length === 1);
     check('status: off, not answered, but something was shared', now7.s.status().state === 'off' && now7.s.status().choice === 'ask' && now7.s.status().shared === true);
     const r1 = await now7.s.answer('off');
     check("Don't share: DELETE /v1/me with this install's key", server.count('/v1/me', 'DELETE') === 1 &&
@@ -281,6 +285,40 @@ const outboxFiles = (dir, ext) => { try { return fs.readdirSync(dir).filter((f) 
     await a3.s.choose('on');
     check('Share later drops the delete still owed', readKeyFile(o3.keyFile) && !readKeyFile(o3.keyFile).deleteWanted &&
       (await make(server, { choice: 'on', home: o3.home }).s.retryDelete()) === null && server.items.size === 1);
+  }
+
+  section("never the program's name (0.2.12)");
+  {
+    server.reset();
+    const t = make(server, { choice: 'on' });
+    await t.s.choose('on');
+    t.s.add(dictation('see you at eight', { app: 'Discord' }));
+    // An item 0.2.11 queued and never sent: its meta still names the program (and, written by hand
+    // here, a screen context no Typd ever wrote into one).
+    const old = '20261026T101010Z-0123456789abcdef';
+    const oldMeta = { v: 1, id: '0123456789abcdef', createdAt: '2026-10-26T10:10:10.000Z', mode: 'dictate', output: 'queued by 0.2.11',
+      outputChars: 16, model: 'm.gguf', engine: 'local', app: 'Discord', context: 'SCREEN', audioSeconds: 1, appVersion: '0.2.11', consent: 'all' };
+    fs.mkdirSync(t.outbox, { recursive: true });
+    fs.writeFileSync(path.join(t.outbox, old + '.wav'), require('../src/main/collect').encodeWav(new Float32Array(16000)));
+    fs.writeFileSync(path.join(t.outbox, old + '.json'), JSON.stringify(oldMeta, null, 1));
+    t.s.wake(0);
+    check('both uploaded', await until(() => server.items.size === 2), server.items.size);
+    const metas = [...server.items.values()].map((i) => i.meta);
+    check('the live one: no "app", "Discord" nowhere in it', metas.some((m) => m.output === 'see you at eight') &&
+      metas.filter((m) => m.output === 'see you at eight').every((m) => !('app' in m) && !JSON.stringify(m).includes('Discord')), metas);
+    const sentOld = metas.find((m) => m.output === 'queued by 0.2.11');
+    check("the one 0.2.11 left waiting goes without its program's name (and without a screen context)",
+      sentOld && !('app' in sentOld) && !('context' in sentOld) && !JSON.stringify(sentOld).includes('Discord') && sentOld.appVersion === '0.2.11' && sentOld.consent === 'all', sentOld);
+    const r = await t.s.flag({ note: 'wrong' });
+    t.s.wake(0);
+    await until(() => server.count('/v1/flag') === 1);
+    const fb = (server.requests.find((q) => q.path === '/v1/flag') || {}).flag || {};
+    check('a flag on it carries no program name either', r.state === 'flagged' && !('app' in fb) && !JSON.stringify(fb).includes('Discord'), fb);
+    const { metaToSend } = require('../src/main/collect');
+    const plain = Buffer.from(JSON.stringify({ id: 'x', output: 'hi' }));
+    check('metaToSend: a meta without any of them goes byte for byte; one that is not JSON too (the server refuses it)',
+      metaToSend(plain) === plain && metaToSend(Buffer.from('not json')).toString() === 'not json');
+    await t.s.choose('off');
   }
 
   section('the automatic backfill: who it is for (autoBackfillWhy)');

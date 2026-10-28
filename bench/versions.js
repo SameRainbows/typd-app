@@ -342,7 +342,7 @@ function fakeServer() {
     section('privacy text');
     const line = 'Update checks send the app and model version with an anonymous install ID, so the developer can count versions in use.';
     check("Settings' \u201cWhat\u2019s shared\u201d says it, in one line", read('src/renderer/home.html').includes('<p>' + line + '</p>'));
-    check("and still says what is never shared", /<p>Never shared: what’s on your screen, text you had selected, window titles, or anything when you’re not dictating\.<\/p>/.test(read('src/renderer/home.html')));
+    check("and still says what is never shared", /<p>Never shared: what’s on your screen, text you had selected, window titles, which program you dictated into, or anything when you’re not dictating\.<\/p>/.test(read('src/renderer/home.html')));
     check('docs/TESTER_KIT.md says it too', /\*\*Update checks\*\* send the app and model version with an anonymous install ID, so I can count\s+> versions in use\./.test(read('docs/TESTER_KIT.md')));
   } finally {
     srv.server.close();

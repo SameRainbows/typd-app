@@ -15,11 +15,12 @@
  * between cases. index.js's own use of it is checked in bench/model-choice.js (source checks), and
  * on a real Mac by mac.yml ("An update opens no window", scripts/mac-first-launch-check.sh).
  *
- * Sharing (0.2.7, settings.js shareRule): a fresh install is asked on the walkthrough ('ask'); an
- * earlier Typd's 'on', '' or no value stays 'on' with no new screen only for an install first started
- * before 2026-10-18 15:00 UTC (the oldest kept recording, share.json's enrolledAt, the files' creation
- * times), and is asked once in the small screen otherwise ('ask', shareAsk 'due'); 'off' stays off;
- * once decided it is kept (a second launch, an answer).
+ * Sharing (0.2.12, settings.js shareRule): a fresh install is asked on the walkthrough ('ask'); an
+ * 'on' is kept only when a person's choice set it (shareChosen, recorded by settings.set with
+ * 'share'). An earlier Typd's 'on', '' or no value -- 0.2.4-0.2.6's default, or the 'on' 0.2.7-0.2.11
+ * kept for installs first started before 2026-10-18 15:00 UTC -- is asked once in the small screen
+ * ('ask', shareAsk 'due'), however old the install; 'off' stays off; once decided it is kept (a
+ * second launch, an answer).
  */
 
 const fs = require('fs');
@@ -51,9 +52,13 @@ if (process.argv[2] === '--case') {
   settings.isFirstRun();
   const now = settings.walkthroughFor({ fresh, afterUpdate: Boolean(c.afterUpdate) });
   if (now !== settings.get('walkthrough')) settings.set('walkthrough', now);
+  const atLaunch = { share: settings.get('share'), shareAsk: settings.get('shareAsk'), shareChosen: settings.get('shareChosen') };
+  // A person's answer this launch, as sharing.js sets it (the walkthrough, the small screen, Settings).
+  const answered = c.answer ? settings.set('share', c.answer) : null;
+  const refused = settings.set('shareChosen', true);   // never set on its own
   const saved = JSON.parse(fs.readFileSync(path.join(c.appData, 'typd', 'settings.json'), 'utf8'));
-  process.stdout.write(JSON.stringify({ fresh, now, saved: saved.walkthrough, share: settings.get('share'), shareAsk: settings.get('shareAsk'),
-    savedShare: saved.share, savedShareAsk: saved.shareAsk, first: settings.firstLaunchAt() }));
+  process.stdout.write(JSON.stringify({ fresh, now, saved: saved.walkthrough, ...atLaunch, answered, refused,
+    savedShare: saved.share, savedShareAsk: saved.shareAsk, savedShareChosen: saved.shareChosen }));
   process.exit(0);
 }
 
@@ -80,9 +85,9 @@ function folder(files) {
   return { appData, userData };
 }
 
-/** One launch of 0.2.4 (or `version`) on that folder. */
-function launch(dirs, afterUpdate, version) {
-  const out = execFileSync(process.execPath, [__filename, '--case', JSON.stringify({ ...dirs, afterUpdate, version })], { encoding: 'utf8' });
+/** One launch of 0.2.4 (or `version`) on that folder; `answer`: 'on' or 'off' chosen during it. */
+function launch(dirs, afterUpdate, version, answer) {
+  const out = execFileSync(process.execPath, [__filename, '--case', JSON.stringify({ ...dirs, afterUpdate, version, answer })], { encoding: 'utf8' });
   return JSON.parse(out);
 }
 
@@ -221,68 +226,93 @@ check('0.2.12, a fresh install: due', r.fresh === true && r.now === 'due', r);
   check('once shown (done): never again', r.now === 'done', r);
 }
 
-console.log('\nsharing at the first launch of 0.2.7: asked, unless first started before the cutoff');
+console.log('\nsharing at the first launch of 0.2.12: every install that never chose is asked; a choice stays');
 {
   const S026 = { ...S024, lowMemory: 'auto' };   // 0.2.6 wrote share 'on' -- its default, not an answer
-  const BEFORE = { 'Typd/recordings/2026-10-17T09-12-03-120Z.wav': 'RIFF' };   // kept a day before the cutoff
+  const BEFORE = { 'Typd/recordings/2026-10-17T09-12-03-120Z.wav': 'RIFF' };   // kept a day before 0.2.7's cutoff (2026-10-18 15:00 UTC)
   const settled = (x, share, ask) => x.share === share && x.shareAsk === ask && x.savedShare === share && x.savedShareAsk === ask;
-  r = launch(folder({}), false, '0.2.7');
-  check('a fresh install: not answered ("ask"), no small screen (the walkthrough asks), kept', r.fresh && settled(r, 'ask', 'done') && r.now === 'due', r);
-  r = launch(folder({ 'typd/settings.json': S026, ...HISTORY, ...MODEL, ...BEFORE, ...UPDATED }), true, '0.2.7');
-  check("update from 0.2.6, 'on', first started before the cutoff (a recording from 17 Oct): on, no new screen", settled(r, 'on', 'done') && r.first < Date.parse('2026-10-18T15:00:00Z'), r);
-  r = launch(folder({ 'typd/settings.json': S026, ...HISTORY, ...MODEL, ...UPDATED }), true, '0.2.7');
-  check("update from 0.2.6, 'on', first started after the cutoff: asked once (the small screen due), off until then", settled(r, 'ask', 'due') && r.now === 'done', r);
+  const asked = (x) => settled(x, 'ask', 'due') && x.shareChosen === false;   // the small screen, once; nothing shared until answered
+  r = launch(folder({}), false, '0.2.12');
+  check('a fresh install: not answered ("ask"), no small screen (the walkthrough asks), kept', r.fresh && settled(r, 'ask', 'done') && r.now === 'due' && r.shareChosen === false, r);
+  r = launch(folder({ 'typd/settings.json': S026, ...HISTORY, ...MODEL, ...BEFORE, ...UPDATED }), true, '0.2.12');
+  check("update from 0.2.6, 'on', first started before the old cutoff (a recording from 17 Oct), never chose: asked once, off until then", asked(r) && r.now === 'done', r);
+  r = launch(folder({ 'typd/settings.json': S026, ...HISTORY, ...MODEL, ...UPDATED }), true, '0.2.12');
+  check("update from 0.2.6, 'on', first started after it: asked once, off until then", asked(r), r);
   const noKey = { ...S026 };
   delete noKey.share;
-  r = launch(folder({ 'typd/settings.json': noKey, ...MODEL, ...BEFORE }), false, '0.2.7');
-  check('no share key, before the cutoff: on', settled(r, 'on', 'done'), r);
-  r = launch(folder({ 'typd/settings.json': noKey, ...MODEL }), false, '0.2.7');
-  check('no share key, after the cutoff: asked', settled(r, 'ask', 'due'), r);
-  r = launch(folder({ 'typd/settings.json': { ...S026, share: '' }, ...MODEL, ...BEFORE }), false, '0.2.7');
-  check("share '' (0.2.0-0.2.3, never answered), before the cutoff: on", settled(r, 'on', 'done'), r);
-  r = launch(folder({ 'typd/settings.json': { ...S026, share: '' }, ...MODEL }), false, '0.2.7');
-  check("share '', after the cutoff: asked", settled(r, 'ask', 'due'), r);
-  r = launch(folder({ 'typd/settings.json': { ...S026, share: 'off' }, ...MODEL, ...BEFORE }), false, '0.2.7');
-  check("'off', before the cutoff: off, no screen", settled(r, 'off', 'done'), r);
-  r = launch(folder({ 'typd/settings.json': { ...S026, share: 'off' }, ...MODEL }), false, '0.2.7');
-  check("'off', after the cutoff: off, no screen", settled(r, 'off', 'done'), r);
-  r = launch(folder({ 'typd/settings.json': { ...S026, share: 'maybe' }, ...MODEL }), false, '0.2.7');
+  r = launch(folder({ 'typd/settings.json': noKey, ...MODEL, ...BEFORE }), false, '0.2.12');
+  check('no share key, first started before the old cutoff: asked', asked(r), r);
+  r = launch(folder({ 'typd/settings.json': { ...S026, share: '' }, ...MODEL, ...BEFORE }), false, '0.2.12');
+  check("share '' (0.2.0-0.2.3, never answered), before the old cutoff: asked", asked(r), r);
+  r = launch(folder({ 'typd/settings.json': S026, ...MODEL, 'typd/share.json': { enrolledAt: '2026-10-18T13:13:00.000Z' } }), false, '0.2.12');
+  check('enrolled before the old cutoff (share.json 13:13 UTC): asked all the same', asked(r), r);
+  r = launch(folder({ 'typd/settings.json': { ...S026, share: 'off' }, ...MODEL, ...BEFORE }), false, '0.2.12');
+  check("'off' (0.2.6's file), before the old cutoff: off, no screen", settled(r, 'off', 'done'), r);
+  r = launch(folder({ 'typd/settings.json': { ...S026, share: 'off' }, ...MODEL }), false, '0.2.12');
+  check("'off' (0.2.6's file), after it: off, no screen", settled(r, 'off', 'done'), r);
+  r = launch(folder({ 'typd/settings.json': { ...S026, share: 'maybe' }, ...MODEL }), false, '0.2.12');
   check('a value Typd never wrote: off, no screen', settled(r, 'off', 'done'), r);
-  r = launch(folder({ 'typd/settings.json': S026, ...MODEL, 'typd/share.json': { enrolledAt: '2026-10-18T13:13:00.000Z' } }), false, '0.2.7');
-  check('enrolled at 13:13 UTC (share.json), nothing else older: on', settled(r, 'on', 'done'), r);
-  r = launch(folder({ 'typd/settings.json': S026, ...MODEL, 'typd/share.json': { enrolledAt: '2026-10-18T15:00:00.000Z' } }), false, '0.2.7');
-  check('enrolled at 15:00 UTC exactly: asked (the cutoff is "from 15:00 on")', settled(r, 'ask', 'due'), r);
-  r = launch(folder({ 'typd/settings.json': S026, ...MODEL, 'Typd/recordings/1999-01-01T00-00-00-000Z.wav': 'RIFF' }), false, '0.2.7');
-  check('a nonsense time (1999) is no evidence: asked', settled(r, 'ask', 'due'), r);
 
-  // Decided once: later launches keep it, whatever the evidence says then.
-  const d = folder({ 'typd/settings.json': S026, ...MODEL });
-  launch(d, true, '0.2.7');
-  fs.mkdirSync(path.join(d.appData, 'Typd', 'recordings'), { recursive: true });
-  fs.writeFileSync(path.join(d.appData, 'Typd', 'recordings', '2026-10-01T00-00-00-000Z.wav'), 'RIFF');
-  r = launch(d, false, '0.2.7');
-  check('second launch, not answered (the screen closed): still "ask", not asked again unless still due', r.share === 'ask' && r.shareAsk === 'due', r);
+  // Files 0.2.7-0.2.11 wrote (shareAsk set, no shareChosen).
+  r = launch(folder({ 'typd/settings.json': S028, ...HISTORY, ...MODEL, ...BEFORE, ...UPDATED }), true, '0.2.12');
+  check("0.2.7-0.2.11's 'on' (the old exemption, or an answer they did not record): asked once", asked(r) && r.now === 'done', r);
+  r = launch(folder({ 'typd/settings.json': { ...S028, share: 'off' }, ...MODEL, ...BEFORE }), false, '0.2.12');
+  check("0.2.7-0.2.11's 'off': off, no screen", settled(r, 'off', 'done'), r);
+  r = launch(folder({ 'typd/settings.json': { ...S028, share: 'ask', shareAsk: 'done' }, ...MODEL }), false, '0.2.12');
+  check("0.2.7-0.2.11's 'ask', asked once already (shown, closed unanswered): stays, not asked again", settled(r, 'ask', 'done'), r);
+  r = launch(folder({ 'typd/settings.json': { ...S028, share: 'ask', shareAsk: 'due' }, ...MODEL }), false, '0.2.12');
+  check("0.2.7-0.2.11's 'ask', not shown yet: still due", settled(r, 'ask', 'due'), r);
+
+  // Files 0.2.12 wrote: a choice is recorded with it, and stays.
+  r = launch(folder({ 'typd/settings.json': { ...S028, share: 'on', shareAsk: 'done', shareChosen: true }, ...MODEL, ...BEFORE }), false, '0.2.12');
+  check("an explicit 'on' (shareChosen), first started before the old cutoff: on, not asked", settled(r, 'on', 'done') && r.shareChosen === true, r);
+  r = launch(folder({ 'typd/settings.json': { ...S028, share: 'on', shareAsk: 'due', shareChosen: true }, ...MODEL }), false, '0.2.12');
+  check("an explicit 'on' chosen in Settings before the small screen showed: on (no screen: it shows only for 'ask')", r.share === 'on' && r.shareChosen === true, r);
+  r = launch(folder({ 'typd/settings.json': { ...S028, share: 'off', shareAsk: 'done', shareChosen: true }, ...MODEL }), false, '0.2.12');
+  check("an explicit 'off' (shareChosen): off", settled(r, 'off', 'done'), r);
+
+  // One install through it: asked at the update, not answered, then Share, then Don't share in Settings.
+  const d = folder({ 'typd/settings.json': S026, ...MODEL, ...BEFORE });
+  r = launch(d, true, '0.2.12');
+  check('the update to 0.2.12: asked', asked(r), r);
+  r = launch(d, false, '0.2.12');
+  check('second launch, not answered yet: still "ask", still due', asked(r), r);
   const f = path.join(d.appData, 'typd', 'settings.json');
-  fs.writeFileSync(f, JSON.stringify({ ...JSON.parse(fs.readFileSync(f, 'utf8')), share: 'on', shareAsk: 'done' }));   // answered Share
-  r = launch(d, false, '0.2.7');
-  check('answered Share: on, never asked again', settled(r, 'on', 'done'), r);
-  fs.writeFileSync(f, JSON.stringify({ ...JSON.parse(fs.readFileSync(f, 'utf8')), share: 'ask', shareAsk: 'done' }));   // shown, closed unanswered
-  r = launch(d, false, '0.2.7');
-  check('shown once and closed unanswered: stays "ask" (off), not due again', settled(r, 'ask', 'done'), r);
-  // A fresh 0.2.7 install's second launch keeps its 'ask'.
+  fs.writeFileSync(f, JSON.stringify({ ...JSON.parse(fs.readFileSync(f, 'utf8')), shareAsk: 'done' }));   // the small screen opened
+  r = launch(d, false, '0.2.12', 'on');
+  check('Share: set, and recorded as a choice in the same file', r.answered === true && r.savedShare === 'on' && r.savedShareChosen === true, r);
+  r = launch(d, false, '0.2.12');
+  check('the next launch: on, not asked again', settled(r, 'on', 'done') && r.shareChosen === true, r);
+  r = launch(d, false, '0.2.12', 'off');
+  r = launch(d, false, '0.2.12');
+  check("Don't share later (Settings): off, and it stays off", settled(r, 'off', 'done'), r);
+  check('shareChosen cannot be set on its own (only with share)', r.refused === false);
+  // Back to 0.2.11 and up again: 0.2.11 does not know shareChosen and drops it when it writes the file.
+  fs.writeFileSync(f, JSON.stringify({ ...S028, share: 'on', shareAsk: 'done' }));
+  r = launch(d, false, '0.2.12');
+  check("an 'on' that lost its record (a downgrade wrote the file): asked again, the safe side", asked(r), r);
+  // A fresh 0.2.12 install's second launch keeps its 'ask'.
   const fr = folder({});
-  launch(fr, false, '0.2.7');
-  r = launch(fr, false, '0.2.7');
+  launch(fr, false, '0.2.12');
+  r = launch(fr, false, '0.2.12');
   check("a fresh install's second launch, walkthrough not answered: still 'ask', no small screen", settled(r, 'ask', 'done'), r);
 
-  const { shareRule, SHARE_CUTOFF } = require(path.join(root, 'src', 'main', 'settings'));
-  const at = (t) => () => t;
+  const settingsJs = require(path.join(root, 'src', 'main', 'settings'));
+  const { shareRule } = settingsJs;
+  const never = () => { throw new Error('asked'); };
   const no = () => false;
-  check('shareRule: the cutoff is 2026-10-18 15:00 UTC', SHARE_CUTOFF === Date.parse('2026-10-18T15:00:00Z'));
-  check("shareRule: one ms before it -> on; at it -> ask", shareRule({ share: 'on' }, { fresh: no, firstLaunch: at(SHARE_CUTOFF - 1) }).share === 'on' &&
-    shareRule({ share: 'on' }, { fresh: no, firstLaunch: at(SHARE_CUTOFF) }).shareAsk === 'due');
-  check('shareRule: nothing known (Infinity) -> ask', shareRule({ share: 'on' }, { fresh: no, firstLaunch: at(Infinity) }).share === 'ask');
-  check('shareRule: decided files are read as saved and not decided again', shareRule({ share: 'on', shareAsk: 'done' }, { fresh: () => { throw new Error('asked'); }, firstLaunch: () => { throw new Error('asked'); } }).share === 'on');
+  check('no cutoff any more: settings.js exports none and reads no first-launch time', !('SHARE_CUTOFF' in settingsJs) && !('firstLaunchAt' in settingsJs) &&
+    !/SHARE_CUTOFF|firstLaunch/.test(fs.readFileSync(path.join(root, 'src', 'main', 'settings.js'), 'utf8')));
+  const x1 = shareRule({ share: 'on', shareAsk: 'done' }, { fresh: never });
+  check("shareRule: 0.2.7-0.2.11's 'on' -> ask, due, kept (fresh() not asked)", x1.share === 'ask' && x1.shareAsk === 'due' && x1.decided && x1.shareChosen === false, x1);
+  const x2 = shareRule({ share: 'on', shareAsk: 'done', shareChosen: true }, { fresh: never });
+  check("shareRule: a recorded 'on' is read as saved and not decided again", x2.share === 'on' && x2.shareAsk === 'done' && !x2.decided, x2);
+  const x3 = shareRule({ share: 'off', shareAsk: 'done' }, { fresh: never });
+  check("shareRule: an 'off' is read as saved and not decided again", x3.share === 'off' && !x3.decided, x3);
+  const x4 = shareRule({ share: 'on' }, { fresh: no });
+  check("shareRule: an earlier Typd's 'on' with nothing else known -> ask, due", x4.share === 'ask' && x4.shareAsk === 'due', x4);
+  const x5 = shareRule({ share: 'on', shareChosen: 'yes' }, { fresh: no });
+  check('shareRule: only shareChosen === true counts as a choice', x5.share === 'ask', x5);
 }
 
 {

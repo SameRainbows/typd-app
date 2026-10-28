@@ -27,11 +27,10 @@ know to test.
 ## What's shared, in plain words (send this with the build)
 
 > **What Typd shares with me while you test:** for each dictation, the audio and the text it
-> typed, which app you were typing into (e.g. "Discord"), how long it took, and your OS and app
-> version.
+> typed, how long it took, and your OS and app version.
 >
-> **What it never shares:** what's on your screen, text you had selected, window titles, or
-> anything when you're not dictating.
+> **What it never shares:** what's on your screen, text you had selected, window titles, which
+> app you were typing into, or anything when you're not dictating.
 >
 > **Update checks** send the app and model version with an anonymous install ID, so I can count
 > versions in use.

@@ -9,8 +9,9 @@
  *   - what goes: every kept recording with text that the server does not hold yet; not a revision
  *     the guards refused, not one shared live already (the server has an item a moment after it),
  *     not one waiting in the outbox, not a broken file; the text from History when its .json lost it
- *   - what an item carries: audio, text (none for a revision), mode, model, app, backfill and
- *     keptAt -- never the screen context or the highlighted span the recording's .json holds
+ *   - what an item carries: audio, text (none for a revision), mode, model, backfill and keptAt --
+ *     never the screen context, the highlighted span or (0.2.12) the program's name the recording's
+ *     .json holds
  *   - never twice: a second run sends nothing; with the ledger lost, the server's list (and its
  *     key, the same name each time) still keeps it at one copy
  *   - resume after an interruption: a run cut off half way finishes after a restart, no copies
@@ -23,6 +24,8 @@
  *     ask): every recording kept before it began, not the live item that waited in the outbox, not
  *     one kept since; decided once and remembered -- not again on the next launch, not when off, after
  *     a delete, when the install shared before, with no recordings; waits while not answered
+ *   - 0.2.12: an automatic run an earlier Typd started on an install that never chose (now 'ask')
+ *     sends nothing until the answer: Don't share cancels it, Share lets it finish
  */
 
 const fs = require('fs');
@@ -164,9 +167,11 @@ const backfilled = (server) => [...server.items.values()].filter((m) => m.backfi
       !kept.includes(new Date(T0 + 60e3).toISOString()) && !kept.includes(new Date(T0 + 120e3).toISOString()) &&
       !kept.includes(new Date(T0 + 300e3).toISOString()) && !kept.includes(new Date(T0 + 360e3).toISOString()));
     const first = sent.find((m) => m.keptAt === new Date(T0).toISOString());
-    check('an item carries text, mode, model, app, backfill and keptAt, and the time of its recording',
-      first && first.output === 'the first one' && first.mode === 'dictate' && first.model === 'r24_1p7b-q4_k_m.gguf' && first.app === 'notes' &&
+    check('an item carries text, mode, model, backfill and keptAt, and the time of its recording',
+      first && first.output === 'the first one' && first.mode === 'dictate' && first.model === 'r24_1p7b-q4_k_m.gguf' &&
       first.createdAt === new Date(T0).toISOString() && first.id === itemId(r1) && first.tester === 'tester_a', first);
+    check("never the program's name (0.2.12): no \"app\" on any past dictation, though every .json names one",
+      sent.length === 3 && sent.every((m) => !('app' in m)) && !/"app"|"notes"|"mail"/.test(server.bodies.join('\n')), sent.map((m) => Object.keys(m)));
     const rev = sent.find((m) => m.mode === 'revise');
     check('a revision carries no text (only its spoken instruction)', rev && rev.output === null && rev.outputChars > 0, rev);
     check('from History when its .json lost the text', sent.some((m) => m.output === 'text from history'));
@@ -370,6 +375,37 @@ const backfilled = (server) => [...server.items.values()].filter((m) => m.backfi
     const r3 = await z.bf.autoOnce(() => z.sharing.autoBackfillWhy());
     check("answered Don't share: never", r3.decided && !r3.ran && r3.why === 'sharing is off' && !backfilled(server).some((m) => m.output === 'refused share'), r3);
     x.bf.stop(); z.bf.stop();
+  }
+
+  {
+    // 0.2.12: an install 0.2.7-0.2.11 kept sharing without asking, its automatic run under way (the
+    // ledger says running), is now asked ('ask'): the run sends nothing until the answer.
+    const ledgerOf = (S) => path.join(S.userData, 'backfill.json');
+    const running = (S) => fs.writeFileSync(ledgerOf(S), JSON.stringify({ v: 1, state: 'running', by: 'auto', startedAt: new Date().toISOString(),
+      doneAt: null, total: 0, sent: {}, skipped: 0, auto: { at: new Date().toISOString(), ran: true, recordings: 2 }, liveAtStart: [] }));
+    for (const answer of ['off', 'on']) {
+      const S = setup('auto-reasked-' + answer, { tester: false });
+      for (let i = 0; i < 2; i++) keep(S.recDir, T0 + (10 + (answer === 'on' ? 1 : 0)) * 86400e3 + i * 30e3, baseMeta({ output: 'reasked ' + answer + ' ' + i }));
+      running(S);
+      S.state.share = 'ask';
+      const x = S.make(server);
+      x.bf.resume();
+      const again = await x.bf.autoOnce(() => x.sharing.autoBackfillWhy());
+      await sleep(600);
+      const mine = () => backfilled(server).filter((m) => m.output && m.output.startsWith('reasked ' + answer));
+      check('not answered: the run under way waits, nothing queued or sent, not decided again (' + answer + ')',
+        !again.decided && mine().length === 0 && (await x.sharing.pending()) === 0 && x.bf.status().state === 'running', { again, sent: mine().length });
+      await x.sharing.answer(answer);
+      if (answer === 'off') {
+        await sleep(400);
+        check("Don't share: the run is cancelled, nothing of it went", x.bf.status().state === 'cancelled' && mine().length === 0, x.bf.status());
+      } else {
+        await until(() => x.bf.status().state === 'done', 20000);
+        await until(async () => (await x.sharing.pending()) === 0, 20000);
+        check('Share: it finishes, its 2 past dictations go, without a program name', mine().length === 2 && mine().every((m) => !('app' in m)), mine().length);
+      }
+      x.bf.stop();
+    }
   }
 
   section('a tester\'s pause waits');

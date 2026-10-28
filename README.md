@@ -20,7 +20,7 @@ This repository is the app's source code, under the **GPL-3.0** ([LICENSE](LICEN
 
 - The installer has no model in it. On first launch Typd downloads the one that suits your
   computer, once:
-  - **Full**: P2d, 1.7B parameters (1.4 GB), on a PC with an NVIDIA GPU with 4 GB of memory or
+  - **Full**: P2g, 1.7B parameters (1.5 GB), on a PC with an NVIDIA GPU with 4 GB of memory or
     more, or a Mac with 16 GB of memory or more;
   - **Light**: 0.6B parameters (0.6 GB), everywhere else.
 
@@ -33,18 +33,23 @@ This repository is the app's source code, under the **GPL-3.0** ([LICENSE](LICEN
 
 ## How accurate
 
-The full model (P2d) against Wispr Flow (Pro). Word error rate on the words that carry meaning
+The full model (P2g) against Wispr Flow (Pro). Word error rate on the words that carry meaning
 (case, punctuation and number style ignored); lower is better. Wispr Flow's outputs were only
 scored, never trained on.
 
-| Test | Typd (P2d) | Wispr Flow |
+| Test | Typd (P2g) | Wispr Flow |
 |---|---:|---:|
-| 70 real dictations, one speaker (the developer) | **3.5 %** | 6.1 % |
-| AASR-Bench: 407 English dictations full of self-corrections, synthetic voices | **8.5 %** | 8.75 % |
+| 70 real dictations, one speaker (the developer) | **4.2 %** | 6.1 % |
+| AASR-Bench: 407 English dictations full of self-corrections, synthetic voices | **8.7 %** | 8.75 % |
 | … AASR-Bench clips where real content was dropped | **4** | 6 |
 
-One speaker is a small sample, and on AASR-Bench the two are close. The light model is a little
-less accurate (4.0 % and 9.1 % on the same two tests).
+One speaker is a small sample, and on AASR-Bench the two are level. The light model scores 4.0 %
+and 9.1 % on the same two tests.
+
+Against local Whisper + LLM setups on the same laptop (RTX 3050 Ti, 4 GB): Whisper base, turbo or
+large-v3 followed by Qwen3.5 4B or 9B with OpenWhispr's cleanup prompt. Every one of them got more
+words wrong than Typd's full model on all four test sets (AASR-Bench: 13.0 % for the best of them),
+and took 2.5 to 36 s per dictation against Typd's 0.5 s: two models do not fit in 4 GB of GPU memory.
 
 ## What is here, and what is not
 
@@ -53,6 +58,16 @@ less accurate (4.0 % and 9.1 % on the same two tests).
 | **Here (GPL-3.0)** | The desktop app: hotkeys, recording, the dictation pipeline, pasting, the overlay and the Typd window, history and dictionary, sharing (asked on first launch), model and app updates, packaging scripts, benches and docs. |
 | **Not here** | The dictation model's weights. They are downloaded separately and licensed under [MODEL_LICENSE.txt](MODEL_LICENSE.txt), not the GPL. |
 | **Not here** | The research and training that produced the model, and the server code behind sharing and updates. The app talks to that server only through the public routes described below. |
+
+## Training data and credits
+
+`typd-dictate` is fine-tuned from [Qwen3-ASR](https://github.com/QwenLM/Qwen3-ASR) (Apache-2.0, Alibaba Cloud).
+It learned from openly licensed speech: Emilia-YODAS (CC BY 4.0), YODAS2, YODAS-Granary and YODAS (CC BY 3.0),
+NaturalVoices (CC BY and public-domain episodes only), Localized Narratives (CC BY 4.0), Common Voice Spontaneous
+Speech (CC0) and FLEURS (CC BY 4.0), plus, for the light model, AMI (CC BY 4.0), VoxPopuli (CC0) and
+DisfluencySpeech. Scripted practice dictations were voiced with 20 LibriTTS-R speakers (CC BY 4.0). The audio was
+segmented, transcribed and given finished text, and used only to train the model; none of it is redistributed.
+Creators, links and licences: **[typd.mehmetdedeler.com/credits](https://typd.mehmetdedeler.com/credits/)**.
 
 ## How it works
 
@@ -101,13 +116,15 @@ revise:   mic ─► typd-dictate, with the highlighted text and your spoken ins
   `~/Library/Application Support/typd` on a Mac).
 - **Sharing is opt-in, asked on first launch.** The walkthrough's first screen asks whether to
   share your dictations (audio and text) to help train the model, with **Share** and **Don't
-  share** and nothing pre-selected; nothing is shared until you choose **Share**. An install from
-  0.2.4–0.2.6, when sharing was on by default, is asked once too, and **Don't share** there also
-  deletes what it had shared. **Share dictations** in Settings changes it anytime.
+  share** and nothing pre-selected; nothing is shared until you choose **Share**. Since 0.2.12
+  every install where nobody chose (0.2.4–0.2.6 shared by default) is asked once too, and shares
+  nothing until it answers; **Don't share** there also deletes what it had shared.
+  **Share dictations** in Settings changes it anytime.
 - **What a shared dictation is:** the audio, the text Typd pasted or copied (not a revision of
-  selected text), the app's process name, the model and its version, timings, OS and versions;
-  never what is on your screen, your selection or window titles. At most 50 dictations or 20 MB a
-  day. **Delete what I've shared** deletes everything stored for your install on the server. The
+  selected text), the model and its version, timings, OS and versions; never what is on your
+  screen, your selection, window titles or (since 0.2.12) which app you dictated into. At most 50
+  dictations or 20 MB a day. **Delete what I've shared** deletes everything stored for your install
+  on the server. The
   code is `src/main/sharing.js` and `src/main/collect.js`; `TYPD_NO_SHARE=1` turns it off for one run.
 - **Update checks** (packaged builds only) send the app version, the model version, the OS and an
   anonymous random install ID, so the developer can count which versions are in use
@@ -137,7 +154,7 @@ You need [Node.js](https://nodejs.org/) 24 and Git, on Windows 10/11 (x64) or ma
 
 ```bash
 npm ci
-node scripts/fetch-model.js --accept-license   # the full model, ~1.4 GB, into models/typd-dictate/ (read MODEL_LICENSE.txt first)
+node scripts/fetch-model.js --accept-license   # the full model, ~1.5 GB, into models/typd-dictate/ (read MODEL_LICENSE.txt first)
 ```
 
 `fetch-model.js` downloads what a packaged Typd downloads for its model updates: it checks the

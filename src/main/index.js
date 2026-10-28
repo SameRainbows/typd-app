@@ -771,7 +771,8 @@ function openFlag() {
 
 /**
  * Sharing switched on or off: Settings, the walkthrough's first screen, or the small screen
- * (sharing.answer: Don't share on an install that shared under 0.2.6's default deletes it too).
+ * (sharing.answer: Don't share on an install not answered yet that shared before deletes it too).
+ * Each is a person's choice: settings records it as one (shareChosen).
  */
 async function chooseSharing(share) {
   const s = sharing.get();
@@ -782,11 +783,12 @@ async function chooseSharing(share) {
 }
 
 /**
- * "Help make Typd better?" (ask-window.js 'share'): once, at the first launch of 0.2.7 on an install
- * first started from 2026-10-18 15:00 UTC on that was never asked (settings 'shareAsk' 'due':
- * settings.js shareRule). Not the walkthrough: a fresh install is asked on its first screen. It
- * counts as shown once it opens; closed without an answer, sharing stays off ('ask') and Settings
- * has the switch. After an app update's quiet relaunch it waits until someone is at the keyboard.
+ * "Help make Typd better?" (ask-window.js 'share'): once, on an install that never chose (settings
+ * 'shareAsk' 'due': settings.js shareRule) -- since 0.2.12 every one, whenever it was first started,
+ * including those an earlier Typd kept sharing without asking. Not the walkthrough: a fresh install
+ * is asked on its first screen. It counts as shown once it opens; closed without an answer, sharing
+ * stays off ('ask') and Settings has the switch. After an app update's quiet relaunch it waits
+ * until someone is at the keyboard.
  */
 function startShareAsk(afterUpdate) {
   const due = () => !stub && !preview && settings.get('shareAsk') === 'due' && settings.get('share') === 'ask' &&
@@ -796,7 +798,7 @@ function startShareAsk(afterUpdate) {
     if (!due()) return;
     if (MAC && require('./permissions-mac').isAsking()) { setTimeout(show, 1000); return; }
     settings.set('shareAsk', 'done');
-    life.log('sharing', 'asked: the small screen (an install from after the cutoff, never asked)');
+    life.log('sharing', 'asked: the small screen (an install that never chose)');
     ask.open('share');
   };
   if (afterUpdate) appUpdate.whenUserActive(() => setTimeout(show, 1500));
@@ -1402,8 +1404,8 @@ app.whenReady().then(() => {
   // Mac permission dialog), and never into an app update's quiet relaunch.
   startWalkthrough(Boolean(appUpdater && appUpdater.firstStart));
 
-  // Sharing (0.2.7): a fresh install is asked on the walkthrough's first screen; an install first
-  // started after the cutoff that was never asked, in one small screen, once (startShareAsk).
+  // Sharing: a fresh install is asked on the walkthrough's first screen; since 0.2.12 every other
+  // install that never chose, in one small screen, once (startShareAsk).
   startShareAsk(Boolean(appUpdater && appUpdater.firstStart));
 
   // First run: start at login is on by default, so make it so -- the installed app's own

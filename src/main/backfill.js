@@ -25,10 +25,11 @@
  *
  * What one item carries is what a live dictation's does (collect.js makeMeta): the recording's
  * audio, the text Typd wrote (for a revision, nothing but the spoken instruction's audio), the
- * mode, the model file, the program's name -- plus backfill: true and keptAt, the recording's own
- * time. NEVER the screen context or the highlighted span that a kept recording's .json also holds
- * (index.js keeps them for the user's own test set): they are not even read into the item. A
- * revision the guards refused (never pasted) is skipped, like the live path skips it.
+ * mode, the model file -- plus backfill: true and keptAt, the recording's own time. NEVER the
+ * screen context, the highlighted span or (since 0.2.12) the program's name that a kept
+ * recording's .json also holds (index.js keeps them for the user's own test set): they are not
+ * even read into the item. A revision the guards refused (never pasted) is skipped, like the live
+ * path skips it. And never while sharing is not answered: on() is false then.
  *
  * Not twice:
  *   - a fixed name per recording: its time plus an id made from its file name, so the outbox will
@@ -183,7 +184,7 @@ function createBackfill({ dir, ledgerFile, sharing, history = () => [], log = ()
     return null;
   }
 
-  /** One recording -> the item (only these fields: never context, span or anything else). */
+  /** One recording -> the item (only these fields: never context, span, the program or anything else). */
   async function item(name) {
     const t = keptAt(name);
     const meta = await readJson(path.join(dir, name + '.json'));
@@ -198,7 +199,6 @@ function createBackfill({ dir, ledgerFile, sharing, history = () => [], log = ()
     return {
       rec: {
         samples: wav.samples, sampleRate: wav.sampleRate, text, mode,
-        app: meta && typeof meta.app === 'string' ? meta.app.slice(0, 120) : null,
         model: meta && typeof meta.model === 'string' ? meta.model.slice(0, 128) : null,
         modelVersion: null, reviseAdapter: null, engine: null,
         endedAt: ms !== null ? t - ms : null, pastedAt: t,
