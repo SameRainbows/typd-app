@@ -1,6 +1,6 @@
 # Typd
 
-Voice dictation that runs on your computer.
+I built Typd, voice dictation that runs on your computer.
 
 [![Typd turning spoken sentences, fillers and restarts included, into finished text](https://github.com/SameRainbows/typd-app/releases/download/launch-video/typd_flip_loop.gif)](https://github.com/SameRainbows/typd-app/releases/download/launch-video/typd_launch_16x9.mp4)
 
