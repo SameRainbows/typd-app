@@ -4,11 +4,9 @@ Voice dictation that runs on your computer.
 
 [![Typd turning spoken sentences, fillers and restarts included, into finished text](https://github.com/SameRainbows/typd-app/releases/download/launch-video/typd_flip_loop.gif)](https://github.com/SameRainbows/typd-app/releases/download/launch-video/typd_launch_16x9.mp4)
 
-Real recordings, real Typd output, a stylized reconstruction. [Watch the video with sound (MP4, 39 s)](https://github.com/SameRainbows/typd-app/releases/download/launch-video/typd_launch_16x9.mp4).
-
-Tap a key and talk the way you actually think. One speech model, running locally, hears you and
-writes the finished text — fillers gone, self-corrections resolved, lists and numbers written
-properly — and pastes it into the app you were typing in. Highlight some text first and what you
+One speech model, running locally, hears you and
+writes the finished text with fillers gone, self-corrections resolved, lists and numbers written
+properly and pastes it into the app you were typing in. Highlight some text first and what you
 say is taken as an instruction instead: "make this shorter", "turn this into a list".
 
 This repository is the app's source code, under the **GPL-3.0** ([LICENSE](LICENSE)).
@@ -20,7 +18,7 @@ This repository is the app's source code, under the **GPL-3.0** ([LICENSE](LICEN
 
 - The installer has no model in it. On first launch Typd downloads the one that suits your
   computer, once:
-  - **Full**: P2g, 1.7B parameters (1.5 GB), on a PC with an NVIDIA GPU with 4 GB of memory or
+  - **Full**: 1.7B parameters (1.5 GB), on a PC with an NVIDIA GPU with 4 GB of memory or
     more, or a Mac with 16 GB of memory or more;
   - **Light**: 0.6B parameters (0.6 GB), everywhere else.
 
@@ -34,8 +32,7 @@ This repository is the app's source code, under the **GPL-3.0** ([LICENSE](LICEN
 ## How accurate
 
 The full model (P2g) against Wispr Flow (Pro). Word error rate on the words that carry meaning
-(case, punctuation and number style ignored); lower is better. Wispr Flow's outputs were only
-scored, never trained on.
+(case, punctuation and number style ignored); lower is better. Wispr Flow's outputs were never trained on.
 
 | Test | Typd (P2g) | Wispr Flow |
 |---|---:|---:|
@@ -51,7 +48,7 @@ large-v3 followed by Qwen3.5 4B or 9B with OpenWhispr's cleanup prompt. Every on
 words wrong than Typd's full model on all four test sets (AASR-Bench: 13.0 % for the best of them),
 and took 2.5 to 36 s per dictation against Typd's 0.5 s: two models do not fit in 4 GB of GPU memory.
 
-## What is here, and what is not
+## What is here,
 
 | | |
 |---|---|
