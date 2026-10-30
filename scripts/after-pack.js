@@ -10,6 +10,10 @@
  * cuda.json must name the pack the app fetches instead; otherwise every file cuda.json names is there.
  * With TYPD_TESTER_CONFIG=<path to a tester.json>, ship it as <resources>/tester.json,
  * which makes a tester build (src/main/sharing.js); without it, make sure there is none.
+ * Every platform: refuse an app that hands another program a path inside app.asar, which only
+ * Electron can read -- the paste helper inject.ps1 must be a real file where inject.js looks for
+ * it, and no script or native code may be left in the archive (scripts/packaged-paths.js). Up to
+ * 0.2.11 no packaged Windows install ever pasted, because the first did not hold.
  *
  * macOS:
  *  1. llama-server must be built for the architecture being packaged.
@@ -177,6 +181,13 @@ async function afterPack(context) {
     throw new Error(`Packaged app is missing the microphone helper ${micHelper}: run node scripts/build-mic.js ${mac ? 'mac ' + arch : 'win'}`);
   }
   console.log(`  • typd: microphone helper ${path.basename(micHelper)} (${fs.statSync(micHelper).size} B)`);
+
+  // --- every platform: nothing another program opens is inside app.asar ---------------------
+  // The paths come from the shipping code's own resolvers and are checked with this plain Node's fs,
+  // which, like PowerShell, cannot see into the archive. See scripts/packaged-paths.js.
+  const paths = require('./packaged-paths').checkApp({ resources, platform: mac ? 'darwin' : 'win32' });
+  if (paths.problems.length) throw new Error('Packaged app hands another program a path inside app.asar:\n  - ' + paths.problems.join('\n  - '));
+  for (const n of paths.notes) console.log(`  • typd: ${n}`);
 
   // --- tester builds: TYPD_TESTER_CONFIG names a tester.json to ship ---------------------
   // Only <resources>/tester.json makes a tester build (src/main/sharing.js), so an ordinary

@@ -189,6 +189,8 @@ function createBackfill({ dir, ledgerFile, sharing, history = () => [], log = ()
     const t = keptAt(name);
     const meta = await readJson(path.join(dir, name + '.json'));
     if (meta && meta.guard) return { skip: 'refused by the guards (never pasted)' };
+    // A "Didn't catch that" kept for study (index.js keepRecording, 0.2.12): nothing was pasted, nothing is shared.
+    if (meta && meta.failed) return { skip: 'came to nothing (never pasted)' };
     const text = textFor(meta, t);
     if (typeof text !== 'string' || !text.trim()) return { skip: 'no text' };
     let wav = null;

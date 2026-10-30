@@ -443,6 +443,8 @@ const modelReqs = (s) => s.fileRequests().filter((q) => !q.url.includes('/' + PA
     fs.writeFileSync(path.join(res, 'models', 'typd-dictate', 'NO_MODEL.txt'), 'x');
     fs.mkdirSync(path.join(res, 'mic'), { recursive: true });   // 0.2.12: after-pack refuses an app without the microphone helper
     fs.writeFileSync(path.join(res, 'mic', 'typd-mic.exe'), 'the microphone helper');
+    // ...and one whose paste helper is not a real file outside app.asar (scripts/packaged-paths.js)
+    require('./fake-asar').fakeAppAsar(res, path.join(__dirname, '..'));
     for (const nme of ['llama-server.exe', 'cuda.json']) fs.copyFileSync(path.join(staged, nme), path.join(res, 'llama', nme));
     const afterPack = (extra) => spawnSync(process.execPath, ['-e', `require(${JSON.stringify(path.join(__dirname, '..', 'scripts', 'after-pack.js'))})({ electronPlatformName: 'win32', appOutDir: ${JSON.stringify(appOut)}, arch: 1, packager: { appInfo: { productFilename: 'Typd' } } }).then(() => {}, (e) => { console.error(e.message); process.exit(1); })`],
       { env: { ...process.env, TYPD_NO_BUNDLED_MODEL: '1', TYPD_TESTER_CONFIG: '', ...extra }, encoding: 'utf8', windowsHide: true });

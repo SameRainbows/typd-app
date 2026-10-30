@@ -545,8 +545,18 @@
 
   // Under the version: Check for updates, its answer in words, and Restart now when a new Typd is ready.
   var scrollToUpdates = false;   // opened by "Check for updates": bring the answer into view once it shows
+  // A check can answer in a tenth of a second, and an answer that reads like the last one then looks like
+  // a click that did nothing (six clicks in two seconds, 2026-10-30). So "Checking…" stays up for a moment.
+  var UPDATES_HOLD_MS = 700;
+  var updatesHoldUntil = 0, updatesHeld = null;
   function renderUpdates(u) {
     if (!u) return;
+    if (u.checking) updatesHeld = null;   // a newer check is under way: an answer held back is stale
+    if (!u.checking && Date.now() < updatesHoldUntil) {
+      if (!updatesHeld) setTimeout(function () { var h = updatesHeld; updatesHeld = null; renderUpdates(h); }, updatesHoldUntil - Date.now() + 10);
+      updatesHeld = u;
+      return;
+    }
     $('updatesBox').hidden = !u.enabled;
     if (scrollToUpdates && u.enabled) { scrollToUpdates = false; $('updatesBox').scrollIntoView({ block: 'center' }); }
     $('aboutLine').textContent = u.versions || $('aboutLine').textContent;
@@ -560,6 +570,7 @@
     api.updates.get().then(renderUpdates).catch(function () {});
   }
   $('updatesCheck').addEventListener('click', function () {
+    updatesHoldUntil = Date.now() + UPDATES_HOLD_MS;
     $('updatesCheck').disabled = true;
     $('updatesCheck').textContent = 'Checking…';
     $('updatesLine').textContent = 'Checking for updates…';

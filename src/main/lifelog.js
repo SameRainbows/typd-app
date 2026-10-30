@@ -21,7 +21,17 @@ const path = require('path');
  * (written at launch, its "alive" time refreshed every minute, deleted on a clean exit); the next
  * launch says so, with when the last run was last seen alive and any minidump written since
  * (crashReporter, local only, in app.getPath('crashDumps')).
+ *
+ * And how it most likely ended (howEnded), since 0.2.12: a real-use audit (dictation-research
+ * reports/real_use_audit_2026-10-31.md) found 52 such lines in ten days and not one crash -- they
+ * were scripts stopping Typd, shutdowns and sleeps, all reported as "a crash, a kill ...". So:
+ * Windows saying it is ending the session (sessionEnding(), from a window's 'session-end') is
+ * written into run.json; a computer that started up after the run was last seen alive
+ * (os.uptime()) was shut down or restarted; a minidump means a crash; anything else ran while the
+ * computer kept running and left no dump.
  */
+
+const os = require('os');
 
 const MAX_BYTES = 256 * 1024;
 const BEAT_MS = 60 * 1000;
@@ -32,6 +42,7 @@ let runFile = null;
 let dumpsDir = null;
 const early = [];   // lines logged before init()
 let beat = null;
+let run = null;     // this run's marker (run.json), once init() has written it
 
 function stamp() {
   return new Date().toISOString();
@@ -127,15 +138,53 @@ function init(userData, { info = '', crashDumps = null } = {}) {
   log('launch', info);
   if (last && last.pid !== process.pid) {
     const seen = last.alive ? Math.round((Date.parse(last.alive) - Date.parse(last.started)) / 1000) : null;
+    const left = dumps(Date.parse(last.started) || 0);
     log('last run ended without quitting', 'pid ' + last.pid + ', Typd ' + (last.version || '?') + ', started ' + last.started +
       ', last seen alive ' + (last.alive || '?') + (seen !== null ? ' (' + seen + ' s after it started)' : '') +
-      ' -- a crash, a kill, a forced quit or the power going off');
-    for (const d of dumps(Date.parse(last.started) || 0).slice(0, 5)) log('minidump from the last run', d.name + ', ' + d.bytes + ' bytes, ' + d.at);
+      ' -- ' + howEnded(last, { bootAt: bootTime(), dumps: left.length }));
+    for (const d of left.slice(0, 5)) log('minidump from the last run', d.name + ', ' + d.bytes + ' bytes, ' + d.at);
   }
-  const run = { pid: process.pid, version: (info.match(/Typd ([0-9][^\s,]*)/) || [])[1] || null, started: stamp(), alive: stamp() };
+  run = { pid: process.pid, version: (info.match(/Typd ([0-9][^\s,]*)/) || [])[1] || null, started: stamp(), alive: stamp() };
   writeRun(run);
   beat = setInterval(() => { run.alive = stamp(); writeRun(run); }, BEAT_MS);
   if (beat.unref) beat.unref();
+}
+
+/** When this computer last started up (ms since the epoch), or null. */
+function bootTime() {
+  try {
+    const up = os.uptime();
+    return Number.isFinite(up) && up > 0 ? Date.now() - up * 1000 : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * How a run that never said goodbye most likely ended, from what is known at the next launch:
+ *   last.sessionEnd  the system said it was ending the session (sessionEnding() wrote it)
+ *   dumps            minidumps written since it started
+ *   bootAt           when the computer last started up: after `last.alive`, it was shut down or restarted
+ * One phrase, for the "last run ended without quitting" line.
+ */
+function howEnded(last, { bootAt = null, dumps: dumpCount = 0 } = {}) {
+  if (last && last.sessionEnd) return 'Windows ended the session (shutting down, restarting or signing out) at ' + last.sessionEnd;
+  if (dumpCount > 0) return 'a crash: it left a crash dump (below)';
+  const alive = Date.parse((last && (last.alive || last.started)) || '');
+  if (Number.isFinite(bootAt) && Number.isFinite(alive) && bootAt > alive) {
+    return 'the computer was shut down or restarted (it started up again at ' + new Date(bootAt).toISOString() + ')';
+  }
+  return 'the computer kept running and no crash dump was left: something ended Typd (Task Manager, a script, an installer), ' +
+    'or a crash that wrote no dump';
+}
+
+/**
+ * The system is ending the session (Windows: a window's 'session-end' -- shutdown, restart, sign-out):
+ * say so now, and mark the run, since what comes next may be a kill without any quit event.
+ */
+function sessionEnding() {
+  log('session end', 'the system is shutting down, restarting or signing out');
+  if (run && !run.sessionEnd) { run.sessionEnd = stamp(); writeRun(run); }
 }
 
 /** A clean end: the next launch will not report this run as lost. */
@@ -181,4 +230,4 @@ function dictationLine(o = {}) {
     ', model ' + model + ', ' + device + (o.lowMemory === true ? ', low memory' : '') + mic;
 }
 
-module.exports = { init, log, ended, tail, clean, errorLine, dumps, dictationLine, get file() { return file; } };
+module.exports = { init, log, ended, tail, clean, errorLine, dumps, dictationLine, howEnded, sessionEnding, get file() { return file; } };

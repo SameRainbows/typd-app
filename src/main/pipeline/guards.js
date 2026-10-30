@@ -180,9 +180,200 @@ const MIN_DELETION_WORDS = 20;   // the deletion guard judges selections of 20 w
 const MIN_SHARE = 0.4;
 const MIN_SHARE_WORDS = 20;      // a sentence or two may rightly shrink ("make me sound more confident": 19 words to 6 in revise_gold)
 
+/*
+ * Said over a selection, not asked of it. Over a misheard word the user says the word again
+ * ("rough edges" over "roughages", "Kaggle" over "Gragle"); over a sentence, the sentence as he
+ * meant it ("Let's stay without the chip for now." over "We should stay without the chip for now.
+ * I messaged another person."). The revise model was never trained on that: none of its revise
+ * rows has the words said as the result, and some teach it to hand the selection back when the
+ * speech is not an instruction it can apply. So it hands the selection back, and the pill said
+ * "nothing changed" (dictation-research reports/revise_no_difference_2026-10-31.md: about half of
+ * the user's real presses that came back unchanged were re-dictations).
+ *
+ * replacement() reads the words said (heard as a dictation, judge()) and returns the selection's
+ * new text, or null when they are an instruction (or nothing). Only asked when the model changed
+ * nothing or next to nothing. The words are text, not a request, when they do not open like one
+ * ("make it ...", "can you ...", "change X to Y", "please", "not ..."), are not a reaction ("wait",
+ * "no") or fillers, and:
+ *   - say the selection again: most of either side's content words in the other, at 0.5-2 times
+ *     its length (opening like a request, then nearly word for word); only the run of its
+ *     sentences they match is replaced when they match one part clearly better than the whole;
+ *   - or the selection is a word or a short phrase (3 words, 40 characters) and they are a short
+ *     phrase (6 words) that is not a question and names no kind of edit;
+ *   - or they run at length (12+ words, twice the selection) over a selection of 12 words or fewer, naming no
+ *     edit: a dictation meant to replace it, as one past 20 seconds already is.
+ * Every one of eval/revise_gold.jsonl's 160 instructions, scripted or as Whisper heard them, reads
+ * as an instruction (bench/revise-guards.js).
+ */
+const FILLERS = new Set(['um', 'uh', 'umm', 'uhm', 'hmm', 'mm', 'er', 'erm', 'ah', 'oh', 'like', 'so', 'okay', 'ok', 'yeah', 'well', 'the', 'a', 'and']);
+const LEAD = String.raw`(?:(?:um+|uh+|uhm|erm?|okay|ok|so|and|now|hey|alright|all right|right|well|yeah|actually|typd)[,.!]?\s+)*`;
+const REQUEST = new RegExp('^' + LEAD + '(?:' + [
+  String.raw`(?:can|could|would|will) (?:you|we|i)\b`, String.raw`(?:i (?:want|need|would like)|i'd like) (?:you|it|this|that)\b`,
+  String.raw`please\b`, String.raw`let'?s (?:make|change|fix|put|turn|add|remove|cut|rewrite|rephrase|try|shorten)\b`,
+  String.raw`(?:make|change|replace|rename|fix|turn|put|add|insert|remove|delete|cut|drop|take|get rid|shorten|summari[sz]e|sum|rewrite|rephrase|reword|simplify|clean|tighten|trim|condense|compress|expand|elaborate|translate|format|capitali[sz]e|lowercase|uppercase|spell|correct|swap|move|split|join|merge|combine|sort|convert|use|write|say|keep|bold|italici[sz]e|undo|redo|polish|improve|edit|shorten|lengthen|list|number|bullet\w*|tone|soften|strengthen|punctuate|reformat|restructure|reorder|paraphrase|proofread|check)\b`,
+  String.raw`(?:it|this|that) (?:should|needs to|has to|must)\b`, String.raw`(?:should|shouldn't) (?:it|this|that) be\b`,
+  String.raw`instead\b`, String.raw`not\b`, String.raw`no[,.]`, String.raw`in (?:english|turkish|german|french|spanish)\b`
+].join('|') + ')', 'iu');
+const QUESTION = new RegExp('^' + LEAD + String.raw`(?:what|what's|how|why|when|where|who|which|is|are|am|do|does|did|can|could|would|should|will|shall|isn't|aren't|don't|doesn't)\b`, 'iu');
+
+// Said on its own, these are a reaction to the result or a change of mind, never new text.
+// A short phrase that names an edit of a word is an instruction ("plural" over "cat", "past tense").
+const EDIT_WORDS = /\b(?:plural\w*|singular|tense|capital\w*|bold|italic\w*|underline\w*|quotes?|quotation|synonym\w*|antonym\w*|opposite|abbreviat\w*|acronym\w*|spell\w*|hyphen\w*|contraction\w*|emojis?|digits?|numerals?|lower ?case|upper ?case|title case|camel ?case|snake ?case|possessive|negative|negate)\b/iu;
+
+const NOT_TEXT = /^(?:no+|nope|wait|stop|cancel|never ?mind|undo|oops|whoops|sorry|ugh+|argh+|damn(?:it)?|dammit|shit|fuck|crap|hmm+|what|huh|okay|ok|yes|yeah|thanks|thank you)$/i;
+
+/** How alike two word lists are by their content words: {recall, precision, f1} of `a` in `b`. */
+function overlap(a, b) {
+  const ac = content(a), bc = content(b);
+  const recall = ac.length ? shared(ac, bc) / ac.length : 0;
+  const precision = bc.length ? shared(bc, ac) / bc.length : 0;
+  return { recall, precision, f1: recall + precision ? (2 * recall * precision) / (recall + precision) : 0 };
+}
+
+/**
+ * The selection's new text when what was said is not an instruction (see above), or null.
+ * `span` is the selection (trimmed), `heard` the words said, as a plain dictation writes them.
+ */
+function replacement(span, heard) {
+  const out = replacementOf(span, heard);
+  // The selection's own words back (heard with the selection as context, a model can copy it): that
+  // is still nothing changed, never a "done".
+  return out && words(out).join(' ') !== words(span).join(' ') ? out : null;
+}
+
+function replacementOf(span, heard) {
+  const s = String(span || '').trim(), h = String(heard || '').trim();
+  if (!s || !h) return null;
+  const sw = words(s), hw = words(h);
+  if (!sw.length || !hw.length || hw.every((w) => FILLERS.has(w))) return null;
+  if (NOT_TEXT.test(h.replace(/[\s.,!?…]+$/u, '').trim())) return null;
+  const asks = REQUEST.test(h);
+  const { recall, precision } = overlap(sw, hw);
+  const ratio = hw.length / sw.length;
+  // The selection said again, a little otherwise. Opening like a request ("change ... to ...")
+  // it must be nearly word for word ("Make sure the tests pass" over "Make sure the test pass").
+  const same = sw.length >= 3 && recall >= 0.5 && precision >= 0.6 && ratio >= 0.5 && ratio <= 2 &&
+    (!asks || (recall >= 0.8 && precision >= 0.8));
+  if (same) {
+    // Only some of its sentences said again ("Let's not use the chip for now." over that sentence
+    // and the one after it): those are replaced, the rest kept.
+    return splice(s, h) || fitReplacement(s, h);
+  }
+  // A sentence or two said over a selection of several, matching one part of it.
+  if (!asks && sw.length >= 6 && kindOf(h) === 'other') {
+    const part = splice(s, h);
+    if (part) return part;
+  }
+  // A word or a short phrase highlighted (a misheard name, a wrong word) and a short phrase said.
+  if (sw.length <= 3 && s.length <= 40 && hw.length <= 6 && !asks && !QUESTION.test(h) && !EDIT_WORDS.test(h) && kindOf(h) === 'other') return fitReplacement(s, h);
+  // Talking at length over a short selection, not asking anything of it: a dictation meant to
+  // replace it, as one over 20 seconds already is (pipeline/index.js REVISE_MAX_SECONDS).
+  if (!asks && sw.length <= 12 && hw.length >= 12 && hw.length >= 2 * sw.length && kindOf(h) === 'other') return h;
+  return null;
+}
+
+/**
+ * The selection with only the run of its sentences that `heard` says again replaced by it, or null
+ * when no part matches clearly better than the whole does (then the whole is replaced, or nothing).
+ */
+function splice(s, h) {
+  const parts = [];
+  const re = /[^.!?\n]+(?:[.!?…]+["')\]]*)?\s*|\n+/gu;
+  let m;
+  while ((m = re.exec(s))) if (m[0]) parts.push({ text: m[0], at: m.index });
+  const sentences = parts.filter((p) => words(p.text).length);
+  if (sentences.length < 2) return null;
+  const hw = words(h);
+  const whole = overlap(words(s), hw).f1;
+  let best = null;
+  for (let i = 0; i < sentences.length; i++) {
+    for (let j = i; j < sentences.length; j++) {
+      if (i === 0 && j === sentences.length - 1) continue;
+      const from = sentences[i].at, to = sentences[j].at + sentences[j].text.length;
+      const run = s.slice(from, to);
+      const o = overlap(words(run), hw);
+      const ratio = hw.length / words(run).length;
+      if (o.recall >= 0.5 && o.precision >= 0.6 && ratio >= 0.5 && ratio <= 2 && (!best || o.f1 > best.f1)) best = { f1: o.f1, from, to, run };
+    }
+  }
+  if (!best || best.f1 < 0.5 || best.f1 < whole + 0.15) return null;
+  const trail = (best.run.match(/\s*$/) || [''])[0];
+  return s.slice(0, best.from) + fitReplacement(best.run, h) + trail + s.slice(best.to);
+}
+
+/**
+ * The speech, as the selection's replacement: a dictation of a word or a phrase in mid-sentence
+ * loses the full stop and the capital a dictation gives it, unless the selection had them.
+ */
+function fitReplacement(span, heard) {
+  const s = String(span || '').trim();
+  let h = String(heard || '').trim();
+  // (Not an abbreviation's or an ellipsis's: "U.S." keeps its last point.)
+  if (!/[.!?…:;]["')\]]*$/.test(s) && /[^.]\.$/.test(h) && !/(?:^|[\s(])(?:\p{L}\.){2,}$/u.test(h)) h = h.slice(0, -1);
+  const first = h.match(/^([A-Z])([a-z]+)\b/);
+  if (/^[a-z]/.test(s) && first && COMMON().has(first[0].toLowerCase())) h = first[1].toLowerCase() + h.slice(1);
+  return h;
+}
+
+/**
+ * A name said again, as the user's dictionary spells it: "contact@mehmetadeler.com" heard, with
+ * "mehmetdedeler.com" in the dictionary, is pasted as "contact@mehmetdedeler.com". Only a word of 5+
+ * letters that is not common English, within one letter of a dictionary word (two from 8 letters on),
+ * with the same first letter. Applied to a replacement only, never to the model's own answer.
+ * `terms`: the dictionary's terms.
+ */
+function respell(text, terms) {
+  const vocab = [];
+  for (const t of terms || []) for (const w of String(t).match(/[\p{L}\p{N}]+/gu) || []) if (w.length >= 5) vocab.push(w);
+  if (!vocab.length) return text;
+  return String(text).replace(/[\p{L}\p{N}]+/gu, (w) => {
+    const lw = w.toLowerCase();
+    if (w.length < 5 || COMMON().has(lw)) return w;
+    let best = null;
+    for (const v of vocab) {
+      const lv = v.toLowerCase();
+      if (lv === lw) return v;   // the dictionary's own case ("subagent", "Typd")
+      if (lv[0] !== lw[0]) continue;
+      const d = charEdits(lw, lv, 2);
+      if (d <= (w.length >= 8 ? 2 : 1) && (!best || d < best.d)) best = { v, d };
+    }
+    return best ? best.v : w;
+  });
+}
+
+/** Letter edits between two words, or more than `cap` once past it. */
+function charEdits(a, b, cap) {
+  if (Math.abs(a.length - b.length) > cap) return cap + 1;
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const row = [i];
+    let low = i;
+    for (let j = 1; j <= b.length; j++) {
+      row[j] = a[i - 1] === b[j - 1] ? prev[j - 1] : 1 + Math.min(prev[j - 1], prev[j], row[j - 1]);
+      if (row[j] < low) low = row[j];
+    }
+    if (low > cap) return cap + 1;
+    prev = row;
+  }
+  return prev[b.length];
+}
+
+let common = null;
+function COMMON() {
+  if (!common) {
+    try {
+      common = new Set(require('fs').readFileSync(require('path').join(__dirname, '..', 'common-words.txt'), 'utf8').split(/\r?\n/).filter(Boolean));
+    } catch {
+      common = new Set();
+    }
+  }
+  return common;
+}
+
 const MESSAGES = {
   empty: "Couldn't revise that — text kept",
-  noop: "Couldn't revise that — nothing changed",
+  // Founder-approved wording (2026-10-31): the old "Couldn't revise that — nothing changed" read as a dead end.
+  noop: "Didn't change it — try saying it another way",
   echo: "Couldn't revise that — text kept",
   deleted: 'Revise dropped text — kept yours, result copied',
   short: "Couldn't revise that — text kept",
@@ -196,7 +387,9 @@ const MESSAGES = {
 function check(span, out) {
   const s = String(span || '').trim(), o = String(out || '').trim();
   if (!o) return { verdict: 'refuse', reason: 'empty' };
-  if (o.replace(/\r\n?/g, '\n') === s.replace(/\r\n?/g, '\n')) return { verdict: 'refuse', reason: 'noop' };
+  // Unchanged: never pasted, but the words said decide what happens instead -- a re-dictation of
+  // the selection replaces it (replacement()); an instruction gets the "nothing changed" note.
+  if (o.replace(/\r\n?/g, '\n') === s.replace(/\r\n?/g, '\n')) return { verdict: 'ask', reason: 'noop' };
   const m = measure(s, o);
   const near = wordEdits(m.sw, m.ow, Math.max(1, Math.round(NEAR_SHARE * m.spanWords)) + 1) <= Math.max(1, Math.round(NEAR_SHARE * m.spanWords));
   if (near && m.spanWords >= 8) return { verdict: 'ask', reason: 'near' };
@@ -220,6 +413,18 @@ function verdict(span, out, instruction) {
   if (first.verdict === 'refuse') return { refuse: true, reason: first.reason, kind: kindOf(instruction), metrics };
   if (first.verdict === 'pass') return { refuse: false, kind: kindOf(instruction), metrics };
   const kind = kindOf(instruction);
+  // Unchanged, or next to it: what was said may be the selection's new text, not an instruction.
+  // Then it replaces the selection (replace: the words, fitted to it), as a dictation would.
+  const replace = (first.reason === 'noop' || first.reason === 'near') && instruction ? replacement(s, instruction) : null;
+  if (replace) {
+    // A small change the model made that already goes the way of the words said ("Show him." ->
+    // "Let's show him." when that is what was said) is kept: it is the model's text, with the
+    // selection's names, not the hearing's.
+    const toSaid = (x) => wordEdits(words(x), words(replace), 64);
+    if (first.reason === 'near' && toSaid(o) < toSaid(s)) return { refuse: false, kind, metrics };
+    return { refuse: false, replace, kind, metrics };
+  }
+  if (first.reason === 'noop') return { refuse: true, reason: 'noop', kind, metrics };
   // Far shorter than the selection: only an instruction that asks to shorten or delete may do that.
   // Unheard, it is not known to have asked.
   const tooShort = first.reason === 'short' && kind !== 'shorten' && kind !== 'delete';
@@ -260,4 +465,4 @@ function verdict(span, out, instruction) {
 
 const round = (x) => Math.round(x * 1000) / 1000;
 
-module.exports = { check, verdict, kindOf, measure, words, wordEdits, MESSAGES };
+module.exports = { check, verdict, kindOf, measure, words, wordEdits, replacement, fitReplacement, splice, respell, MESSAGES };
