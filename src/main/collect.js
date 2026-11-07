@@ -10,12 +10,14 @@
  * One item is: the captured audio as a 16 kHz mono 16-bit WAV, the text Typd pasted (or copied,
  * when the paste fell back to the clipboard: pasted false, copiedAt), the mode,
  * the model file and the exact model version (modelVersion: r24_1p7b_rev128, not just the GGUF's
- * name), whether the revise adapter ran on it (reviseAdapter, reviseAdapterFile), the name of the
- * app it went into, timestamps and durations, OS and app version -- so every shared item and every
- * flag can be tied to exact versions. NEVER the screen context, the highlighted span or a window
- * title -- those are other people's words. For a revision the pasted text is left out too
- * (SEND_REVISE_TEXT): it is the highlighted span rewritten, so it would carry the very text that
- * rule keeps out. The spoken instruction's audio is kept.
+ * name), whether the revise adapter ran on it (reviseAdapter, reviseAdapterFile), timestamps and
+ * durations, OS and app version -- so every shared item and every flag can be tied to exact
+ * versions. NEVER the screen context, the highlighted span or a window title -- those are other
+ * people's words -- and, since 0.2.12, never the name of the program it went into (`app`; it stays
+ * on this computer, in History and the kept recordings). An item an earlier Typd left waiting in
+ * the outbox goes without those too (NEVER_SENT, taken out as it is sent). For a revision the
+ * pasted text is left out too (SEND_REVISE_TEXT): it is the highlighted span rewritten, so it would
+ * carry the very text that rule keeps out. The spoken instruction's audio is kept.
  *
  * Nothing here is on the critical path. add() returns at once; a tick later the item is written
  * to an outbox on disk, and one uploader sends one item at a time, deleting the local copy only
@@ -48,6 +50,18 @@ const SEND_REVISE_TEXT = false;
 const NOTE_MAX = 200;
 const NAME_RE = /^\d{8}T\d{6}Z-[0-9a-f]{16}$/;
 const RENAME_TRIES = 10;                   // renameRetry: 40 ms, 80 ms ... 400 ms, ~2.2 s in all
+// What an item's meta never carries to the server. makeMeta writes none of them; an item queued by
+// an earlier Typd (before 0.2.12, with `app`, the program's name) has them taken out as it is sent.
+const NEVER_SENT = ['app', 'context', 'contextBlock', 'span', 'selection', 'title', 'screen'];
+
+/** An item's meta (the bytes on disk) as it may go: without any NEVER_SENT field. */
+function metaToSend(raw) {
+  let meta;
+  try { meta = JSON.parse(raw.toString('utf8')); } catch { return raw; }   // the server refuses it (400): set aside
+  if (!meta || typeof meta !== 'object' || Array.isArray(meta) || !NEVER_SENT.some((k) => k in meta)) return raw;
+  for (const k of NEVER_SENT) delete meta[k];
+  return Buffer.from(JSON.stringify(meta, null, 1));
+}
 
 /** tester.json, checked; null (and the module stays inert) unless it is complete and sane. */
 function readConfig(file) {
@@ -283,10 +297,11 @@ function createCollector({
   }
 
   async function send(cfg, name) {
-    const [wav, meta] = await Promise.all([
+    const [wav, raw] = await Promise.all([
       fsp.readFile(path.join(dir, name + '.wav')),
       fsp.readFile(path.join(dir, name + '.json'))
     ]);
+    const meta = metaToSend(raw);
     const boundary = '----typd' + crypto.randomBytes(12).toString('hex');
     const body = Buffer.concat([
       Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="meta"\r\n\r\n`),
@@ -488,7 +503,7 @@ function createCollector({
       reviseAdapter: adapter === undefined || adapter === null ? null : Boolean(adapter),
       reviseAdapterFile: typeof adapter === 'string' && adapter ? path.basename(adapter).slice(0, 128) : null,
       engine: rec.engine || null,
-      app: rec.app || null,                                   // process name only, never the window title
+      // No `app` (the program's name) since 0.2.12, whatever rec holds: NEVER_SENT.
       audioSeconds: null,
       recordedAt: null,
       endedAt: iso(rec.endedAt),                              // the second key press
@@ -683,4 +698,4 @@ function createCollector({
   };
 }
 
-module.exports = { createCollector, readConfig, checkEndpoint, encodeWav, oneLine, stamp, writeAtomic, renameRetry, why, NOTE_MAX };
+module.exports = { createCollector, readConfig, checkEndpoint, encodeWav, oneLine, stamp, writeAtomic, renameRetry, why, metaToSend, NOTE_MAX, NEVER_SENT };

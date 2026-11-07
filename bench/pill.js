@@ -190,7 +190,7 @@ section('3. the per-dictation line in the life log');
   const call = (main.match(/life\.log\('dictation', life\.dictationLine\(\{([\s\S]*?)\}\)\);/) || [])[1] || '';
   const keys = [...call.matchAll(/^\s+([a-zA-Z]+)(?::|,?\s*$)/gm)].map((m) => m[1]);
   check('index.js logs it after the paste with counts only: no text, app, title or context passed',
-    keys.length >= 8 && keys.every((k) => ['mode', 'audioSeconds', 'chars', 'releaseToTextMs', 'textToPasteMs', 'outcome', 'model', 'device', 'lowMemory'].includes(k)) &&
+    keys.length >= 8 && keys.every((k) => ['mode', 'audioSeconds', 'chars', 'releaseToTextMs', 'textToPasteMs', 'outcome', 'model', 'device', 'lowMemory', 'mic'].includes(k)) &&
     /^\s+chars,$/m.test(call) && /logDictation\(current, text\.length, result, pastedAt\)/.test(main) && !/text/.test(call), keys);
   check('index.js: the text-ready stamp is taken before the paste, and the recording is written after it',
     // 0.2.10: the paste is inside pasteTarget.land (or skipped when there is no text field: the copy pop-up).

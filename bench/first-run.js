@@ -369,7 +369,7 @@ function profile(s, over = {}) {
     const begin = (idx.match(/function beginSession\(\) \{[\s\S]*?\n\}/) || [''])[0];
     check('beginSession: with no model, a note in the pill and nothing recorded',
       /if \(!session && modelMissing\(\)\) \{\s*note\(status\.describe\(\)\.line, 6000\);\s*return;\s*\}/.test(begin) && begin.indexOf('modelMissing()') < begin.indexOf('session = {'));
-    const warm = (idx.match(/function warmModel\(\) \{[\s\S]*?\n\}/) || [''])[0];
+    const warm = (idx.match(/function warmModel\([^)]*\) \{[\s\S]*?\n\}/) || [''])[0];
     check('warmModel: starts nothing with no model', /if \(modelMissing\(\)\) return;/.test(warm) && warm.indexOf('modelMissing()') < warm.indexOf('pipeline.warm()'));
     check('modelMissing: the local files decide, the status carries the download', /require\('\.\/pipeline\/local'\)\.hasModel\(\)/.test(idx) && /status\.set\(\{ model: 'missing', modelWhy: '', modelFetch: fetch \}\);/.test(idx));
     check('the first model says "Ready — … and talk" once', /if \(first\) \{ const k = keyInfo\(\); note\('Ready — '/.test(idx));

@@ -7,9 +7,12 @@ if (process.platform === 'darwin') {
   return;
 }
 
+const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const { clipboard } = require('electron');
+const life = require('./lifelog');
+const { unpacked } = require('./unpacked');
 
 /**
  * Text injection, and knowing where it is going.
@@ -28,16 +31,55 @@ const { clipboard } = require('electron');
  *
  * The same process answers which application has focus and what text is in the
  * focused control -- both the "pasted into X" label and the model's context.
+ *
+ * A helper that dies -- or never came up -- is started again by the next command,
+ * and the life log says why it died (its exit code and PowerShell's first error
+ * line), so an install that copies without pasting says so in its diagnostics.
  */
 
-const HELPER = path.join(__dirname, 'inject.ps1');
+/**
+ * inject.ps1, where PowerShell can read it. Packaged, __dirname is inside app.asar,
+ * which only Electron can read: up to 0.2.11 PowerShell was handed that path, could
+ * not find the script, and no packaged install ever pasted (src/main/unpacked.js).
+ * build.asarUnpack puts the script beside the archive, in app.asar.unpacked;
+ * scripts/after-pack.js refuses a build where this does not name a real file there.
+ */
+function helperPath(dir = __dirname) {
+  return unpacked(path.join(dir, 'inject.ps1'));
+}
+
+const HELPER = helperPath();
+// By its full path, as appUpdate.js and netcost.js run it: a PATH without PowerShell's folder must not cost the paste.
+const POWERSHELL = path.join(process.env.SystemRoot || process.env.windir || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+
+// A helper that dies on its own five times in a minute is broken, not unlucky (inject-mac.js does
+// the same): starting it again for every command would only add a PowerShell start to each one.
+const CRASH_LIMIT = 5;
+const CRASH_WINDOW_MS = 60 * 1000;
+// A command sent to a helper still starting waits for the start too. Timed out, a `put` could still
+// be carried out later -- a paste arriving after Typd had said it only copied.
+const START_MS = 3000;
 
 let proc = null;
 let ready = false;
 let queue = [];       // pending {resolve, reject} in command order
 let buffer = '';
+let stopped = false;  // stop() was called: Typd is quitting, so no command starts the helper again
+let crashes = [];     // when it died without being asked to
+let saidLoop = false;
 const buttonListeners = new Set();
 let armedButton = 0;  // the side button the helper's hook is swallowing, 0 for none
+
+/**
+ * The line of the helper's stderr that says why it ended: PowerShell's first line there, or
+ * the first error of the CLIXML it may write there instead. The caller cleans it (lifelog.clean).
+ */
+function firstError(stderr) {
+  const s = String(stderr || '');
+  const xml = /<S S="Error">([\s\S]*?)<\/S>/.exec(s);
+  if (xml) return xml[1].replace(/_x000D_|_x000A_/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+  return s.split(/\r?\n/).map((l) => l.trim()).find((l) => l && !l.startsWith('#< CLIXML')) || '';
+}
 
 function handleLine(line) {
   const text = line.trim();
@@ -69,15 +111,35 @@ function handleLine(line) {
 
 function start() {
   if (proc) return;
+  stopped = false;
+  const now = Date.now();
+  crashes = crashes.filter((t) => now - t < CRASH_WINDOW_MS);
+  if (crashes.length >= CRASH_LIMIT) {
+    if (!saidLoop) life.log('injector', 'died ' + crashes.length + ' times in a minute: not starting it again for a minute (dictations are copied, not pasted)');
+    saidLoop = true;
+    return;
+  }
+  saidLoop = false;
 
-  proc = spawn(
-    'powershell',
-    ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', HELPER],
-    { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] }
-  );
+  let child;
+  try {
+    child = spawn(
+      fs.existsSync(POWERSHELL) ? POWERSHELL : 'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', HELPER],
+      { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] }
+    );
+  } catch (err) {
+    crashes.push(Date.now());
+    life.log('injector', 'could not start (' + life.clean((err && (err.code || err.message)) || err, 60) + ')');
+    return;
+  }
+  proc = child;
+  ready = false;
+  buffer = '';
 
-  proc.stdout.setEncoding('utf8');
-  proc.stdout.on('data', (chunk) => {
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', (chunk) => {
+    if (proc !== child) return;   // an old helper's last words
     buffer += chunk;
     let i;
     while ((i = buffer.indexOf('\n')) !== -1) {
@@ -86,28 +148,46 @@ function start() {
     }
   });
 
-  proc.on('exit', () => {
+  // PowerShell says on stderr why it could not run the script (no such file, a script error) and
+  // exits; the start of it is kept for the life log.
+  let stderr = '';
+  child.stderr.setEncoding('utf8');
+  child.stderr.on('data', (s) => { if (stderr.length < 4000) stderr += s; });
+  child.stdin.on('error', () => { /* EPIPE as it dies; 'close' says why */ });
+
+  // Only a process still current when it ends died on its own: stop() lets go of it first.
+  let died = false, failed = null;
+  const gone = () => {
+    if (proc !== child) return;
+    died = true;
     proc = null;
     ready = false;
+    crashes.push(Date.now());
     queue.forEach((p) => p.reject(new Error('injector exited')));
     queue = [];
-  });
-
-  proc.on('error', () => {
-    proc = null;
-    ready = false;
+  };
+  child.on('exit', gone);
+  child.on('error', (err) => { failed = err; gone(); });   // it could not be started at all
+  // After 'exit' (or 'error'), once its stderr is all read: one line for the life log.
+  child.on('close', (code, signal) => {
+    if (!died) return;
+    const why = life.clean(firstError(stderr), 200);
+    if (failed) life.log('injector', 'could not start (' + life.clean(failed.code || failed.message, 60) + ')');
+    else life.log('injector', 'exited (' + (signal || 'code ' + code) + ')' + (why ? ': ' + why : ''));
   });
 }
 
 function command(line, timeoutMs = 2000) {
   return new Promise((resolve, reject) => {
+    // It died, or never came up: start it again rather than give up on pasting.
+    if (!proc && !stopped) start();
     if (!proc) return reject(new Error('injector not started'));
 
     const timer = setTimeout(() => {
       const i = queue.indexOf(entry);
       if (i !== -1) queue.splice(i, 1);
       reject(new Error('injector timed out'));
-    }, timeoutMs);
+    }, ready ? timeoutMs : timeoutMs + START_MS);
 
     const entry = {
       resolve: (v) => { clearTimeout(timer); resolve(v); },
@@ -327,8 +407,7 @@ async function paste(text) {
   if (!text) return { ok: false, reason: 'empty' };
 
   try {
-    if (!proc) throw new Error('injector not started');
-    const r = await command('put ' + b64(text));
+    const r = await command('put ' + b64(text));   // starts the helper again if it is gone
     if (r && r.ok === false) throw new Error(r.error || 'SendKeys failed');
   } catch (err) {
     // Awaited: from Electron 44 the clipboard calls return promises (harmless on older versions).
@@ -353,18 +432,23 @@ async function copy(text) {
 }
 
 function stop() {
+  stopped = true;
   if (!proc) return;
+  const child = proc;
+  proc = null;   // first, so its exit is not taken for a death
+  ready = false;
+  queue.forEach((p) => p.reject(new Error('injector exited')));
+  queue = [];
   try {
-    proc.stdin.end();
-    proc.kill();
+    child.stdin.end();
+    child.kill();
   } catch {
     // already gone
   }
-  proc = null;
-  ready = false;
 }
 
 module.exports = {
   start, stop, paste, copy, maskAlt, focusedApp, focusContext, fieldState, selection, selectionStillIs, buttons,
+  helperPath,
   isReady: () => ready
 };

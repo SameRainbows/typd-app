@@ -24,7 +24,9 @@ const { runStub } = require('./stub');
  *   { type: 'expect', chars }         how much output to expect, once known
  *   { type: 'partial', text }         streamed text, cumulative
  *   { type: 'done',    text }         final text; a local revision adds reviseAdapter, the
- *                                     adapter file it ran with, or false (none loaded)
+ *                                     adapter file it ran with, or false (none loaded); a
+ *                                     revision the model left unchanged whose speech was the
+ *                                     selection's new text (guards.replacement) adds replaced: true
  *   { type: 'refused', reason, message, text, copy }
  *                                     a revision that must not be pasted (guards.js): nothing
  *                                     changed, the instruction came back, part of the text was
@@ -178,7 +180,8 @@ function logGuard(entry) {
 }
 
 /**
- * Should this revision be refused? The 'refused' event's fields, or null to paste it.
+ * Should this revision be refused? The 'refused' event's fields; {replace} when the words said
+ * replace the selection instead (guards.replacement); or null to paste it.
  * `instruction` is called only when the result alone cannot decide (guards.check).
  */
 async function judge(span, revised, ranOut, instruction, signal) {
@@ -201,7 +204,19 @@ async function judge(span, revised, ranOut, instruction, signal) {
     }
     verdict = guards.verdict(span, revised, heard);
   }
-  if (process.env.TYPD_DEBUG) console.log('[typd:guard]', verdict.refuse ? 'refused: ' + verdict.reason : 'passed', verdict.kind || '', JSON.stringify(verdict.metrics));
+  if (process.env.TYPD_DEBUG) console.log('[typd:guard]', verdict.refuse ? 'refused: ' + verdict.reason : verdict.replace ? 'replaced by the words said' : 'passed', verdict.kind || '', JSON.stringify(verdict.metrics));
+  if (verdict.replace) {
+    // The model changed nothing, and what was said is the selection's new text, not an instruction
+    // (guards.replacement): it replaces the selection. Logged like a refusal (never the words or the
+    // text), so how often it happens can be counted.
+    logGuard({
+      reason: 'replaced', kind: verdict.kind, instruction: null,
+      spanChars: span.length, outChars: verdict.replace.length, metrics: verdict.metrics,
+      model: safe(() => local.modelVersion()), adapter: safe(() => (local.REVISE_ADAPTER ? require('path').basename(local.REVISE_ADAPTER) : false))
+    });
+    // A name said again comes out as the dictionary spells it (guards.respell).
+    return { replace: guards.respell(verdict.replace, safe(() => context.vocabulary().split(',')) || []) };
+  }
   if (!verdict.refuse) return null;
   logGuard({
     reason: verdict.reason, kind: verdict.kind, instruction: heard,
@@ -291,9 +306,17 @@ async function* run(opts = {}) {
     const adapter = local.REVISE_ADAPTER;
     const reviseAdapter = adapter ? require('path').basename(adapter) : false;
     // The instruction's words, only if the result alone cannot settle it (guards.js): one short
-    // dictation of the instruction audio, on the base model.
+    // dictation of the instruction audio, on the base model. When the words said are the selection's
+    // new text (guards.replacement), they are what is pasted. Heard with no context, as before: given
+    // the selection as screen context, P2g wrote "Make it simpler." as a sentence of the selection;
+    // given only the dictionary, it heard "Summarize." as nothing and "Make it more clear." as a
+    // sentence of its own (dictation-research reports/revise_no_difference_2026-10-31.md).
     const refusal = await judge(core, revised, info.finish === 'length', () => local.transcribe(audio.samples, audio.sampleRate, signal), signal);
     if (signal && signal.aborted) return;
+    if (refusal && refusal.replace) {
+      yield { type: 'done', text: lead + refusal.replace + tail, reviseAdapter, replaced: true };
+      return;
+    }
     if (refusal) {
       yield { ...refusal, text: lead + revised + tail, reviseAdapter };
       return;
@@ -329,6 +352,10 @@ async function* run(opts = {}) {
     if (signal && signal.aborted) return;
     const revised = unwrap(text).trim();
     const refusal = await judge(core, revised, false, () => Promise.resolve(transcript), signal);
+    if (refusal && refusal.replace) {
+      yield { type: 'done', text: lead + refusal.replace + tail, replaced: true };
+      return;
+    }
     if (refusal) {
       yield { ...refusal, text: lead + revised + tail };
       return;
@@ -399,6 +426,8 @@ module.exports = {
   ENGINE,
   buildContext: context.current,
   buildContextFrom: context.build,
+  // index.js: why a "Didn't catch that" happened (too quiet, or the model wrote nothing), for the life log.
+  voicedFrames,
 
   // Exported for bench/revise.js. Scoring the raw model output would score
   // something the user never sees -- these two are what stands between the

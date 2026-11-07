@@ -21,14 +21,18 @@ const DEFAULTS = {
   hotkey: hotkeyLogic.defaultFor(process.platform),
   sharePaused: false,   // tester builds only (sharing.js): true queues and sends nothing
   // Public builds (sharing.js): 'on', 'off', or 'ask' -- not answered yet, which shares nothing.
-  // Since 0.2.7 Typd asks (shareRule): a fresh install on the walkthrough's first screen, an install
-  // first started from 2026-10-18 15:00 UTC on in one small screen. 0.2.4-0.2.6 shared by default
-  // ('on' was the default, not an answer); before 0.2.4 '' meant a consent screen never answered.
+  // Typd asks (shareRule): a fresh install on the walkthrough's first screen; since 0.2.12 every
+  // other install that never chose, once, in one small screen. 0.2.4-0.2.6 shared by default ('on'
+  // was the default, not an answer); before 0.2.4 '' meant a consent screen never answered.
   share: 'on',
   // Since 0.2.7: '' = the rule above not applied yet (an earlier Typd's file, or a fresh install);
   // 'due' = the small "Help make Typd better?" screen shows at the next launch; 'done' = no screen
   // (shown once, answered, or not needed).
   shareAsk: '',
+  // Since 0.2.12: true once 'share' was set by a person's choice -- the walkthrough's first screen,
+  // the small screen or Settings' switch (set() records it with 'share', in the same write). Only
+  // an 'on' with it shares; an 'on' without it (an earlier Typd's) is no answer (shareRule).
+  shareChosen: false,
   // "That was wrong": a combination (globalShortcut) that flags the last dictation; '' = none.
   flagHotkey: hotkeyLogic.flagDefaultFor(process.platform),
   // macOS only: keep the Dock icon while Typd runs. Off, Typd lives in the menu bar and the
@@ -71,10 +75,11 @@ function read() {
   // An old 'CommandOrControl+Shift+Space' is written the current way; anything unusable falls
   // back to the default rather than leaving Typd with no key at all.
   cache.hotkey = hotkeyLogic.normalize(cache.hotkey, process.platform, { sideButtons: true });
-  // Sharing: as saved once 0.2.7 decided it (shareAsk 'due' or 'done'); else decided now, once, and kept.
-  const sh = shareRule(saved, { fresh: () => decideFresh(), firstLaunch: firstLaunchAt });
+  // Sharing: as saved when a choice set it, or once it was asked; else decided now, once, and kept.
+  const sh = shareRule(saved, { fresh: () => decideFresh() });
   cache.share = sh.share;
   cache.shareAsk = sh.shareAsk;
+  cache.shareChosen = sh.shareChosen;
   if (cache.flagHotkey && !hotkeyLogic.validFlag(cache.flagHotkey, process.platform)) cache.flagHotkey = DEFAULTS.flagHotkey;
   if (!VARIANTS.includes(cache.modelVariant)) cache.modelVariant = DEFAULTS.modelVariant;
   if (!LOW_MEMORY.includes(cache.lowMemory)) cache.lowMemory = DEFAULTS.lowMemory;
@@ -84,63 +89,36 @@ function read() {
 }
 
 /**
- * Sharing is asked, not assumed (0.2.7). Who still shares without being asked: only the installs
- * first started before SHARE_CUTOFF -- the people who agreed in person while 0.2.4-0.2.6 shared by
- * default. After it, 'on' in an earlier Typd's file came from that default (settings.json cannot
- * tell it from a Settings switch turned on), so it is no answer: such an install is asked once.
+ * Sharing is asked, not assumed. Since 0.2.12 a public install shares only if a person chose it:
+ * the walkthrough's first screen, the small "Help make Typd better?" screen or Settings' switch,
+ * each of which sets 'share' through set(), and set() records shareChosen with it.
+ *
+ * Before 0.2.12 nothing recorded that, and settings.json cannot tell a choice from a default: an
+ * earlier Typd's 'on' may be 0.2.4-0.2.6's default (written to the file with any other setting),
+ * 0.2.7-0.2.11's exemption for installs first started before 2026-10-18 15:00 UTC (taken then as
+ * "agreed in person", without asking), 0.2.0-0.2.3's consent screen, or a real answer or switch --
+ * all the same 'on'. So an 'on' without shareChosen is no answer: such an install is asked once,
+ * and shares nothing until it answers. 'off' was never a default (0.2.0-0.2.3: '' until answered;
+ * since: 'on', then 'ask'), so an 'off' is someone's choice and stays.
+ *
+ * {share, shareAsk, shareChosen, decided} from settings.json as saved (decided: changed now, and kept):
+ *   'on' with shareChosen                     'on', as saved            (a choice: no screen)
+ *   'ask' (0.2.7 or later wrote it)           'ask', shareAsk as saved  (asked or due already)
+ *   a fresh install (no shareAsk yet)         'ask', 'done'             (the walkthrough's first screen asks)
+ *   'on' without shareChosen; or, in a file
+ *     from before 0.2.7, '' or no 'share'     'ask', 'due'              (the small screen, once)
+ *   'off' (or anything Typd never wrote)      'off'                     (a no stays no; a hand edit is never a yes)
+ * fresh is a function, asked only for a file from before 0.2.7 (no shareAsk).
  */
-const SHARE_CUTOFF = Date.parse('2026-10-18T15:00:00Z');
-
-/**
- * {share, shareAsk, decided} from settings.json as saved.
- *   shareAsk 'due' or 'done' (0.2.7 or later wrote it): 'share' as saved -- 'on', 'off' or 'ask';
- *     anything else reads as 'off', so a hand edit is never taken for a yes.
- *   shareAsk '' or missing -- decided now (decided: true, and kept):
- *     a fresh install                         'ask', 'done' (the walkthrough's first screen asks)
- *     'off' (or anything Typd never wrote)    'off', 'done' (an explicit no stays no)
- *     'on', '' or none, first started
- *       before SHARE_CUTOFF                   'on',  'done' (as before; no new screen)
- *       from SHARE_CUTOFF on, or unknown      'ask', 'due'  (the small screen, once)
- * fresh and firstLaunch are functions, asked only when needed; firstLaunch() is ms, or Infinity.
- */
-function shareRule(saved, { fresh, firstLaunch, cutoff = SHARE_CUTOFF }) {
+function shareRule(saved, { fresh }) {
   const s = saved && typeof saved === 'object' ? saved : {};
-  if (s.shareAsk === 'due' || s.shareAsk === 'done') {
-    return { share: ['on', 'off', 'ask'].includes(s.share) ? s.share : 'off', shareAsk: s.shareAsk, decided: false };
-  }
-  if (fresh()) return { share: 'ask', shareAsk: 'done', decided: true };
-  if (!('share' in s) || s.share === '' || s.share === 'on') {
-    return firstLaunch() < cutoff ? { share: 'on', shareAsk: 'done', decided: true } : { share: 'ask', shareAsk: 'due', decided: true };
-  }
-  return { share: 'off', shareAsk: 'done', decided: true };
-}
-
-/**
- * When Typd first ran here, as well as this computer can tell (ms; Infinity if nothing says): the
- * earliest of settings.json's creation time (written on the first launch and only ever rewritten in
- * place, so it keeps it), the creation time of the folders Typd made then (its settings folder and
- * userData), history.json's, the oldest kept recording's own time (its file name), and when this
- * install enrolled for sharing (share.json). None can be earlier than the first launch, only later,
- * so the earliest is the best guess; times before 2026 or in the future are ignored.
- */
-function firstLaunchAt() {
-  const times = [];
-  const sane = (t) => Number.isFinite(t) && t > Date.parse('2026-01-01T00:00:00Z') && t < Date.now() + 60e3;
-  const born = (p) => { try { return fs.statSync(p).birthtimeMs || NaN; } catch { return NaN; } };
-  try {
-    const appData = app.getPath('appData');
-    const userData = app.getPath('userData');
-    for (const p of [file(), path.dirname(file()), userData, path.join(appData, 'typd', 'history.json')]) times.push(born(p));
-    try {
-      for (const f of fs.readdirSync(recordingsDir())) {
-        const m = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z\.wav$/.exec(f);   // index.js keepRecording's names
-        if (m) times.push(Date.parse(`${m[1]}T${m[2]}:${m[3]}:${m[4]}.${m[5]}Z`));
-      }
-    } catch { /* no recordings */ }
-    try { times.push(Date.parse(JSON.parse(fs.readFileSync(path.join(userData, 'share.json'), 'utf8')).enrolledAt)); } catch { /* not enrolled */ }
-  } catch { /* no paths */ }
-  const good = times.filter(sane);
-  return good.length ? Math.min(...good) : Infinity;
+  const known = s.shareAsk === 'due' || s.shareAsk === 'done';   // 0.2.7 or later wrote it
+  const chosen = s.shareChosen === true;
+  if (s.share === 'on' && chosen) return { share: 'on', shareAsk: known ? s.shareAsk : 'done', shareChosen: true, decided: !known };
+  if (known && s.share === 'ask') return { share: 'ask', shareAsk: s.shareAsk, shareChosen: false, decided: chosen };
+  if (!known && fresh()) return { share: 'ask', shareAsk: 'done', shareChosen: false, decided: true };
+  if (s.share === 'on' || (!known && (!('share' in s) || s.share === ''))) return { share: 'ask', shareAsk: 'due', shareChosen: false, decided: true };
+  return { share: 'off', shareAsk: known ? s.shareAsk : 'done', shareChosen: chosen, decided: !known || s.share !== 'off' };
 }
 
 function write(s) {
@@ -164,6 +142,7 @@ function set(key, value) {
     value = v.binding;
   }
   if (key === 'share' && !['on', 'off'].includes(value)) return false;
+  if (key === 'shareChosen') return false;   // set only with 'share', below
   if (key === 'modelVariant' && !VARIANTS.includes(value)) return false;
   if (key === 'lowMemory' && !LOW_MEMORY.includes(value)) return false;
   if (key === 'walkthrough' && !['', 'due', 'done'].includes(value)) return false;
@@ -174,8 +153,12 @@ function set(key, value) {
     value = v;
   }
   if (typeof value === 'string' && value.length > 512) return false;
-  if (s[key] === value) return true;
+  if (s[key] === value && (key !== 'share' || s.shareChosen)) return true;
   s[key] = value;
+  // 'share' is set only by a person's choice (sharing.js: the walkthrough's first screen, the small
+  // screen, Settings' switch, "Delete what I've shared"): recorded with it, in the same write, so a
+  // later launch can tell a choice from a default (shareRule).
+  if (key === 'share') s.shareChosen = true;
   write(s);
   for (const fn of listeners) fn(key, value);
   return true;
@@ -238,4 +221,4 @@ function recordingsDir() {
   return path.join(app.getPath('appData'), 'Typd', 'recordings');
 }
 
-module.exports = { get, set, onChange, isFirstRun, isFreshInstall, walkthroughFor, recordingsDir, shareRule, firstLaunchAt, SHARE_CUTOFF, HOTKEYS, DEFAULTS };
+module.exports = { get, set, onChange, isFirstRun, isFreshInstall, walkthroughFor, recordingsDir, shareRule, HOTKEYS, DEFAULTS };

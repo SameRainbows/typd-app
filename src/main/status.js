@@ -20,6 +20,7 @@ const facts = {
   mic: 'ok',            // 'ok' | 'blocked'
   perms: [],            // macOS: switches that are off ('microphone', 'accessibility', 'input')
   micUnasked: false,    // macOS: the microphone was never answered (not in macOS's list yet): "Allow", not a pane
+  paste: 'ok',          // 'ok' | 'failed': the paste helper is not running, or pastes keep falling back to the clipboard (selfcheck.js)
   live: false           // a dictation is recording or being written
 };
 
@@ -95,6 +96,13 @@ function describe() {
   }
   if (facts.live) {
     return mk('live', 'Listening — ' + k.verb + ' ' + k.label + ' to finish', 'Listening.', null, 'live');
+  }
+  if (facts.paste === 'failed') {
+    // Dictation still works -- every result is on the clipboard -- but the person has to know to paste it.
+    const v = mac ? '⌘V' : 'Ctrl+V';
+    return mk('paste', "Paste isn't working — press " + v + ' after you dictate',
+      "Typd can't paste into other apps right now, so each dictation is copied instead: press " + v + ' to paste it. ' +
+      '“Copy diagnostics” in the ' + (mac ? 'menu bar menu' : 'tray menu') + ' says what went wrong.', null, 'dim');
   }
   const talk = k.verb.charAt(0).toUpperCase() + k.verb.slice(1) + ' {key} in any app and talk.';
   if (facts.interim) return mk('ready', 'Ready — ' + k.verb + ' ' + k.label + ' to dictate', interimCard(facts.interim) + ' ' + talk, null, 'ready');

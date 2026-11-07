@@ -5,16 +5,21 @@
  * the network: an item is queued only after its text landed (pasted, or copied when the paste fell
  * back to the clipboard), and sent from the outbox later.
  *
- *   Public builds (any packaged build without a tester key). Since 0.2.7 sharing is ASKED (settings
- *   'share': 'on', 'off', or 'ask' = not answered yet, which queues nothing and sends nothing): a
- *   fresh install on the walkthrough's first screen, an install first started from 2026-10-18 15:00
- *   UTC on in one small screen at its next launch (ask-window.js 'share'): "Help make Typd better?",
- *   Share / Don't share, nothing preselected. Installs first started before that (the people who
- *   agreed in person while 0.2.4-0.2.6 shared by default) stay on; an explicit 'off' stays off
- *   (settings.js shareRule). Settings > "Share dictations" switches it either way at once (off
- *   deletes what still waits in the outbox). Answering Don't share on an install that shared under
- *   0.2.6's default (it has a key) deletes what it shared, as "Delete what I've shared" does
- *   (answer()); offline, that delete is retried at later launches until it goes.
+ *   Public builds (any packaged build without a tester key). Sharing is ASKED (settings 'share':
+ *   'on', 'off', or 'ask' = not answered yet, which queues nothing and sends nothing), and since
+ *   0.2.12 it is on only where a person chose it -- the walkthrough's first screen, the small
+ *   screen or Settings' switch (settings 'shareChosen', recorded with the choice). A fresh install
+ *   is asked on the walkthrough's first screen; every other install that never chose is asked once,
+ *   in one small screen at its next launch (ask-window.js 'share'; after an app update's quiet
+ *   relaunch, once someone is at the keyboard): "Help make Typd better?", Share / Don't share,
+ *   nothing preselected. That is every 'on' an earlier Typd left without a recorded choice --
+ *   0.2.4-0.2.6's default, and the installs 0.2.7-0.2.11 kept on without asking because they were
+ *   first started before 2026-10-18 15:00 UTC (no exemption any more) -- since settings.json cannot
+ *   tell such an 'on' from a choice (settings.js shareRule). An explicit 'off' stays off, a recorded
+ *   'on' stays on. Settings > "Share dictations" switches it either way at once (off deletes what still
+ *   waits in the outbox). Answering Don't share on an install not answered yet that holds a key (it
+ *   shared before this run) deletes what it shared, as "Delete what I've shared" does (answer());
+ *   offline, that delete is retried at later launches until it goes.
  *   The first item to send enrolls this install with typd-collect (POST /v1/enroll): an
  *   anonymous, random key, kept in <userData>/share.json and nowhere else. "Delete what I've
  *   shared" deletes everything stored for that key on the server (DELETE /v1/me), empties the
@@ -38,9 +43,10 @@
  *
  * Past dictations (backfill.js): kept recordings never shared go out once, slowly -- from
  * Settings > "Send my past dictations", or when the server asks for this key (GET /v1/me says
- * {backfill: true}; typd-collect's allowlist). Never while sharing is off; never again after
- * "Delete what I've shared". And once by itself (0.2.7, autoBackfillWhy): on an install that shares
- * and never shared anything -- its 0.2.4-0.2.6 recordings, kept while sharing was meant to be on.
+ * {backfill: true}; typd-collect's allowlist). Never while sharing is off or not answered; never
+ * again after "Delete what I've shared". And once by itself (0.2.7, autoBackfillWhy): on an install
+ * that shares and never shared anything -- its 0.2.4-0.2.6 recordings, kept while sharing was meant
+ * to be on -- decided only once it is answered, so an install not answered yet sends nothing.
  */
 
 const fs = require('fs');
@@ -100,7 +106,8 @@ const ITEM_RE = /^\d{8}T\d{6}Z-[0-9a-f]{16}$/;
  *   keyFile    <userData>/share.json
  *   dir        the outbox
  *   choice     {get, set}: settings 'share' -- 'on', 'off' or 'ask' (not answered: off). Only 'on'
- *              is on (settings.js turns the older '' into 'on' or 'ask'); set() takes 'on' or 'off'
+ *              is on (settings.js turns an earlier Typd's '' or unchosen 'on' into 'ask'); set()
+ *              takes 'on' or 'off', and the app's settings record it as a choice (shareChosen)
  *   paused     () => boolean: a tester build's pause (settings 'sharePaused')
  *   dayFile    public builds: where the daily limit's count is kept (default <dir>/../share-day.json)
  *   cap, daily, fullHoldS   override the public builds' limits (bench/sharing.js); testers get
@@ -314,12 +321,13 @@ function createSharing({
 
     /**
      * The person's answer, from the walkthrough's first screen, the small screen or Settings' switch:
-     * 'on' or 'off', as choose(). Don't share on an install not asked before that shared under
-     * 0.2.6's default (it had a key when this run began: something went) also deletes what it
-     * shared (deleteShared: DELETE /v1/me -- everything stored for the key, a dictation flagged and
-     * shared on its own since included -- the outbox emptied, the key forgotten). If that delete
-     * cannot go now, the key file says so (deleteWanted) and retryDelete() tries again at later
-     * launches. Returns choose()'s answer, or deleteShared()'s with deletedShared: true.
+     * 'on' or 'off', as choose(). Don't share on an install not answered yet that shared before
+     * (it had a key when this run began: something went, under 0.2.4-0.2.6's default or an 'on' no
+     * one chose) also deletes what it shared (deleteShared: DELETE /v1/me -- everything stored for
+     * the key, a dictation flagged and shared on its own since included -- the outbox emptied, the
+     * key forgotten). If that delete cannot go now, the key file says so (deleteWanted) and
+     * retryDelete() tries again at later launches. Returns choose()'s answer, or deleteShared()'s
+     * with deletedShared: true.
      */
     async answer(value) {
       if (mode !== 'beta' || !['on', 'off'].includes(value)) return { ok: false };
@@ -590,7 +598,7 @@ function add(session, text, { pasted = true } = {}) {
       sampleRate: session.audio.sampleRate,
       text,
       mode: session.mode,
-      app: session.target && session.target.process ? session.target.process : null,
+      // Never the program it went into (0.2.12): that stays in History and the kept recordings here.
       model,
       modelVersion,
       // The adapter file a local revision ran with, or false: set from the pipeline's 'done' (index.js).

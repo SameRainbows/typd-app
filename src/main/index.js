@@ -47,6 +47,9 @@ try {
   console.log('[typd] crash reporter:', err && err.message);
 }
 const life = require('./lifelog');
+const selfcheck = require('./selfcheck');       // launch and ongoing self-checks (paste helper, model, failures)
+const micHelper = require('./mic');             // the native microphone helper, typd-mic (0.2.12)
+const { createCapture } = require('./capture'); // a dictation's microphone: the helper, or Chromium's capture
 
 /**
  * Keep each dictation's audio with everything needed to replay it -- the text Typd
@@ -93,7 +96,13 @@ function keepRecording(current, text) {
       context: current.contextBlock || null,
       span: current.span || null,
       // A revision the guards refused (never pasted): why. Absent on everything that landed.
-      ...(current.guard ? { guard: current.guard } : {})
+      ...(current.guard ? { guard: current.guard } : {}),
+      // A dictation that came to nothing ("Didn't catch that"): 'quiet' (too little sound) or 'empty' (the
+      // model wrote nothing). Kept so the next audit can tell a late microphone from a model that dropped
+      // speech; never pasted, never shared (backfill.js skips it). Absent on everything that landed.
+      ...(current.failed ? { failed: current.failed } : {}),
+      // A revision whose model changed nothing, replaced by the words said instead (guards.replacement).
+      ...(current.replaced ? { replaced: true } : {})
     };
     fs.writeFileSync(path.join(dir, stamp + '.json'), JSON.stringify(meta, null, 1));
   } catch (err) {
@@ -125,7 +134,8 @@ function logDictation(current, chars, result, pastedAt) {
       outcome: result && result.ok ? 'pasted' : result && result.offered ? 'offered' : 'copied',
       model,
       device,
-      lowMemory: lowMemory ? Boolean(lowMemory.on) : null
+      lowMemory: lowMemory ? Boolean(lowMemory.on) : null,
+      mic: capture.timing(current)   // which microphone path, and the key press to its first audio
     }));
   } catch (err) {
     if (process.env.TYPD_DEBUG) console.log('[typd:life]', err);
@@ -180,6 +190,44 @@ let session = null;
 let firstRunNote = false;   // the pill says "Ready — tap … and talk" once, on the very first launch
 let popup = null;           // the copy pop-up (copy-popup.js), made the first time a dictation is not pasted
 
+/*
+ * Self-checks (selfcheck.js). Paste: the helper's handshake at launch, and every dictation's outcome after
+ * it -- two pastes in a row that fell back to the clipboard say paste is broken, in the log and the tray's
+ * first line, until one lands. (0.2.11 packaged on Windows copied every dictation for 22 hours and said
+ * nothing but "restart Typd", which did not help: reports/real_use_audit_2026-10-31.md.)
+ */
+const helperReady = () => { try { return Boolean(inject.isReady()); } catch { return false; } };
+const pasteWatch = selfcheck.createPasteWatch({
+  log: (line) => life.log('self-check', line),
+  onBroken: () => status.set({ paste: 'failed' }),
+  onFixed: () => status.set({ paste: 'ok' })
+});
+
+/*
+ * The microphone (0.2.12): the native helper (mic.js) is started at launch with the device closed; a key
+ * press opens it from here, and capture.js feeds its audio to the session. Without the helper -- not
+ * there, failing, or a Mac that has not said yes to the microphone yet -- the pill's page captures, as
+ * before. TYPD_MIC=chromium turns the helper off (tests, and a way out if it ever misbehaves).
+ */
+const mic = micHelper.createNativeMic({
+  exe: process.env.TYPD_MIC === 'chromium' ? null : micHelper.helperPath({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, root: require('path').join(__dirname, '..', '..') }),
+  log: (line) => life.log('microphone', line),
+  debug: (...a) => { if (process.env.TYPD_DEBUG) console.log('[typd:mic]', ...a); },
+  warmMs: Number.isFinite(Number(process.env.TYPD_MIC_WARM_MS)) && process.env.TYPD_MIC_WARM_MS !== '' ? Number(process.env.TYPD_MIC_WARM_MS) : micHelper.WARM_MS
+});
+const capture = createCapture({
+  mic,
+  send: (channel, payload) => send(channel, payload),
+  log: (line) => life.log('microphone', line),
+  debug: (...a) => { if (process.env.TYPD_DEBUG) console.log(...a); },
+  isMac: MAC,
+  macMicGranted: () => { try { return systemPreferences.getMediaAccessStatus('microphone') === 'granted'; } catch { return false; } },
+  privacyBlocked: () => { try { return systemPreferences.getMediaAccessStatus('microphone') === 'denied'; } catch { return false; } },
+  settings: { id: () => settings.get('mic'), label: () => settings.get('micLabel') },
+  openStream: (current) => pipeline.openStream(current.controller.signal, () => current.contextBlock),
+  problem: (current, kind, why) => { if (session === current) micProblem(kind, why); }
+});
+
 /* -------------------------------------------------------------------- quit */
 
 /*
@@ -219,6 +267,9 @@ if (!primary) {
       ', started ' + (via === 'ai.typd.app' ? 'by macOS (LaunchServices)' : via ? 'from ' + via : 'directly') +
       (process.argv.some((a) => a === '--stub' || a === '--preview' || a === '--dev') ? ', ' + process.argv.filter((a) => /^--(stub|preview|dev)$/.test(a)).join(' ') : '')
   });
+  // Windows ending the session (shutdown, restart, sign-out) reaches every window as 'session-end'. Said in
+  // the log and marked in run.json, so the next launch does not report it as a crash (lifelog.howEnded).
+  app.on('browser-window-created', (_e, w) => w.on('session-end', () => life.sessionEnding()));
   // Errors nobody caught, for the log: one line each, nothing quoted (lifelog.errorLine).
   process.on('uncaughtExceptionMonitor', (err) => life.log('uncaught exception', life.errorLine(err)));
   // Without a listener of its own, Electron answers such an error with a modal error box
@@ -312,7 +363,7 @@ function beginSession() {
     note(status.describe().line, 6000);
     return;
   }
-  if (session) session.controller.abort();
+  if (session) { capture.stop(session); session.controller.abort(); }
 
   const controller = new AbortController();
   session = {
@@ -372,11 +423,14 @@ function beginSession() {
       pipeline.wake(current.contextBlock);
     });
 
+  // The microphone first: the helper's open is under way before the overlay is even shown. `native`
+  // tells the pill's page not to open its own (capture.js).
+  const opened = capture.begin(current);
   ensureOverlay();
   positionOverlay(overlay);
   passThrough();
   showOverlay(overlay);   // on top of everything, never takes focus from the app being dictated into
-  send('session:start', { mode: current.mode });
+  send('session:start', { mode: current.mode, native: opened.native });
 }
 
 /**
@@ -421,6 +475,13 @@ async function endSession() {
   const current = session;
   current.endedAt = Date.now();
   send('session:capture-end', {});
+  // The helper's recording, once its last samples are in (capture.js); null when the pill's page
+  // captured, whose recording arrives by overlay:audio as before.
+  capture.end(current).then((audio) => {
+    if (!audio || current.audio) return;
+    current.audio = audio;
+    if (current.onAudio) current.onAudio(audio);
+  }, (err) => life.log('microphone', 'end failed: ' + life.errorLine(err)));
   status.set({ live: false });   // the microphone is closed; the model is writing
   // Escape still means "never mind" while the model works, not only while recording.
   hotkeys.holdWork(() => { if (session === current) cancelSession(); });
@@ -455,6 +516,7 @@ async function endSession() {
       if (event.type === 'done') {
         // Whether the revise adapter ran on this request (pipeline/index.js): a shared item records it.
         current.reviseAdapter = event.reviseAdapter || false;
+        current.replaced = Boolean(event.replaced);
         current.textAt = Date.now();   // the text is ready (logDictation: release-to-text, text-to-paste)
         // A revision replaces the selection by pasting over it, which only
         // works while the selection is still there. Clicking away during the
@@ -499,6 +561,8 @@ async function endSession() {
         const pastedAt = Date.now(), text = event.text;
         remember(text);
         setImmediate(() => { keepRecording(current, text); logDictation(current, text.length, result, pastedAt); });
+        pasteWatch.note(result.ok ? 'pasted' : result.offered ? 'offered' : 'copied', { reason: result.reason, helperReady: helperReady() });
+        if (result.ok) status.set({ paste: 'ok' });   // a paste that landed answers the launch check too
         if (session !== current) return;
 
         if (!result.ok) {
@@ -559,7 +623,8 @@ async function endSession() {
     }
   } catch (err) {
     if (err && err.message === 'aborted') return;
-    life.log('dictation failed', life.errorLine(err));   // nothing was pasted, so nothing is shared
+    // nothing was pasted, so nothing is shared
+    life.log('dictation failed', life.errorLine(err) + notCaught(current, err));
     send('session:error', { message: String(err && err.message ? err.message : err) });
   }
 
@@ -567,8 +632,51 @@ async function endSession() {
   hotkeys.releaseWork();
 }
 
+/**
+ * A "Didn't catch that": why, in counts, for the life log (selfcheck.caughtLine) -- too quiet to be speech
+ * (pipeline/index.js: fewer than 3 voiced 30 ms frames) or a model that wrote nothing for audio with sound
+ * in it -- and the recording kept, marked `failed`, when recordings are kept. '' for any other error.
+ */
+function notCaught(current, err) {
+  try {
+    if (!err || err.message !== "Didn't catch that" || !current || !current.audio || !current.audio.samples) return '';
+    const audio = current.audio;
+    const voiced = pipeline.voicedFrames(audio);
+    const kind = selfcheck.caughtKind(voiced);
+    current.failed = kind;
+    setImmediate(() => keepRecording(current, ''));
+    return ' -- ' + selfcheck.caughtLine({ kind, audioSeconds: audio.samples.length / (audio.sampleRate || 16000), voiced });
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * The launch self-check of the paste helper (selfcheck.js): its handshake within 15 s, said in the life
+ * log either way. On Windows a helper that is not up means every dictation will be copied, not pasted:
+ * the tray's first line says so, and the pill says it once now, not after a day of copies. Looked at
+ * again every 15 s for two minutes; a helper that comes up late puts the tray back.
+ */
+function checkPasteHelper() {
+  selfcheck.waitForHelper(helperReady, { limitMs: 15000 }).then((r) => {
+    life.log('self-check', selfcheck.helperLine(r));
+    if (r.ready || MAC) return;
+    status.set({ paste: 'failed' });
+    note('Typd can’t paste right now — dictations are copied: press Ctrl+V', 12000);
+    let tries = 0;
+    const again = setInterval(() => {
+      if (helperReady()) {
+        clearInterval(again);
+        life.log('self-check', 'the paste helper is running now');
+        if (!pasteWatch.broken) status.set({ paste: 'ok' });
+      } else if (++tries >= 8) clearInterval(again);
+    }, 15000);
+    if (again.unref) again.unref();
+  });
+}
+
 function cancelSession() {
-  if (session) session.controller.abort();
+  if (session) { capture.stop(session); session.controller.abort(); }
   session = null;
   status.set({ live: false });
   hotkeys.releaseWork();
@@ -616,7 +724,7 @@ status.useKey(keyInfo);
 /** A click on the tray's status line: whatever fixes what it says. */
 function statusAction(id) {
   if (id === 'hotkey') return home.open('settings', { capture: true, by: 'the menu bar status line' });
-  if (id === 'retry') { if (modelMissing()) { modelUpdate.recheck(0); return null; } return warmModel(); }
+  if (id === 'retry') { if (modelMissing()) { modelUpdate.recheck(0); return null; } return warmModel('retry'); }
   if (id === 'model-now') return modelUpdate.approve().catch(() => {});
   if (id === 'privacy') {
     if (MAC) return require('./permissions-mac').request('microphone');   // never answered: macOS's prompt; else the pane
@@ -733,7 +841,8 @@ function openFlag() {
 
 /**
  * Sharing switched on or off: Settings, the walkthrough's first screen, or the small screen
- * (sharing.answer: Don't share on an install that shared under 0.2.6's default deletes it too).
+ * (sharing.answer: Don't share on an install not answered yet that shared before deletes it too).
+ * Each is a person's choice: settings records it as one (shareChosen).
  */
 async function chooseSharing(share) {
   const s = sharing.get();
@@ -744,11 +853,12 @@ async function chooseSharing(share) {
 }
 
 /**
- * "Help make Typd better?" (ask-window.js 'share'): once, at the first launch of 0.2.7 on an install
- * first started from 2026-10-18 15:00 UTC on that was never asked (settings 'shareAsk' 'due':
- * settings.js shareRule). Not the walkthrough: a fresh install is asked on its first screen. It
- * counts as shown once it opens; closed without an answer, sharing stays off ('ask') and Settings
- * has the switch. After an app update's quiet relaunch it waits until someone is at the keyboard.
+ * "Help make Typd better?" (ask-window.js 'share'): once, on an install that never chose (settings
+ * 'shareAsk' 'due': settings.js shareRule) -- since 0.2.12 every one, whenever it was first started,
+ * including those an earlier Typd kept sharing without asking. Not the walkthrough: a fresh install
+ * is asked on its first screen. It counts as shown once it opens; closed without an answer, sharing
+ * stays off ('ask') and Settings has the switch. After an app update's quiet relaunch it waits
+ * until someone is at the keyboard.
  */
 function startShareAsk(afterUpdate) {
   const due = () => !stub && !preview && settings.get('shareAsk') === 'due' && settings.get('share') === 'ask' &&
@@ -758,7 +868,7 @@ function startShareAsk(afterUpdate) {
     if (!due()) return;
     if (MAC && require('./permissions-mac').isAsking()) { setTimeout(show, 1000); return; }
     settings.set('shareAsk', 'done');
-    life.log('sharing', 'asked: the small screen (an install from after the cutoff, never asked)');
+    life.log('sharing', 'asked: the small screen (an install that never chose)');
     ask.open('share');
   };
   if (afterUpdate) appUpdate.whenUserActive(() => setTimeout(show, 1500));
@@ -788,21 +898,34 @@ function applyLowMemory() {
   switchBackend().catch(() => {});
 }
 
-function warmModel() {
+function warmModel(what = 'launch') {
   if (stub) { status.set({ model: 'ready' }); return; }
   // A model-less install before its first model: nothing to start. The download (modelUpdate.js)
   // calls switchModel() once the model is here.
   if (modelMissing()) return;
   status.set({ model: 'loading', modelWhy: '' });
+  const t0 = Date.now();
   Promise.resolve(pipeline.warm()).then(() => {
     status.set({ model: 'ready' });
+    logModel(true, Date.now() - t0, what);
     if (firstRunNote) {
       const k = keyInfo();
       note('Ready — ' + k.verb + ' ' + k.short + ' and talk', 10000);
     }
   }, (err) => {
     status.set({ model: 'failed', modelWhy: String((err && err.message) || '') });
+    logModel(false, Date.now() - t0, what, err);
   });
+}
+
+/** The model's warm start in the life log: how long it took and on what (a dictation begun meanwhile waits for it). */
+function logModel(ok, ms, what, err) {
+  try {
+    const local = require('./pipeline/local');
+    let version = null;
+    try { version = local.modelVersion(); } catch { version = null; }
+    life.log('model', selfcheck.modelLine({ ok, ms, what, device: local.device || null, version, why: err ? life.errorLine(err) : '' }));
+  } catch { /* a log must never stop the model */ }
 }
 
 /**
@@ -813,12 +936,15 @@ function warmModel() {
 function switchModel() {
   const first = status.get().model === 'missing';
   status.set({ model: 'loading', modelWhy: '', modelFetch: null });
+  const t0 = Date.now();
   return Promise.resolve(pipeline.switchModel()).then(() => {
     status.set({ model: 'ready' });
+    logModel(true, Date.now() - t0, 'switch');
     // The first model of a model-less install: say once that Typd can dictate now.
     if (first) { const k = keyInfo(); note('Ready — ' + k.verb + ' ' + k.short + ' and talk', 10000); }
   }, (err) => {
     status.set({ model: 'failed', modelWhy: String((err && err.message) || '') });
+    logModel(false, Date.now() - t0, 'switch', err);
     throw err;
   });
 }
@@ -859,8 +985,11 @@ async function checkForUpdates(by) {
   life.log('updates', 'check for updates, from ' + (by || 'Settings'));
   home.changed('updates');
   const safe = (p) => withTimeout(Promise.resolve(p), 45000).catch((e) => ({ outcome: 'error', why: String((e && e.message) || e) }));
+  const t0 = Date.now();
   const [a, m] = await Promise.all([appUpdater ? safe(appUpdater.checkNow()) : { outcome: 'off' }, safe(modelUpdate.checkNow())]);
   updatesUi = { checking: false, app: a, model: m, at: new Date().toISOString() };
+  // The answer too, not only the ask: six clicks in two seconds (2026-10-30) left no trace of what they were told.
+  life.log('updates', selfcheck.updatesAnswerLine(a, m, Date.now() - t0));
   refreshTray();
   home.changed('updates');
   return updatesInfo();
@@ -906,6 +1035,8 @@ function updatesInfo() {
     else if (updatesUi.model && updatesUi.model.outcome === 'ask') text = 'A new ' + (updatesUi.model.what === 'pack' ? 'GPU acceleration download' : 'model') + ' (' + updatesUi.model.size + ') is waiting for your OK above.';
     else if (o.includes('downloading')) text = 'Downloading…';
     else text = 'Typd is up to date (' + ver + (model && model !== 'unknown' ? ', model ' + model : '') + ').';
+    // When it was asked: a second check's answer reads like the first one's, and then the click looks dead.
+    text += selfcheck.checkedAt(updatesUi.at);
   }
   return { versions, text, checking: updatesUi.checking, canRestart, progress, at: updatesUi.at, enabled: Boolean(u) || modelUpdate.following() };
 }
@@ -1109,7 +1240,11 @@ function watchMainThread() {
     last = now;
     if (late > 3000 && Date.now() - lastWake > 60000 && Date.now() - noted > 300000) {
       noted = Date.now();
-      life.log('main thread late', Math.round(late / 100) / 10 + ' s (a stall, or App Nap)');
+      // Waking from sleep fires this timer before powerMonitor's 'resume' (17 ms before it, 2026-10-27), so
+      // a 26-minute sleep read as a 1,598 s stall. Look again in 3 s: a power event since means it was sleep.
+      const s = Math.round(late / 100) / 10;
+      const w = setTimeout(() => { if (Date.now() - lastWake > 6000) life.log('main thread late', s + ' s (a stall, or App Nap)'); }, 3000);
+      if (w.unref) w.unref();
     }
   }, 5000);
   if (t.unref) t.unref();
@@ -1178,6 +1313,10 @@ app.whenReady().then(() => {
   overlay = createOverlayWindow({ dev });
   overlay.webContents.on('did-finish-load', markRendererReady);
   if (!stub) startAppUpdate();
+  // The microphone helper, idle with the device closed until a key press (mic.js). Not for the pill's
+  // design preview, which never records.
+  if (!preview) mic.start();
+  if (process.env.TYPD_TEST_MIC) testMic();
 
   // Warm the injector during launch so the first paste does not pay the ~450 ms
   // shell start, and the speech model so the first dictation does not pay for
@@ -1355,13 +1494,14 @@ app.whenReady().then(() => {
     app.on('did-become-active', () => life.log('active', 'Typd became the active app'));
     app.on('did-resign-active', () => life.log('active', 'Typd stopped being the active app'));
   }
+  if (!stub && !preview) checkPasteHelper();
 
   // The walkthrough: once, in the Typd window, on the first launch of an installed Typd (after the
   // Mac permission dialog), and never into an app update's quiet relaunch.
   startWalkthrough(Boolean(appUpdater && appUpdater.firstStart));
 
-  // Sharing (0.2.7): a fresh install is asked on the walkthrough's first screen; an install first
-  // started after the cutoff that was never asked, in one small screen, once (startShareAsk).
+  // Sharing: a fresh install is asked on the walkthrough's first screen; since 0.2.12 every other
+  // install that never chose, in one small screen, once (startShareAsk).
   startShareAsk(Boolean(appUpdater && appUpdater.firstStart));
 
   // First run: start at login is on by default, so make it so -- the installed app's own
@@ -1464,27 +1604,24 @@ app.whenReady().then(() => {
       .slice(0, 32)
       .map((d) => ({ deviceId: d.deviceId, label: String(d.label || '').slice(0, 120) }));
     trayUi.setDevices(devices);
+    mic.refresh();   // the helper's list too: a chosen microphone is found in it by name (capture.js)
   });
 
-  // Live PCM while the user talks, 256 ms at a time (pipeline.openStream): a model
-  // trained on audio in pieces has them primed, any other has a dictation past 20 s
-  // written while the user talks (local.openLong). Revision never uses it --
-  // the instruction is short and the span decides what it means.
+  // Live PCM while the user talks, from the pill's page when it captures (no helper, or after a fall
+  // back), 64 ms at a time, into the same stream the helper's audio feeds (capture.js, pipeline.openStream):
+  // a model trained on audio in pieces has them primed, any other has a dictation past 20 s written while
+  // the user talks (local.openLong). Revision never uses it -- the instruction is short and the span
+  // decides what it means.
   ipcMain.on('overlay:chunk', (_e, payload) => {
     const current = session;
     if (!current || !payload || !payload.buffer || payload.sampleRate !== 16000) return;
-    if (current.mode !== 'dictate') return;
-    if (current.stream === undefined) {
-      current.stream = pipeline.openStream(current.controller.signal, () => current.contextBlock);
-    }
-    if (!current.stream) return;
     const raw = payload.buffer;
-    current.stream.push(Buffer.isBuffer(raw)
+    capture.rendererChunk(current, Buffer.isBuffer(raw)
       ? new Float32Array(raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength))
       : new Float32Array(raw));
   });
 
-  // Captured PCM, arriving once per session after the renderer stops the mic.
+  // Captured PCM, arriving once per session after the renderer stops the mic (when it had it).
   ipcMain.on('overlay:audio', (_e, payload) => {
     if (!session || !payload || !payload.buffer) return;
 
@@ -1495,7 +1632,9 @@ app.whenReady().then(() => {
       ? new Float32Array(raw.buffer, raw.byteOffset, Math.floor(raw.byteLength / 4))
       : new Float32Array(raw);
 
-    const audio = { samples, sampleRate: payload.sampleRate || 16000 };
+    // Null when the helper had the microphone; after a fall back, the helper's part comes first.
+    const audio = capture.rendererAudio(session, samples);
+    if (!audio || session.audio) return;
     session.audio = audio;
     if (session.onAudio) session.onAudio(audio);
   });
@@ -1515,31 +1654,7 @@ app.whenReady().then(() => {
   // nothing but exact zeros ('silent') -- never by the privacy status alone. On a Mac the status then
   // says why: a microphone macOS was never asked about (or whose prompt is still up) gets macOS's
   // prompt again, at once, and a pill that says so; macOS hands a refused app exact zeros.
-  ipcMain.on('overlay:mic', (_e, kind, why) => {
-    if (!session || session.endedAt) return;
-    hotkeys.settle();
-    session.controller.abort();
-    session = null;
-    status.set({ live: false });
-    passThrough();
-    checkMic(false);
-    const mic = MAC ? require('./permissions-mac').micState() : null;
-    life.log('microphone', 'capture ' + (kind === 'silent' ? 'gave only silence' : 'did not open') + (why ? ' (' + String(why).slice(0, 40) + ')' : '') +
-      (MAC ? '; macOS status ' + mic : '; privacy ' + status.get().mic));
-    let message;
-    if (MAC && (mic === 'not-determined' || mic === 'asking')) {
-      require('./permissions-mac').requestMic('a dictation found no microphone', { again: true }).then(checkMacPermissions);
-      message = 'Allow the microphone in macOS’s dialog';
-    } else if (MAC && (mic === 'denied' || mic === 'restricted')) {
-      message = 'Microphone off for Typd in macOS — Fix…';
-      require('./permissions-mac').ensure('microphone');
-    } else {
-      const blocked = status.get().mic === 'blocked';
-      message = blocked ? 'Mic blocked by ' + (MAC ? 'macOS' : 'Windows') + ' privacy'
-        : kind === 'silent' ? 'Mic silent — check mute or privacy' : 'No microphone — check Settings';
-    }
-    send('session:error', { message });
-  });
+  ipcMain.on('overlay:mic', (_e, kind, why) => micProblem(kind, why));
 
   ipcMain.on('overlay:cancel', () => {
     if (hotkeys.settle()) cancelSession();
@@ -1561,6 +1676,70 @@ app.whenReady().then(() => {
     });
   }
 });
+
+/*
+ * CI only (scripts/mac-mic-check.sh). TYPD_TEST_MIC=1: once the helper may take the microphone (on a Mac:
+ * once macOS has said yes), one capture through capture.js as a dictation makes it, 1.5 s, without the
+ * pill; one line on stdout and in the life log (which path, the first audio, how many samples). Nothing is
+ * kept. Nothing runs without the variable.
+ */
+function testMic() {
+  let done = false;
+  const tick = setInterval(async () => {
+    if (done) return;
+    const granted = !MAC || (() => { try { return systemPreferences.getMediaAccessStatus('microphone') === 'granted'; } catch { return false; } })();
+    if (!granted || !mic.usable() || session) return;
+    done = true;
+    clearInterval(tick);
+    const cur = { mode: 'revise', controller: new AbortController() };
+    const r = capture.begin(cur);
+    await new Promise((res) => setTimeout(res, 1500));
+    const audio = r.native ? await capture.end(cur) : null;
+    capture.stop(cur);
+    const s = audio ? audio.samples : new Float32Array(0);
+    let nz = 0;
+    for (let i = 0; i < s.length; i++) if (s[i] !== 0) nz++;
+    const t = capture.timing(cur);
+    const line = 'test capture: ' + (r.native ? 'the helper' : 'not the helper') + ', first audio ' +
+      (t && t.firstMs !== null ? Math.round(t.firstMs) + ' ms' : 'none') + ', ' + s.length + ' samples, ' + nz + ' not zero' +
+      (cur.capture.switched ? ', fell back (' + cur.capture.switched + ')' : '') + (mic.info ? ', typd-mic ' + mic.info.version + ' ' + mic.info.backend : '');
+    life.log('microphone', line);
+    console.log('[typd:test-mic] ' + line);
+    // TYPD_TEST_MIC=quit: then leave, as the tray's Quit does (a smoke test of the real app).
+    if (process.env.TYPD_TEST_MIC === 'quit') setTimeout(() => quit('the microphone test (TYPD_TEST_MIC=quit)'), 500);
+  }, 1000);
+}
+
+/**
+ * A dead microphone ends the session at once with the reason, instead of after the user has finished
+ * talking ("No audio captured"). From the pill's page (overlay:mic) or the helper's silence (capture.js).
+ */
+function micProblem(kind, why) {
+  if (!session || session.endedAt) return;
+  capture.stop(session);
+  hotkeys.settle();
+  session.controller.abort();
+  session = null;
+  status.set({ live: false });
+  passThrough();
+  checkMic(false);
+  const mic = MAC ? require('./permissions-mac').micState() : null;
+  life.log('microphone', 'capture ' + (kind === 'silent' ? 'gave only silence' : 'did not open') + (why ? ' (' + String(why).slice(0, 40) + ')' : '') +
+    (MAC ? '; macOS status ' + mic : '; privacy ' + status.get().mic));
+  let message;
+  if (MAC && (mic === 'not-determined' || mic === 'asking')) {
+    require('./permissions-mac').requestMic('a dictation found no microphone', { again: true }).then(checkMacPermissions);
+    message = 'Allow the microphone in macOS’s dialog';
+  } else if (MAC && (mic === 'denied' || mic === 'restricted')) {
+    message = 'Microphone off for Typd in macOS — Fix…';
+    require('./permissions-mac').ensure('microphone');
+  } else {
+    const blocked = status.get().mic === 'blocked';
+    message = blocked ? 'Mic blocked by ' + (MAC ? 'macOS' : 'Windows') + ' privacy'
+      : kind === 'silent' ? 'Mic silent — check mute or privacy' : 'No microphone — check Settings';
+  }
+  send('session:error', { message });
+}
 
 /*
  * CI only (mac.yml, "Close the Typd window, stay running"). TYPD_TEST_CLOSE_HOME=<file>: open
@@ -1617,6 +1796,7 @@ app.on('will-quit', () => {
   stopHook();
   inject.stop();
   pipeline.stop();
+  mic.quit();   // the device closes and the helper ends (it also ends by itself when Typd's pipe closes)
 });
 
 // A dictation overlay is a background utility. Closing its only window is not a

@@ -10,8 +10,8 @@ const brand = require('./brand');
  *   flag      "That was wrong" on the last dictation, with an optional one-line note. If it was
  *             never shared, it asks first: "Share this one dictation so it can be fixed?"
  *   share     "Help make Typd better?" -- Share / Don't share, nothing preselected (0.2.7). Once, on
- *             an install first started after the cutoff that 0.2.4-0.2.6 never asked (index.js
- *             startShareAsk); a fresh install is asked on the walkthrough's first screen instead.
+ *             an install that never chose (since 0.2.12 every one: index.js startShareAsk); a
+ *             fresh install is asked on the walkthrough's first screen instead.
  *             The answer goes through sharing.answer (index.js chooseSharing).
  *
  * Like the Typd window, it exists only while open, and every call from its page is named,

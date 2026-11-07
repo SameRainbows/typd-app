@@ -16,7 +16,12 @@ const CHANNELS = [
   'session:cancel',
   'session:error',
   'session:note',
-  'settings:changed'
+  'settings:changed',
+  // 0.2.12: main's microphone helper (src/main/capture.js): its first audio, its level, and a fall back
+  // to this page's own capture.
+  'session:hearing',
+  'session:level',
+  'session:mic-fallback'
 ];
 
 contextBridge.exposeInMainWorld('typd', {
