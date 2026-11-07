@@ -339,6 +339,8 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
+          # Stapling and validating ask Apple's ticket service, which can drop a connection (run 42371580719).
+          retry() { for i in 1 2 3 4; do "$@" && return 0; echo "try $i of: $* failed; retrying"; sleep $((15 * i)); done; return 1; }
           for a in $ARCHS; do
             dmg=$(ls dist/Typd-*-mac-$a.dmg)
             app=$( [ "$a" = arm64 ] && echo dist/mac-arm64/Typd.app || echo dist/mac/Typd.app )
@@ -358,10 +360,10 @@ jobs:
             # Apple's report even when accepted: warnings show up here first.
             xcrun notarytool log "$sub" --apple-id "$APPLE_ID" --password "$APPLE_APP_PASSWORD" --team-id "$APPLE_TEAM_ID" "$RUNNER_TEMP/notary-log-$a.json" || true
             node -e "const r = require(process.argv[1]); console.log('notary log:', r.status, r.statusSummary || '', (r.issues || []).length, 'issues'); for (const i of r.issues || []) console.log(' ', i.severity, i.path, i.message)" "$RUNNER_TEMP/notary-log-$a.json" || true
-            xcrun stapler staple "$dmg"
-            xcrun stapler validate "$dmg"
-            xcrun stapler staple "$app"
-            xcrun stapler validate "$app"
+            retry xcrun stapler staple "$dmg"
+            retry xcrun stapler validate "$dmg"
+            retry xcrun stapler staple "$app"
+            retry xcrun stapler validate "$app"
             codesign --verify --deep --strict "$app"
             spctl -a -t open --context context:primary-signature -vv "$dmg"
             mnt="$RUNNER_TEMP/typd-notarized-$a"
@@ -605,7 +607,12 @@ jobs:
             codesign --verify --deep --strict "$mnt/Typd.app"
             if [ "${TYPD_MAC_SIGN_DEVID:-}" = 1 ]; then
               codesign -d -r- "$mnt/Typd.app" 2>&1 | grep designated | grep -q 'anchor apple generic'
-              xcrun stapler validate "$dmg"
+              # Apple's ticket service can drop a connection (run 42371580719): a few tries.
+              for i in 1 2 3 4; do
+                xcrun stapler validate "$dmg" && break
+                [ "$i" = 4 ] && exit 1
+                echo "stapler validate: try $i failed; retrying"; sleep $((15 * i))
+              done
             else
               codesign -d -r- "$mnt/Typd.app" 2>&1 | grep designated | grep -qi "$want"
             fi
