@@ -78,7 +78,7 @@ env:
 jobs:
   build:
     if: github.repository == 'SameRainbows/typd-app' && !inputs.checks_only
-    runs-on: macos-14
+    runs-on: macos-15   # macos-14 is retired on GitHub (Nov 2026)
     timeout-minutes: 180
     permissions:
       contents: write   # only for the draft release (the last steps); no other step gets the token
@@ -652,13 +652,13 @@ jobs:
 
   menubar:
     # The menu-bar close checks on several macOS versions, on an ad-hoc-signed arm64 build of this
-    # commit (no secrets in this job). macos-14 is the build job's runner; the tester's Mac runs
+    # commit (no secrets in this job). macos-15 is the build job's runner (macos-14 is retired); the tester's Mac runs
     # macOS 27 (xcode-27 is that image, in preview).
     if: github.repository == 'SameRainbows/typd-app'
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, macos-15, macos-26, xcode-27]
+        os: [macos-15, macos-26, xcode-27]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 75
     steps:
