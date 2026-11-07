@@ -250,6 +250,19 @@ async function afterPack(context) {
     if (f === micHelper) run('codesign', ['--force', ...how.args, '--identifier', 'ai.typd.app.mic', ...entitlementArgs(), f]);
     else run('codesign', ['--force', ...how.args, f]);
   }
+  // Developer ID: notarization checks every Mach-O, and --deep leaves the loose ones inside the frameworks
+  // with the signatures they came with (Apple refused 0.2.12's trial over Electron Framework's
+  // Libraries/libffmpeg.dylib and libvk_swiftshader.dylib and Squirrel's Resources/ShipIt: no Developer
+  // ID, no timestamp, no hardened runtime). The hardened runtime's library validation also wants every
+  // library Typd loads signed by its own team. So each one is signed here first, like those in Resources;
+  // the bundles' own executables are left to --deep below.
+  const bundleMain = (f) => {
+    const p = f.split(path.sep).join('/');
+    return /\.app\/Contents\/MacOS\/[^/]+$/.test(p) || /\/([^/]+)\.framework\/Versions\/[^/]+\/\1$/.test(p);
+  };
+  const frameworkLoose = how.devid ? walk(path.join(app, 'Contents', 'Frameworks')).filter((f) => machOMagic(f) && !bundleMain(f)) : [];
+  for (const f of frameworkLoose) run('codesign', ['--force', ...how.args, f]);
+  if (frameworkLoose.length) console.log(`  • typd: ${frameworkLoose.length} loose Mach-O files in Frameworks signed: ${frameworkLoose.map((f) => path.basename(f)).join(', ')}`);
   // The bundle and, through --deep, its helpers and frameworks: with the microphone entitlement. Still
   // no hardened runtime (no --options runtime): see scripts/mac-entitlements.plist.
   run('codesign', ['--force', '--deep', ...how.args, ...entitlementArgs(), app]);
@@ -267,7 +280,7 @@ async function afterPack(context) {
   } else if (id && !(dr && dr.toLowerCase().includes(id) && dr.includes('identifier "ai.typd.app"'))) {
     throw new Error(`signed with ${id}, but the designated requirement is ${dr}`);
   }
-  console.log(`  • typd: signed ${path.basename(app)} ${how.label} (${machos.length} loose Mach-O files + bundle), signature verifies`);
+  console.log(`  • typd: signed ${path.basename(app)} ${how.label} (${machos.length + frameworkLoose.length} loose Mach-O files + bundle), signature verifies`);
   console.log(`  • typd: designated requirement: ${dr}`);
 }
 
