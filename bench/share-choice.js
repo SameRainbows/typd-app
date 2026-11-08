@@ -8,7 +8,8 @@
  *      word for word, Share and Don't share, neither pressed nor focused, no Next until answered;
  *      Share -> sharing:set(true) and on to step 2; Don't share -> sharing:set(false) and on; back on
  *      step 1 the answer shows and Next is there; Skip closes it with nothing answered; a tester build
- *      has no question; Settings' switch shows a not-answered install as off
+ *      has no question; Settings' switch shows a not-answered install as off; its "What's shared"
+ *      lists no program name and says it is never shared (0.2.12)
  *   2. the small share screen (share.html/js, ask.css, preload/ask.js's API stubbed): the same words
  *      and buttons, nothing preselected or focused; Share -> ask:share(true); Don't share ->
  *      ask:share(false); Esc closes it, answering nothing
@@ -236,6 +237,10 @@ async function run(exe) {
     check('no Next until it is answered (it cannot move past this screen without an answer)', !(await shown('walkNext')));
     check('Settings\' switch shows "not answered" as off, and says so', (await ev('document.getElementById("betaShare").checked')) === false &&
       /^Off until you choose/.test(await text('#betaHelp')), await text('#betaHelp'));
+    const what = await text('#betaWhat');
+    check('Settings\' "What’s shared" no longer lists the program you dictated into, and says it is never shared (0.2.12)',
+      /^For each dictation: the audio and the text Typd typed/.test(what) && !/Discord/.test(what) && !/For each dictation:[^.]*program/.test(what) &&
+      /Never shared: [^.]*which program you dictated into/.test(what), what);
     await click('walkShareYes');
     check('Share: sharing:set(true), once', JSON.stringify(await calls('sharing.set')) === '[[true]]', await calls('sharing.set'));
     check('... and on to step 2', (await text('#walkCount')) === '2 of 5' && !(await shown('walkShare')));

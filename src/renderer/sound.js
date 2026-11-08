@@ -19,12 +19,24 @@
  * beep, and a small upward glide makes it feel like it has been struck rather
  * than switched on. Everything is under 140 ms and well under half volume; a
  * sound you notice twice is a sound you turn off.
+ *
+ * 0.2.13: `start` and `commit` are new (founder, 8 Nov 2026): drawn sample by sample in
+ * sound-voices.js and played as buffers, straight to the output (not through the 2.4 kHz low-pass:
+ * the bright strike is the point) with a small room under them. CUE picks the pair; the others here
+ * are unchanged, and either new cue falls back to its old tone if sound-voices.js is missing.
  */
 
 (function () {
   var ctx = null;
   var master = null;
   var enabled = true;
+
+  // The start/stop pair (sound-voices.js CUES), and how loud its peak plays: 0.11 is about -19 dBFS,
+  // the level of the cues it was chosen against.
+  var CUE = 'soft-A';
+  var CUE_PEAK = 0.11;
+  var buffers = {};
+  var room = null;
 
   function ready() {
     if (!enabled) return null;
@@ -85,25 +97,84 @@
     sleepAfter((o.delay || 0) + dur + 0.3);
   }
 
+  /**
+   * The new start or stop cue (`which`), drawn once per context at its sample rate, played at CUE_PEAK
+   * straight to the output, with the cue's room through a ConvolverNode beside it. False when it can't
+   * be (no sound-voices.js, no such cue, no audio): the caller plays the old tone instead.
+   */
+  function playCue(which) {
+    var voices = window.typdVoices;
+    var spec = voices && voices.CUES[CUE];
+    if (!spec) return false;
+    var c = ready();
+    if (!c) return true;   // sounds off or no audio device: nothing to fall back to either
+    var buf = buffers[which];
+    if (!buf) {
+      var r = voices.render(CUE, which, c.sampleRate);
+      if (!r) return false;
+      buf = c.createBuffer(2, r.left.length, c.sampleRate);
+      buf.copyToChannel(r.left, 0);
+      buf.copyToChannel(r.right, 1);
+      buffers[which] = buf;
+    }
+    var src = c.createBufferSource();
+    src.buffer = buf;
+    var level = c.createGain();
+    level.gain.value = CUE_PEAK;
+    src.connect(level);
+    level.connect(c.destination);
+    var tail = 0;
+    if (spec.room) {
+      if (!room) {
+        var imp = voices.roomImpulse(c.sampleRate);
+        var ir = c.createBuffer(2, imp.left.length, c.sampleRate);
+        ir.copyToChannel(imp.left, 0);
+        ir.copyToChannel(imp.right, 1);
+        room = c.createConvolver();
+        room.normalize = false;   // the impulse is already unit energy, as the renders were made
+        room.buffer = ir;
+        room.connect(c.destination);
+        tail = ir.duration;
+      } else {
+        tail = room.buffer.duration;
+      }
+      var wet = c.createGain();
+      wet.gain.value = spec.room;
+      level.connect(wet);
+      wet.connect(room);
+    }
+    src.start();
+    sleepAfter(buf.duration + tail + 0.1);
+    return true;
+  }
+
   // A running context keeps the audio device and a renderer thread awake for good
   // (~4 % of a core measured). Suspend once the last tail has played; ready() resumes.
+  // Only ever pushed later: a short note right after a long cue must not cut the cue's tail.
   var sleepTimer = null;
+  var sleepAt = 0;
   function sleepAfter(seconds) {
+    var at = Date.now() + seconds * 1000;
+    if (at <= sleepAt) return;
+    sleepAt = at;
     clearTimeout(sleepTimer);
     sleepTimer = setTimeout(function () {
+      sleepAt = 0;
       if (ctx && ctx.state === 'running') ctx.suspend();
     }, seconds * 1000);
   }
 
   var sounds = {
-    // Opening: low and warm, rising slightly. "Listening."
+    // Opening (0.2.13: sound-voices.js, CUE's start). Before: low and warm, rising slightly.
     start: function () {
+      if (playCue('start')) return;
       note({ from: 392, to: 523, dur: 0.13 });
       note({ from: 784, to: 1046, dur: 0.09, level: 0.22 });   // faint octave, adds body
     },
 
-    // Committing: a fifth above the opening, so it answers it.
+    // Committing (0.2.13: CUE's stop). Before: a fifth above the opening, so it answers it.
     commit: function () {
+      if (playCue('stop')) return;
       note({ from: 587, to: 784, dur: 0.14 });
       note({ from: 1174, to: 1568, dur: 0.1, level: 0.2 });
     },

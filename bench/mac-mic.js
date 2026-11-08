@@ -490,7 +490,9 @@ function sourceSection() {
   const returns = [...micBlock.matchAll(/return;/g)].length;
   const guarded = /if \(modelMissing\(\)\) \{[\s\S]*?return;\s*\}/.test(micBlock);
   check('main never holds a dictation back on the privacy status when a model is there (it asks, and records)', micBlock.length > 50 && returns === 1 && guarded && /requestMic\('the key'/.test(micBlock), { returns, guarded });
-  const onMic = main.slice(main.indexOf("ipcMain.on('overlay:mic'"), main.indexOf("ipcMain.on('overlay:cancel'"));
+  // 0.2.12: overlay:mic and the helper's silence (capture.js) both end in micProblem().
+  const onMic = main.slice(main.indexOf("ipcMain.on('overlay:mic'"), main.indexOf("ipcMain.on('overlay:cancel'")) +
+    main.slice(main.indexOf('function micProblem(kind, why)'), main.indexOf('function micProblem(kind, why)') + 2000);
   check('the pill\'s words come from the capture (kind) and, on a Mac, macOS\'s status says which', /kind === 'silent'/.test(onMic) && /Allow the microphone in macOS’s dialog/.test(onMic) && /requestMic\(/.test(onMic));
   check('the key is bound again once Accessibility and Input Monitoring come on (as choosing it in Settings does)', /keySwitchesOff === true && !keyOff && rebindKey/.test(main) && /rebindKey = \(\) => \{[\s\S]*?applyHotkey\(/.test(main));
   check("Copy diagnostics names SIP and AMFI's boot arguments (AMFI off: macOS refuses every non-Apple app's prompt)", /securitySettings\(\)/.test(main) && /amfi_get_out_of_my_way/.test(read('src/main/permissions-mac.js')));
@@ -500,11 +502,11 @@ function sourceSection() {
   const ap = read('scripts/after-pack.js');
   check('after-pack signs the bundle with scripts/mac-entitlements.plist (--deep: the helpers too)', /'--force', '--deep', \.\.\.how\.args, \.\.\.entitlementArgs\(\), app/.test(ap));
   check('...and gives every helper the main app\'s NSMicrophoneUsageDescription before signing', /helperUsageStrings\(app\)/.test(ap) && ap.indexOf('helperUsageStrings(app);') < ap.indexOf("'--force', '--deep'"));
-  check('...without the hardened runtime (no --options runtime anywhere)', !/--options|runtime['"]/.test(code(ap)) && !/--options/.test(code(read('scripts/app-update-package.js'))));
+  check('...the hardened runtime and Apple\'s timestamp only with Developer ID (TYPD_MAC_SIGN_DEVID; 0.2.13), the self-signed build without', /devid \? \['--timestamp', '--options', 'runtime'\] : \['--timestamp=none'\]/.test(code(ap)) && !/--options/.test(code(read('scripts/app-update-package.js'))));
   check('the update package\'s re-sign keeps the entitlement', /\.\.\.entitlementArgs\(\), path\.join\(stage, appName\)/.test(read('scripts/app-update-package.js')));
   const ent = read('scripts/mac-entitlements.plist');
   const keys = [...ent.matchAll(/<key>([^<]+)<\/key>/g)].map((m) => m[1]);
-  check('mac-entitlements.plist: exactly com.apple.security.device.audio-input = true', JSON.stringify(keys) === '["com.apple.security.device.audio-input"]' && /<true\/>/.test(ent), keys);
+  check('mac-entitlements.plist: the microphone, Apple events and V8\'s JIT (the hardened runtime\'s needs), all true', JSON.stringify(keys) === '["com.apple.security.device.audio-input","com.apple.security.automation.apple-events","com.apple.security.cs.allow-jit","com.apple.security.cs.allow-unsigned-executable-memory"]' && (ent.match(/<true\/>/g) || []).length === 4, keys);
   const pkg = JSON.parse(read('package.json'));
   check('package.json: hardenedRuntime false; the Mac icon is build/icon.icns (iconutil\'s)', pkg.build.mac.hardenedRuntime === false && pkg.build.mac.icon === 'build/icon.icns');
   check('...the main Info.plist keeps NSMicrophoneUsageDescription', /dictating/.test(pkg.build.mac.extendInfo.NSMicrophoneUsageDescription || ''));

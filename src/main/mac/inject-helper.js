@@ -567,7 +567,10 @@ function context() {
     const el = attr(p, 'AXFocusedUIElement');
     // Whether a paste can land there (pasteTarget.js), from the same element: a few Apple events more.
     try { out.field = fieldFacts(el || null); } catch (e) { if (fatal(e)) throw e; out.field = { error: 'error' }; }
-    const value = el ? attr(el, 'AXValue') : undefined;
+    // A password field's text is never read, not even as context (0.2.13).
+    const secure = Boolean(out.field && out.field.subrole === 'AXSecureTextField');
+    if (secure) out.pw = true;
+    const value = el && !secure ? attr(el, 'AXValue') : undefined;
     if (typeof value === 'string' && value) {
       let text = value.slice(0, LIMIT);
       const caret = caretAt(attr(el, 'AXSelectedTextRange'), value.length);
@@ -580,6 +583,46 @@ function context() {
     }
   } catch (e) {
     blocked(out, e);
+  }
+  return out;
+}
+
+// around: the focused control's text on both sides of the caret, for the kept-as-pasted watch
+// (src/main/kept.js), as inject.ps1's Get-Around: at most LIMIT characters each way, cutBefore /
+// cutAfter when the control holds more, caret its index in text (-1 with none). A password field
+// (AXSecureTextField) is never read. macOS has no stable id for an element, so fid is its role,
+// subrole and window title: a weaker "same field" than Windows' runtime id.
+function around() {
+  const out = { ok: true, process: '', fid: '', pw: false, how: 'none', text: '', caret: -1, cutBefore: false, cutAfter: false };
+  try {
+    const p = frontProcess();
+    if (!p) { out.process = frontName(); out.how = 'no-focused-element'; return out; }
+    out.process = processName(p);
+    const el = attr(p, 'AXFocusedUIElement');
+    if (!el) { out.how = 'no-focused-element'; return out; }
+    const role = attr(el, 'AXRole');
+    const sub = attr(el, 'AXSubrole');
+    const s = (x) => (typeof x === 'string' ? x : '');
+    out.fid = [s(role), s(sub), windowTitle(p)].join('|');
+    if (sub === 'AXSecureTextField') { out.pw = true; out.how = 'password'; return out; }
+    const value = attr(el, 'AXValue');
+    if (typeof value !== 'string') { out.how = 'no-text-pattern'; return out; }
+    out.how = 'value';
+    const caret = caretAt(attr(el, 'AXSelectedTextRange'), value.length);
+    if (caret === null) {
+      out.text = value.slice(0, 2 * LIMIT);
+      out.cutAfter = value.length > 2 * LIMIT;
+      return out;
+    }
+    const a = Math.max(0, caret - LIMIT);
+    const b = Math.min(value.length, caret + LIMIT);
+    out.text = value.slice(a, b);
+    out.caret = caret - a;
+    out.cutBefore = a > 0;
+    out.cutAfter = b < value.length;
+  } catch (e) {
+    blocked(out, e);
+    out.text = '';
   }
   return out;
 }
@@ -698,6 +741,7 @@ const COMMANDS = {
   access: function () { return { ok: true, listen: listenAccess() }; },
   focus: focus,
   context: context,
+  around: around,
   field: field,
   selection: selection,
   prime: prime,

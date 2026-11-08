@@ -168,21 +168,14 @@ function inflected(a, b) {
 }
 
 /**
- * @param {string} pasted  what Typd put on screen
- * @param {string} screen  what the same control holds now
- * @returns {{term: string, heardAs: string}|null}
+ * One changed span judged as a correction: {term, heardAs, weak, atEnd} or null.
+ *   weak   all lowercase, no digit or dot ("diline", "stardance"): could be an ordinary word of
+ *          another language, so it waits for a second sign before it reaches the prompt (names.js)
+ *   atEnd  the fix is the last thing in the control: the user may still be typing it ("Scala" on
+ *          the way to "Scalapay"), so a timer look waits for the next look to agree
  */
-function findCorrection(pasted, screen) {
-  if (!pasted || !screen || screen.includes(pasted)) return null;   // untouched
-
-  const P = tokens(pasted);
-  let S = tokens(screen);
-  if (!P.length || P.length > MAX_PASTED) return null;
-  if (S.length > MAX_SCREEN) S = S.slice(-MAX_SCREEN);
-
-  const found = changes(P, S);
-  if (!found || found.spans.length !== 1) return null;
-  let { was: [i0, i1], now: [j0, j1] } = found.spans[0];
+function judge(P, S, found, span, pasted, screen) {
+  let { was: [i0, i1], now: [j0, j1] } = span;
   if (i1 - i0 < 1 || i1 - i0 > 3 || j1 - j0 < 1 || j1 - j0 > 3) return null;
 
   // A name usually arrives whole: "whisper flow" -> "Wispr Flow" changes one word
@@ -192,11 +185,21 @@ function findCorrection(pasted, screen) {
   while (i0 > 0 && byP.get(i0 - 1) === j0 - 1 && caseOnly(i0 - 1, j0 - 1)) { i0--; j0--; }
   while (byP.get(i1) === j1 && caseOnly(i1, j1)) { i1++; j1++; }
 
+  const isCommon = (t) => common().has(t.key.replace(/'s$/, ''));
+  const plainCommon = (t) => isCommon(t) && t.word === t.key;
   const was = P.slice(i0, i1);
-  const now = S.slice(j0, j1);
+  let now = S.slice(j0, j1);
+  // The user's new words around the name are not the name: "Kodexi" -> "Codex see" teaches "Codex".
+  while (now.length > was.length && now.length > 1 && plainCommon(now[now.length - 1])) now = now.slice(0, -1);
+  while (now.length > was.length && now.length > 1 && plainCommon(now[0])) now = now.slice(1);
+
   let heardAs = was.map((t) => t.word).join(' ');
   const end = now[now.length - 1].at + now[now.length - 1].word.length;
   const raw = screen.slice(now[0].at, end);
+  // Part of a path or a link ("%APPDATA%\typd\recordings"): not a name the user says.
+  if (/[\\/]/.test(raw) || /[\\/]/.test(screen.slice(Math.max(0, now[0].at - 1), now[0].at)) || /[\\/]/.test(screen.slice(end, end + 1))) return null;
+  // Two names with a comma between ("Ediz, Naz") are two names, each learned from its own fix.
+  if (/[,;:()]/.test(raw)) return null;
   let term = /^[\p{L}\p{N}'’_\-. ]+$/u.test(raw) ? raw.replace(/\s+/g, ' ') : now.map((t) => t.word).join(' ');
   // A web address is one term: "mehmetazdar.com" -> "mehmetdedeler.com".
   const domain = /^\.(com|org|net|io|ai|dev|app|co|edu|gov)\b/i.exec(screen.slice(end));
@@ -211,7 +214,6 @@ function findCorrection(pasted, screen) {
   if (heardAs.toLowerCase() === term.toLowerCase()) return null;   // case or spacing only
   if (term.length < 3 || term.length > 40) return null;
   if (/\d/.test(heardAs + term)) return null;                       // numbers are formatting
-  const isCommon = (t) => common().has(t.key.replace(/'s$/, ''));
   if (!now.some((t) => t.key.length >= 3 && !isCommon(t))) return null;
   if (was.length === 1 && now.length === 1 && inflected(a, b)) return null;
   // A common word swapped for a rarer lowercase one is a choice of word
@@ -239,7 +241,56 @@ function findCorrection(pasted, screen) {
   const nameForNonWord = !was.some(isCommon) && now.some((t) => /^\p{Lu}/u.test(t.word) && !isCommon(t));
   if (spelled < 0.45 && !soundsAlike && !nameForNonWord) return null;
 
-  return { term, heardAs };
+  const weak = !/[\p{Lu}\p{N}.]/u.test(term);
+  const atEnd = !screen.slice(end).trim();
+  return { term, heardAs, weak, atEnd };
+}
+
+/**
+ * Every correction in what the control holds now, against what was pasted: [{term, heardAs, weak,
+ * atEnd}]. A few small fixes in one text are each learned -- "HackedTime" -> "Hackatime" and "Tari"
+ * -> "Tauri" in one message, with "wasn't" -> "was" beside them -- but a text with a bigger change
+ * (a span of more than three words, or more than a quarter of the words changed) is being rewritten,
+ * and teaches nothing.
+ *
+ * @param {string} pasted  what Typd put on screen
+ * @param {string} screen  what the same control holds now
+ */
+function findCorrections(pasted, screen) {
+  if (!pasted || !screen || screen.includes(pasted)) return [];   // untouched
+
+  const P = tokens(pasted);
+  let S = tokens(screen);
+  if (!P.length || P.length > MAX_PASTED) return [];
+  if (S.length > MAX_SCREEN) S = S.slice(-MAX_SCREEN);
+
+  const found = changes(P, S);
+  if (!found || !found.spans.length || found.spans.length > 4) return [];
+  let changed = 0;
+  for (const { was: [i0, i1], now: [j0, j1] } of found.spans) {
+    if (i1 - i0 > 3 || j1 - j0 > 3) return [];
+    changed += Math.max(i1 - i0, j1 - j0);
+  }
+  if (found.spans.length > 1 && changed > Math.max(3, Math.ceil(P.length * 0.25))) return [];
+
+  const out = [];
+  for (const span of found.spans) {
+    const c = judge(P, S, found, span, pasted, screen);
+    // the same fix made twice ("mehmetazdar" -> "mehmetdedeler" in two places) is one lesson
+    if (c && !out.some((o) => o.term.toLowerCase() === c.term.toLowerCase())) out.push(c);
+  }
+  return out;
+}
+
+/**
+ * The first correction, as before 0.2.13: {term, heardAs} or null (bench/learn.js).
+ * @param {string} pasted
+ * @param {string} screen
+ * @returns {{term: string, heardAs: string}|null}
+ */
+function findCorrection(pasted, screen) {
+  const c = findCorrections(pasted, screen)[0];
+  return c ? { term: c.term, heardAs: c.heardAs } : null;
 }
 
 /* --------------------------------------------------------------- watching */
@@ -257,7 +308,7 @@ function stop() {
   watching = null;
 }
 
-function consider(mine, focus, onLearn) {
+function consider(mine, focus, onLearn, final = false) {
   debug('check', focus && focus.process, 'screen=' + (focus && focus.text ? focus.text.length : 0), 'pasted=' + mine.pasted.length);
   if (watching !== mine || !focus || !focus.text) return false;
   // Moved to a different app: whatever is on screen now is not our text.
@@ -265,13 +316,32 @@ function consider(mine, focus, onLearn) {
     stop();
     return false;
   }
-  const found = findCorrection(mine.pasted, focus.text);
+  const found = findCorrections(mine.pasted, focus.text);
   debug('found', found);
-  if (!found) return false;
-  const result = dictionary.add(found.term, found.heardAs, 'auto');
-  stop();
-  if (result && result.created) onLearn(found);
-  return true;
+  if (!found.length) return false;
+  let learnedAny = false;
+  for (const c of found) {
+    // Maybe still being typed: a timer look waits for the next look (or the next dictation) to agree.
+    if (c.atEnd && !final && !mine.pending.has(c.term.toLowerCase())) {
+      mine.pending.add(c.term.toLowerCase());
+      continue;
+    }
+    learnedAny = true;
+    // Into the names record too (names.js); a lowercase-only fix stays there until a second sign.
+    try { names().typed(c.term, c.heardAs, { weak: c.weak }); } catch { /* a degraded feature */ }
+    if (c.weak) continue;
+    const result = dictionary.add(c.term, c.heardAs, 'auto');
+    if (result && result.created) onLearn({ term: c.term, heardAs: c.heardAs });
+  }
+  if (learnedAny) stop();
+  return learnedAny;
+}
+
+// names.js keeps what was learned beside the dictionary; required when first needed.
+let namesStore = null;
+function names() {
+  if (!namesStore) namesStore = require('./names').store();
+  return namesStore;
 }
 
 /**
@@ -286,7 +356,7 @@ function watch(pasted, appProcess, readFocus, onLearn) {
   stop();
   if (!pasted || pasted.length < 3) return;
 
-  const mine = { pasted, appProcess, onLearn };
+  const mine = { pasted, appProcess, onLearn, pending: new Set() };
   watching = mine;
 
   for (const delay of CHECKS_MS) {
@@ -310,11 +380,11 @@ function watch(pasted, appProcess, readFocus, onLearn) {
  */
 function settle(focus) {
   const mine = watching;
-  if (mine) consider(mine, focus, mine.onLearn);
+  if (mine) consider(mine, focus, mine.onLearn, true);
   stop();
 }
 
 // soundKey, similarity and isCommon are also pipeline/vocab.js's: one notion of "heard alike".
 const isCommon = (word) => common().has(String(word).toLowerCase());
 
-module.exports = { watch, stop, settle, findCorrection, similarity, soundKey, isCommon };
+module.exports = { watch, stop, settle, findCorrection, findCorrections, similarity, soundKey, isCommon };

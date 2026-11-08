@@ -104,22 +104,33 @@ function createOverlayWindow({ dev }) {
  * follows the user across monitors without being asked to.
  */
 function positionOverlay(win, size = 'compact') {
-  const cursor = screen.getCursorScreenPoint();
-  const display = screen.getDisplayNearestPoint(cursor);
-  const { x, y, width, height } = display.workArea;
+  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  win.setBounds(overlayBounds(display, SIZES[size] || SIZES.compact));
+}
 
-  const box = SIZES[size] || SIZES.compact;
-
-  // Never taller than the display it is on -- a small laptop screen would
-  // otherwise push the pill off the bottom to make room for the panel.
-  const h = Math.min(box.height, height - LIFT * 2);
-
-  win.setBounds({
-    x: Math.round(x + (width - box.width) / 2),
-    y: Math.round(y + height - h - LIFT),
+/**
+ * The overlay window's place on a display (pure; bench/pill.js).
+ *
+ * Windows: centred, just clear of the taskbar (the work area's bottom). macOS: centred on the screen,
+ * just above its bottom edge, over the Dock, as Wispr Flow's bar sits. The work area stops at the
+ * Dock's top, so with an ordinary window in front the pill floated a Dock's height above where it sat
+ * over a full-screen app, which hides the Dock (founder, 7 Nov). The overlay's screen-saver level keeps
+ * it above the Dock, and the window is click-through except over the pill's controls.
+ *
+ * Never taller than the room below the work area's top (the menu bar on a Mac) -- a small laptop
+ * screen would otherwise push the pill off the bottom to make room for the panel.
+ */
+function overlayBounds(display, box, platform = process.platform) {
+  const area = display.workArea;
+  const full = platform === 'darwin' && display.bounds ? display.bounds : area;
+  const bottom = full.y + full.height;
+  const h = Math.min(box.height, bottom - area.y - LIFT * 2);
+  return {
+    x: Math.round(full.x + (full.width - box.width) / 2),
+    y: Math.round(bottom - h - LIFT),
     width: box.width,
     height: h
-  });
+  };
 }
 
 /**
@@ -274,5 +285,5 @@ function releaseClicks(win) {
 module.exports = {
   createOverlayWindow, positionOverlay, showOverlay, releaseClicks, SIZES, WIDTH, HEIGHT,
   // bench/pill.js
-  createClickGate, cleanAreas, overArea, GATE_MS
+  createClickGate, cleanAreas, overArea, GATE_MS, overlayBounds, LIFT
 };

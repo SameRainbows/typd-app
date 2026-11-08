@@ -143,6 +143,69 @@ showErrorBox, an uncaughtException listener of Typd's own (Electron's fallback i
 Also the walkthrough's mic card (no "Ask again" once allowed) and the publisher in package.json.
 The Mac CI's first-run check asserts the real thing: no click, model ready.
 
+## mic-helper.js, mic-capture.js, mic-latency.js — the native microphone helper (0.2.12)
+
+```bash
+node scripts/build-mic.js win          # or: mac arm64 x64 (on a Mac) -- vendor/mic, vendor/mic-mac
+node bench/mic-helper.js               # in npm run bench; TYPD_MIC_BENCH_DEVICE=0 never opens a microphone
+node bench/mic-capture.js              # in npm run bench
+npx electron bench/mic-latency.js --path helper     # key press -> first audio, in main
+npx electron bench/mic-latency.js --path chromium   # the same through the pill's page (before 0.2.12)
+```
+
+`mic-helper.js`: the real `typd-mic` (hello, list, bad lines, open/first-audio/16 kHz, sync after the
+audio, **not one audio byte while held**, the warm window closing the device by itself on time, warm
+reopen within 100 ms, cold again after) and `mic.js` against it; then `mic.js`'s fall backs against
+`bench/fake-mic.js` (no file, error on open, exits -> restarted 3 times then off, no audio in 3 s,
+garbage, no hello) and `pickDevice` (Chromium's " (vid:pid)" and macOS transport suffixes). With
+`TYPD_MIC_BENCH_SILENT_DEVICE=<name>` also exact zeros from a real device through the helper.
+`mic-capture.js`: `capture.js` as index.js runs it, with the fake helper: the stream and the
+recording get exactly the helper's samples in order, hearing/level to the pill, revision without a
+stream, "silent" after 24,576 zeros (a Mac: the page takes over), every fall back to the pill's page
+(from the start and mid-dictation, the helper's part kept first), the Settings device, cancel. Plus
+the wiring in the sources. `mic-latency.js` makes Typd's pill window hidden (sounds off) and presses
+nothing: the "key press" is capture.begin + session:start, as beginSession does.
+
+## packaged-paths.js — nothing another program opens is inside app.asar (0.2.12)
+
+```bash
+node bench/packaged-paths.js   # in npm run bench, and in the Mac CI
+```
+
+Every packaged Windows install up to 0.2.11 copied its dictations and never pasted them: inject.js
+asked PowerShell for `<resources>\app.asar\src\main\inject.ps1`, which only Electron can read, and
+every test had run from source (`src/main/unpacked.js` says the rule). Checked: inject.js's
+`helperPath()` for a packaged `__dirname` is in `app.asar.unpacked`, and inject.js starts that one;
+a helper that dies is in the life log as one clean line (exit code, PowerShell's error, nothing
+quoted), is started again by the next command, and is left alone after five deaths in a minute; on
+a Mac, osascript gets a copy of `inject-helper.js` from the temp folder. `scripts/packaged-paths.js`
+`checkApp` (what `scripts/after-pack.js` runs on every build) on fake packaged apps: 0.2.11's rule,
+`inject.ps1` packed, a stale `inject.ps1`, a `.node` or PE file left in the archive and an
+"unpacked" entry that is not there are each refused; `after-pack.js` itself refuses a Windows app
+without the unpacked helper. `checkSource` on this checkout: `build.asarUnpack` covers the helper,
+every script or native file under `src/` and `assets/` is unpacked or copied out before it runs, and
+no spawn, exec or shell call in `src/main` takes a path built from `__dirname` or `getAppPath()`
+(the scan finds 0.2.11's).
+
+## kept.js — was the paste kept as is? (0.2.13)
+
+```bash
+node bench/kept.js
+```
+
+The benchmarks score Typd against reference texts; this is what a person feels: did they have to
+touch what was pasted? src/main/kept.js watches the field a paste went to for a minute and writes one
+verdict into its History item (kept / edited / deleted / redone / unknown). The bench runs the
+classifier and the watcher on a fake clock and a fake field, a minute in milliseconds: left alone,
+written on before or after, a word or a comma fixed, fixed back, deleted, undone, a box emptied in a
+non-chat app (deleted) and in a chat app (kept and sent), sent before the first look, sent and said
+again (redone), deleted and dictated again (redone), highlighted and revised (redone), the focus
+leaving to another app, another field or a password field, a field that cannot be read, a paste too
+long for the read, an app that reformats a list, the helper busy or silent. Then History's new
+fields (an older file still reads, still v 2), Home's line, the log line (counts, never words), and
+source checks that both helpers return before reading a password field. The offline report over a
+History file is dictation-research's `scripts/kept_rate/report.py`.
+
 ## lang-guard.js — English or Turkish only
 
 ```bash

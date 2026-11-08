@@ -6,6 +6,7 @@ const { app, BrowserWindow, ipcMain, shell, nativeTheme } = require('electron');
 const settings = require('./settings');
 const sharing = require('./sharing');
 const dictionary = require('./dictionary');
+const names = require('./names');
 const { store } = require('./store');
 const status = require('./status');
 const brand = require('./brand');
@@ -244,34 +245,48 @@ function register(d) {
     return { keep: store().keep(), items: store().list() };
   });
 
-  // Dictionary
-  handle('dictionary:list', () => dictionary.load());
+  // Dictionary: the user's own words and corrections, then the names Typd learned from use (names.js),
+  // each removable the same way -- a removed learned name is never learned back.
+  function entries() {
+    const own = dictionary.load();
+    let learned = [];
+    try {
+      const have = new Set(own.map((e) => String(e && e.term).toLowerCase()));
+      learned = names.store().promoted().filter((x) => !have.has(x.term.toLowerCase()))
+        .map((x) => ({ term: x.term, heardAs: x.heardAs || [], source: 'used', addedAt: x.first ? new Date(x.first).toISOString() : null }));
+    } catch { learned = []; }
+    return own.concat(learned);
+  }
+  handle('dictionary:list', () => entries());
   handle('dictionary:add', (term) => {
     const clean = typeof term === 'string' ? term.trim().replace(/\s+/g, ' ') : '';
     if (!clean) return { ok: false, reason: 'Type a word first.' };
     if (clean.length > 64) return { ok: false, reason: 'Up to 64 characters.' };
     const lower = clean.toLowerCase();
     const existing = dictionary.load().find((e) => e && String(e.term).toLowerCase() === lower);
-    if (existing) return { ok: false, reason: 'Already in your dictionary.', term: existing.term, entries: dictionary.load() };
+    if (existing) return { ok: false, reason: 'Already in your dictionary.', term: existing.term, entries: entries() };
     const r = dictionary.add(clean, null, 'manual');
-    return r ? { ok: true, term: r.term, entries: dictionary.load() } : { ok: false, reason: "Couldn't save the dictionary." };
+    try { names.store().unblock(clean); } catch { /* degraded */ }
+    return r ? { ok: true, term: r.term, entries: entries() } : { ok: false, reason: "Couldn't save the dictionary." };
   });
   handle('dictionary:remove', (term) => {
     if (!isString(term, 64)) return null;
-    const entry = dictionary.load().find((e) => e && String(e.term).toLowerCase() === term.toLowerCase());
-    if (!entry) return { ok: false, entries: dictionary.load() };
+    const entry = entries().find((e) => e && String(e.term).toLowerCase() === term.toLowerCase());
+    if (!entry) return { ok: false, entries: entries() };
     removedWords.set(entry.term.toLowerCase(), entry);
     setTimeout(() => removedWords.delete(entry.term.toLowerCase()), 60000).unref?.();
-    const ok = dictionary.remove(entry.term);
-    if (ok) deps.wordRemoved(entry.term);
-    return { ok, entries: dictionary.load() };
+    const ok = entry.source === 'used' ? true : dictionary.remove(entry.term);
+    if (ok) deps.wordRemoved(entry.term);   // blocks it in names.js too (index.js)
+    return { ok, entries: entries() };
   });
   handle('dictionary:undo', (term) => {
     if (!isString(term, 64)) return null;
     const entry = removedWords.get(term.toLowerCase());
-    if (!entry) return { ok: false, entries: dictionary.load() };
+    if (!entry) return { ok: false, entries: entries() };
     removedWords.delete(term.toLowerCase());
-    return { ok: dictionary.restore(entry), entries: dictionary.load() };
+    try { names.store().unblock(entry.term); } catch { /* degraded */ }
+    if (entry.source === 'used') return { ok: true, entries: entries() };
+    return { ok: dictionary.restore(entry), entries: entries() };
   });
   handle('dictionary:reveal', () => {
     if (!fs.existsSync(VOCAB_FILE)) return false;

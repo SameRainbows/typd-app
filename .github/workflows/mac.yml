@@ -1,8 +1,14 @@
-# Build Typd for macOS: the official build, signed with Typd's own certificate. (Branch main, Typd
-# 0.2.11: the same checks as the release-0.2.11 branch -- the microphone and icon checks, the patched
-# llama.cpp encoder that scripts/fetch-llama-mac.js builds, the copy pop-up's bench, a look at what
-# macOS Accessibility says about the focused element in a few real apps, and the no-modal bench: none
-# of Typd's dialogs may stop Typd.)
+# Build Typd for macOS: the official build. (Typd 0.2.13, branch release-0.2.13: devid-test's workflow --
+# release-0.2.12's, plus Apple's Developer ID when the MAC_DEVID_P12 secrets are set: every piece signed
+# with the hardened runtime and Apple's timestamp, each dmg notarized and stapled, so a downloaded copy
+# opens with no Gatekeeper warning; built on macos-15, as GitHub retired macos-14 in Nov 2026. Trial run
+# 42373947703 on devid-test passed every job. Without those secrets it signs with Typd's own certificate.)
+# (Typd 0.2.12, branch release-0.2.12: 0.2.11's workflow plus the native microphone helper -- typd-mic built with clang for
+# each arch, its benches, its signature, entitlement and usage string checked in the app, and the
+# microphone check's capture through it after macOS's Allow, with no second prompt. 0.2.11's: 0.2.10's checks -- the microphone and icon checks, the patched llama.cpp encoder
+# that scripts/fetch-llama-mac.js builds, the copy pop-up's bench and a look at what macOS
+# Accessibility says about the focused element in a few real apps -- plus the no-modal bench: none of
+# Typd's dialogs may stop Typd (0.2.10's switches dialog held the first model download on a new Mac).)
 #
 # Only a maintainer can start it (Actions > macOS > Run workflow, or `gh workflow run mac.yml`).
 # It never runs on a push or a pull request, so code from a fork never runs with its secrets.
@@ -31,6 +37,13 @@
 # fingerprint is in scripts/mac-signing.json). So every build has the same designated requirement,
 # and macOS keeps Typd's Accessibility, Microphone and Input Monitoring switches across updates.
 # It is not an Apple Developer ID: Gatekeeper still asks on a downloaded copy's first open.
+#
+# Developer ID (this branch): with the secrets MAC_DEVID_P12, MAC_DEVID_P12_PASSWORD and APPLE_TEAM_ID,
+# scripts/mac-signing-import.sh imports Apple's Developer ID Application certificate instead and sets
+# TYPD_MAC_SIGN_DEVID=1; every piece is then signed with --options runtime and Apple's timestamp, and the
+# designated requirement is Apple's form (anchor apple generic, the Team ID, identifier "ai.typd.app").
+# Each dmg is signed, sent to Apple's notary service with APPLE_ID and APPLE_APP_PASSWORD (an
+# app-specific password), stapled, and must pass Gatekeeper as "Notarized Developer ID".
 #
 # The token is read-only (the repository's default). This job may write contents only to create
 # the draft release, and only the release step gets the token. No action from outside this
@@ -66,8 +79,8 @@ env:
 jobs:
   build:
     if: github.repository == 'SameRainbows/typd-app' && !inputs.checks_only
-    runs-on: macos-14
-    timeout-minutes: 120
+    runs-on: macos-15   # macos-14 is retired on GitHub (Nov 2026)
+    timeout-minutes: 180
     permissions:
       contents: write   # only for the draft release (the last steps); no other step gets the token
     steps:
@@ -146,11 +159,29 @@ jobs:
         # each arch. node-gyp-build loads it in place of the shipped prebuild.
         run: node scripts/build-uiohook-mac.js $ARCHS
 
-      - name: Typd's signing certificate, in a keychain of its own
+      - name: Build the microphone helper (typd-mic, clang, each arch)
+        # 0.2.12: native/mic/typd-mic.c + miniaudio (Core Audio), into vendor/mic-mac/<arch>; after-pack.js
+        # refuses an app without it and signs it with Typd's identity and the audio-input entitlement.
+        run: |
+          set -e
+          node scripts/build-mic.js mac $ARCHS
+          node scripts/build-mic.js mac $ARCHS --check
+          for a in $ARCHS; do vendor/mic-mac/$a/typd-mic --version 2>/dev/null || arch -x86_64 vendor/mic-mac/$a/typd-mic --version || true; done
+
+      - name: Bench, the microphone helper and a dictation's capture (no microphone opened)
+        # The real helper's protocol (hello, list, bad lines, close, stdin closing ends it), mic.js's fall backs
+        # and capture.js with a stand-in helper (bench/fake-mic.js). TYPD_MIC_BENCH_DEVICE=0: macOS would ask
+        # for this shell's microphone.
+        run: TYPD_MIC_BENCH_DEVICE=0 node bench/mic-helper.js && node bench/mic-capture.js
+
+      - name: The signing certificate (Developer ID when its secrets are set), in a keychain of its own
         # scripts/after-pack.js and scripts/app-update-package.js sign with it (TYPD_MAC_SIGN_*).
         env:
           MAC_CODESIGN_P12: ${{ secrets.MAC_CODESIGN_P12 }}
           MAC_CODESIGN_P12_PASSWORD: ${{ secrets.MAC_CODESIGN_P12_PASSWORD }}
+          MAC_DEVID_P12: ${{ secrets.MAC_DEVID_P12 }}
+          MAC_DEVID_P12_PASSWORD: ${{ secrets.MAC_DEVID_P12_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: bash scripts/mac-signing-import.sh
 
       - name: The macOS icon, made by Apple's iconutil (every size, each at its size)
@@ -158,7 +189,7 @@ jobs:
         # in its @2x slots and PNGs in the 16/32 px ARGB slots (0.2.6 and earlier): broken small icons in Finder.
         run: bash scripts/build-mac-icon.sh
 
-      - name: Package (signed with Typd's certificate)
+      - name: Package (signed with Developer ID when set up, else Typd's certificate)
         run: |
           # Naming the target makes the arch flags replace build.mac.target's arch list
           # (electron-builder ignores CLI archs when only the config names targets).
@@ -174,6 +205,15 @@ jobs:
       - name: Inspect the app
         run: |
           set -e
+          # The designated requirement names this build's signer: Apple's anchor and the Team ID
+          # (Developer ID), or Typd's certificate's SHA-1 (scripts/mac-signing.json).
+          same_signer() {
+            if [ "${TYPD_MAC_SIGN_DEVID:-}" = 1 ]; then
+              [ -n "${TYPD_MAC_TEAM_ID:-}" ] && echo "$1" | grep -q 'anchor apple generic' && echo "$1" | grep -q "$TYPD_MAC_TEAM_ID"
+            else
+              echo "$1" | grep -qi "$(node -p "require('./scripts/mac-signing.json').sha1")"
+            fi
+          }
           for a in $ARCHS; do
             app=$( [ "$a" = arm64 ] && echo "$PWD/dist/mac-arm64/Typd.app" || echo "$PWD/dist/mac/Typd.app" )
             echo "== $app"
@@ -183,7 +223,7 @@ jobs:
             dr=$(codesign -d -r- "$app" 2>&1 | sed -n 's/^designated => //p')
             echo "designated requirement: $dr"
             echo "$dr" | grep -q 'identifier "ai.typd.app"'
-            echo "$dr" | grep -qi "$(node -p "require('./scripts/mac-signing.json').sha1")"
+            same_signer "$dr"
             echo "- $a: \`$dr\`" >> "$GITHUB_STEP_SUMMARY"
             # Gatekeeper: not notarized and not Developer ID, so a downloaded copy's first open is
             # refused (docs/MAC.md). Printed, not a gate.
@@ -205,8 +245,19 @@ jobs:
               [ "$hm" = "$mic" ] || { echo "$(basename "$b"): NSMicrophoneUsageDescription missing or different"; exit 1; }
               codesign -d --entitlements - --xml "$b" 2>/dev/null > "$RUNNER_TEMP/ent.plist"
               [ "$(/usr/libexec/PlistBuddy -c "Print :com.apple.security.device.audio-input" "$RUNNER_TEMP/ent.plist" 2>/dev/null)" = true ] || { echo "$(basename "$b"): no com.apple.security.device.audio-input entitlement"; exit 1; }
-              codesign -dv "$b" 2>&1 | grep -q 'flags=0x0(none)' || { echo "$(basename "$b"): unexpected code-signing flags: $(codesign -dv "$b" 2>&1 | grep CodeDirectory)"; exit 1; }
-              echo "  $(basename "$b"): usage string, audio-input entitlement, no hardened runtime"
+              if [ "${TYPD_MAC_SIGN_DEVID:-}" = 1 ]; then
+                # Developer ID: the hardened runtime (notarization needs it) and what it then needs:
+                # Apple events (paste, selection) and V8's JIT (scripts/mac-entitlements.plist).
+                codesign -dv "$b" 2>&1 | grep -q 'flags=0x[0-9a-f]*(runtime)' || { echo "$(basename "$b"): no hardened runtime: $(codesign -dv "$b" 2>&1 | grep CodeDirectory)"; exit 1; }
+                for k in com.apple.security.automation.apple-events com.apple.security.cs.allow-jit com.apple.security.cs.allow-unsigned-executable-memory; do
+                  [ "$(/usr/libexec/PlistBuddy -c "Print :$k" "$RUNNER_TEMP/ent.plist" 2>/dev/null)" = true ] || { echo "$(basename "$b"): no $k entitlement"; exit 1; }
+                done
+                rt="the hardened runtime, Apple events and JIT entitlements"
+              else
+                codesign -dv "$b" 2>&1 | grep -q 'flags=0x0(none)' || { echo "$(basename "$b"): unexpected code-signing flags: $(codesign -dv "$b" 2>&1 | grep CodeDirectory)"; exit 1; }
+                rt="no hardened runtime"
+              fi
+              echo "  $(basename "$b"): usage string, audio-input entitlement, $rt"
             done
             echo "- $a: microphone usage string + audio-input entitlement in the app and its helpers" >> "$GITHUB_STEP_SUMMARY"
             # The icon: every size at its size (scripts/check-icns.js), and Apple's iconutil reads back exactly
@@ -218,6 +269,20 @@ jobs:
             want="icon_128x128.png=128 icon_128x128@2x.png=256 icon_16x16.png=16 icon_16x16@2x.png=32 icon_256x256.png=256 icon_256x256@2x.png=512 icon_32x32.png=32 icon_32x32@2x.png=64 icon_512x512.png=512 icon_512x512@2x.png=1024 "
             echo "iconutil reads back: $got"
             [ "$got" = "$want" ] || { echo "the icon is not a full iconset at the right sizes"; exit 1; }
+            # The microphone helper (0.2.12): this arch, Typd's identity, its own identifier, the audio-input
+            # entitlement, the app's usage string embedded, and it runs (--list needs no permission).
+            h="$app/Contents/Resources/mic/typd-mic"
+            test -x "$h"
+            lipo -archs "$h" | grep -qx "$( [ "$a" = arm64 ] && echo arm64 || echo x86_64 )"
+            codesign --verify --strict --verbose=2 "$h"
+            codesign -dv "$h" 2>&1 | grep -q 'Identifier=ai.typd.app.mic'
+            same_signer "$(codesign -d -r- "$h" 2>&1 | grep designated)"
+            codesign -d --entitlements - --xml "$h" 2>/dev/null > "$RUNNER_TEMP/mic-ent.plist"
+            [ "$(/usr/libexec/PlistBuddy -c "Print :com.apple.security.device.audio-input" "$RUNNER_TEMP/mic-ent.plist" 2>/dev/null)" = true ] || { echo "typd-mic: no audio-input entitlement"; exit 1; }
+            codesign -dv "$h" 2>&1 | grep -E 'Identifier|Info.plist' || true
+            grep -aq "$mic" "$h" || { echo "typd-mic: the app's NSMicrophoneUsageDescription is not embedded"; exit 1; }
+            if [ "$a" = arm64 ]; then "$h" --version; "$h" --list || true; else arch -x86_64 "$h" --version || true; fi
+            echo "- $a: typd-mic signed (ai.typd.app.mic), audio-input entitlement, usage string embedded" >> "$GITHUB_STEP_SUMMARY"
             ls -la "$app/Contents/Resources/llama" "$app/Contents/Resources/models/typd-dictate"
             # Model-less: no model.json and no .gguf anywhere in the app.
             test ! -e "$app/Contents/Resources/models/typd-dictate/model.json"
@@ -263,6 +328,53 @@ jobs:
         run: |
           R=dist/mac/Typd.app/Contents/Resources
           node scripts/smoke-llama.js --server $R/llama/llama-server --models "$PWD/models/typd-dictate" --gpu-layers 0 --port 8792
+
+      - name: Notarize and staple each dmg (Developer ID)
+        # Apple scans the dmg and everything in it. Its ticket is stapled to the dmg (a downloaded dmg opens
+        # with no Gatekeeper warning, offline too) and to the app the update packages are made from. Before the update packages, the
+        # tests that start the app and the key check below (which records each dmg's final bytes).
+        if: env.TYPD_MAC_SIGN_DEVID == '1'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          # Stapling and validating ask Apple's ticket service, which can drop a connection (run 42371580719).
+          retry() { for i in 1 2 3 4; do "$@" && return 0; echo "try $i of: $* failed; retrying"; sleep $((15 * i)); done; return 1; }
+          for a in $ARCHS; do
+            dmg=$(ls dist/Typd-*-mac-$a.dmg)
+            app=$( [ "$a" = arm64 ] && echo dist/mac-arm64/Typd.app || echo dist/mac/Typd.app )
+            codesign --force --sign "$TYPD_MAC_SIGN_IDENTITY" --keychain "$TYPD_MAC_SIGN_KEYCHAIN" --timestamp "$dmg"
+            echo "== notarizing $(basename "$dmg") ($(stat -f %z "$dmg") bytes)"
+            xcrun notarytool submit "$dmg" --apple-id "$APPLE_ID" --password "$APPLE_APP_PASSWORD" --team-id "$APPLE_TEAM_ID" \
+              --wait --timeout 60m --output-format json > "$RUNNER_TEMP/notary-$a.json" || true
+            sub=$(node -p "require(process.argv[1]).id || ''" "$RUNNER_TEMP/notary-$a.json" 2>/dev/null || true)
+            status=$(node -p "require(process.argv[1]).status || ''" "$RUNNER_TEMP/notary-$a.json" 2>/dev/null || true)
+            echo "submission ${sub:-none}: ${status:-no answer}"
+            if [ "$status" != Accepted ]; then
+              cat "$RUNNER_TEMP/notary-$a.json" || true; echo
+              if [ -n "$sub" ]; then xcrun notarytool log "$sub" --apple-id "$APPLE_ID" --password "$APPLE_APP_PASSWORD" --team-id "$APPLE_TEAM_ID" || true; fi
+              echo "- $a: notarization ${status:-gave no answer}" >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+            # Apple's report even when accepted: warnings show up here first.
+            xcrun notarytool log "$sub" --apple-id "$APPLE_ID" --password "$APPLE_APP_PASSWORD" --team-id "$APPLE_TEAM_ID" "$RUNNER_TEMP/notary-log-$a.json" || true
+            node -e "const r = require(process.argv[1]); console.log('notary log:', r.status, r.statusSummary || '', (r.issues || []).length, 'issues'); for (const i of r.issues || []) console.log(' ', i.severity, i.path, i.message)" "$RUNNER_TEMP/notary-log-$a.json" || true
+            retry xcrun stapler staple "$dmg"
+            retry xcrun stapler validate "$dmg"
+            retry xcrun stapler staple "$app"
+            retry xcrun stapler validate "$app"
+            codesign --verify --deep --strict "$app"
+            spctl -a -t open --context context:primary-signature -vv "$dmg"
+            mnt="$RUNNER_TEMP/typd-notarized-$a"
+            mkdir -p "$mnt"
+            hdiutil attach "$dmg" -nobrowse -readonly -mountpoint "$mnt"
+            spctl --assess --type execute -vv "$mnt/Typd.app" 2>&1 | tee "$RUNNER_TEMP/spctl-$a.txt" || true
+            hdiutil detach "$mnt"
+            grep -q 'source=Notarized Developer ID' "$RUNNER_TEMP/spctl-$a.txt"
+            echo "- $a: notarized and stapled; Gatekeeper: Notarized Developer ID (\`$(basename "$dmg")\`)" >> "$GITHUB_STEP_SUMMARY"
+          done
 
       - name: App-update packages (README "App updates")
         # The app without its model, signed again with Typd's certificate (the same designated
@@ -494,7 +606,17 @@ jobs:
             mkdir -p "$mnt"
             hdiutil attach "$dmg" -nobrowse -readonly -mountpoint "$mnt"
             codesign --verify --deep --strict "$mnt/Typd.app"
-            codesign -d -r- "$mnt/Typd.app" 2>&1 | grep designated | grep -qi "$want"
+            if [ "${TYPD_MAC_SIGN_DEVID:-}" = 1 ]; then
+              codesign -d -r- "$mnt/Typd.app" 2>&1 | grep designated | grep -q 'anchor apple generic'
+              # Apple's ticket service can drop a connection (run 42371580719): a few tries.
+              for i in 1 2 3 4; do
+                xcrun stapler validate "$dmg" && break
+                [ "$i" = 4 ] && exit 1
+                echo "stapler validate: try $i failed; retrying"; sleep $((15 * i))
+              done
+            else
+              codesign -d -r- "$mnt/Typd.app" 2>&1 | grep designated | grep -qi "$want"
+            fi
             node scripts/public-build.js verify --app "$mnt/Typd.app" --platform "mac-$a" --installer "$dmg" --expect-model no
             hdiutil detach "$mnt"
           done
@@ -538,13 +660,13 @@ jobs:
 
   menubar:
     # The menu-bar close checks on several macOS versions, on an ad-hoc-signed arm64 build of this
-    # commit (no secrets in this job). macos-14 is the build job's runner; the tester's Mac runs
+    # commit (no secrets in this job). macos-15 is the build job's runner (macos-14 is retired); the tester's Mac runs
     # macOS 27 (xcode-27 is that image, in preview).
     if: github.repository == 'SameRainbows/typd-app'
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, macos-15, macos-26, xcode-27]
+        os: [macos-15, macos-26, xcode-27]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 75
     steps:
@@ -584,6 +706,7 @@ jobs:
           node scripts/fetch-model.js --accept-license | tail -3
           node scripts/fetch-llama-mac.js arm64
           node scripts/build-uiohook-mac.js arm64
+          node scripts/build-mic.js mac arm64
 
       - name: Package (arm64, signed ad hoc, no dmg)
         run: |

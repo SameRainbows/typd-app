@@ -92,6 +92,7 @@ public static class TypdButtons {
   [DllImport("kernel32.dll")] static extern IntPtr GetModuleHandle(string name);
   const int WH_MOUSE_LL = 14, WM_XBUTTONDOWN = 0x020B, WM_XBUTTONUP = 0x020C;
   static volatile int armed;           // 0, or the button Typd is bound to: 4 (back), 5 (forward)
+  static volatile int held;            // the button whose press was swallowed, until its release is
   static Proc keep;                    // the delegate must outlive the hook
   static IntPtr hook;
   static uint loopThread;
@@ -99,14 +100,20 @@ public static class TypdButtons {
 
   static void Say(string json) { Console.Out.WriteLine(json); Console.Out.Flush(); }
 
+  // Presses and releases are swallowed in pairs. A release whose press got through (the hook
+  // was armed while the button was down -- the key picker binds on the press) must get
+  // through too: swallowed alone, Windows keeps the button down and the window that saw
+  // the press keeps the mouse captured, so no click lands anywhere until Typd is ended.
   static IntPtr OnMouse(int code, IntPtr wParam, IntPtr lParam) {
     int msg = wParam.ToInt32();
-    if (code >= 0 && armed != 0 && (msg == WM_XBUTTONDOWN || msg == WM_XBUTTONUP)) {
+    if (code >= 0 && (armed != 0 || held != 0) && (msg == WM_XBUTTONDOWN || msg == WM_XBUTTONUP)) {
       MSLL s = (MSLL)Marshal.PtrToStructure(lParam, typeof(MSLL));
       int x = (int)(s.mouseData >> 16);           // XBUTTON1 = 1 (back), XBUTTON2 = 2 (forward)
       int b = x == 1 ? 4 : x == 2 ? 5 : 0;
-      if (b == armed) {
-        Say("{\"ev\":\"button\",\"b\":" + b + ",\"down\":" + (msg == WM_XBUTTONDOWN ? "true" : "false") + "}");
+      bool down = msg == WM_XBUTTONDOWN;
+      if (b != 0 && (down ? b == armed : b == held)) {
+        held = down ? b : 0;
+        Say("{\"ev\":\"button\",\"b\":" + b + ",\"down\":" + (down ? "true" : "false") + "}");
         return (IntPtr)1;                         // swallowed: the app underneath never sees it
       }
     }
@@ -571,7 +578,11 @@ function Get-Context {
     $el = $null
     try { $el = [System.Windows.Automation.AutomationElement]::FocusedElement } catch { }
 
-    $text = Get-FocusText $el
+    # A password field's text is never read, not even as context (0.2.13).
+    $pw = $false
+    try { if ($null -ne $el) { $pw = [bool] $el.Current.IsPassword } } catch { }
+    $text = ''
+    if (-not $pw) { $text = Get-FocusText $el }
     if ($null -eq $text) { $text = '' }
     if ($text.Length -gt $script:ContextLimit) {
       $text = $text.Substring($text.Length - $script:ContextLimit)
@@ -582,11 +593,90 @@ function Get-Context {
       process = $name
       title = [Fg]::Title()
       text = $text
+      pw = $pw
       field = (Get-FieldFacts $el $name)
     }) | ConvertTo-Json -Compress -Depth 3)
   } catch {
     Emit (@{ ok = $false; error = "$_" } | ConvertTo-Json -Compress)
   }
+}
+
+# around: the focused control's text on both sides of the caret, for the kept-as-pasted watch
+# (src/main/kept.js): is the text Typd just pasted still there, as pasted? At most AroundLimit
+# characters each way (half the context read's: this runs about 15 times a minute after a paste); cutBefore / cutAfter say the control holds more than was read on that side.
+# caret is the caret's (or the selection's start's) index in text, -1 when the control has none.
+#   how   text (TextPattern) | value (ValuePattern) | password | no-text-pattern | no-focused-element
+#   pw    a password field: its text is never read, and none is sent
+#   fid   the element's UI Automation runtime id, so a watch can tell its field from another one in
+#         the same app. Numbers, not text.
+# The window title is not read here.
+$script:AroundLimit = 4000
+
+function Get-Around {
+  $out = [ordered]@{ ok = $true; process = ''; fid = ''; pw = $false; how = 'none'; text = ''; caret = -1; cutBefore = $false; cutAfter = $false }
+  try {
+    try { $out.process = (Get-Process -Id ([Fg]::Pid()) -ErrorAction Stop).ProcessName } catch { }
+    $el = $null
+    try { $el = [System.Windows.Automation.AutomationElement]::FocusedElement } catch { }
+    if ($null -eq $el) {
+      $out.how = 'no-focused-element'
+    } else {
+      try { $out.fid = (@($el.GetRuntimeId()) -join '.') } catch { }
+      try { $out.pw = [bool] $el.Current.IsPassword } catch { }
+      $lim = $script:AroundLimit
+      $tp = $null
+      $vp = $null
+      if ($out.pw) {
+        $out.how = 'password'
+      } elseif ($el.TryGetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern, [ref] $tp)) {
+        $out.how = 'text'
+        $sel = $null
+        try { $sel = $tp.GetSelection() } catch { }
+        if ($sel -and $sel.Length -gt 0) {
+          $S = [System.Windows.Automation.Text.TextPatternRangeEndpoint]::Start
+          $E = [System.Windows.Automation.Text.TextPatternRangeEndpoint]::End
+          $C = [System.Windows.Automation.Text.TextUnit]::Character
+          # Before: up to $lim characters, ending where the selection (or the caret) starts.
+          $b = $sel[0].Clone()
+          $b.MoveEndpointByRange($E, $sel[0], $S)
+          $back = $b.MoveEndpointByUnit($S, $C, - $lim)
+          # GetText's limit counts UTF-16 units, the move counts characters (a line break, an emoji
+          # can be two): a limit of $lim could cut the END of this range -- the text right before
+          # the caret, where the paste is. Read it whole (it is bounded by the move) and keep the tail.
+          $before = $b.GetText(4 * $lim)
+          if ($null -eq $before) { $before = '' }
+          if ($before.Length -gt 2 * $lim) { $before = $before.Substring($before.Length - 2 * $lim) }
+          # The selection itself, if any, and up to $lim characters after it.
+          $a = $sel[0].Clone()
+          $fwd = $a.MoveEndpointByUnit($E, $C, $lim)
+          $rest = $a.GetText(2 * $lim)
+          if ($null -eq $rest) { $rest = '' }
+          $out.text = $before + $rest
+          $out.caret = $before.Length
+          $out.cutBefore = ([Math]::Abs($back) -ge $lim)
+          $out.cutAfter = (($fwd -ge $lim) -or ($rest.Length -ge 2 * $lim))
+        } else {
+          # No caret to stand at: the document from its start.
+          $t = $tp.DocumentRange.GetText(2 * $lim + 1)
+          if ($null -eq $t) { $t = '' }
+          if ($t.Length -gt 2 * $lim) { $t = $t.Substring(0, 2 * $lim); $out.cutAfter = $true }
+          $out.text = $t
+        }
+      } elseif ($el.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref] $vp)) {
+        $out.how = 'value'
+        $t = [string] $vp.Current.Value
+        if ($t.Length -gt 2 * $lim) { $t = $t.Substring($t.Length - 2 * $lim); $out.cutBefore = $true }
+        $out.text = $t
+      } else {
+        $out.how = 'no-text-pattern'
+      }
+    }
+  } catch {
+    $out.ok = $false
+    $out.text = ''
+    $out.how = 'error'
+  }
+  Emit ($out | ConvertTo-Json -Compress)
 }
 
 # Touch both interop paths once here so their setup cost is paid during launch
@@ -619,6 +709,7 @@ while ($true) {
     'restore'   { Restore-Clipboard }
     'focus'     { Get-Focus }
     'context'   { Get-Context }
+    'around'    { Get-Around }
     'field'     { Get-Field }
     'selection' { Get-Selection }
     'copysel'   { Get-CopiedSelection }

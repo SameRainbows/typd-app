@@ -394,9 +394,35 @@ async function modelTests() {
   local.stop();
 }
 
+/** The tag off every answer (local.answerText): a repeated tag is never pasted (no model). */
+function tagTests(local) {
+  section('the tag, however often the model writes it');
+  const cases = [
+    // the light model on a hum (dictation-research noise_check_2026-11-08): pasted as "language English<asr_text>la"
+    ['language English<asr_text>language English<asr_text>language English<asr_text>language English<asr_text>language English', ''],
+    ['language English<asr_text>language English', ''],
+    ['language English<asr_text>', ''],
+    ['language English<asr_text>Hello there.', 'Hello there.'],
+    ['language Turkish<asr_text>Merhaba.', 'Merhaba.'],
+    ['language English<asr_text>I said hello.language English<asr_text>', 'I said hello.'],
+    ['language English<asr_text>The language English speakers use.', 'The language English speakers use.'],
+    ['language English<asr_text>language matters', 'language matters'],
+    ['language English<asr_text>Language.', 'Language.'],
+    ['  Hello', 'Hello']
+  ];
+  for (const [raw, want] of cases) {
+    const got = local.answerText(raw);
+    check(`${JSON.stringify(raw.slice(0, 60))} -> ${JSON.stringify(want)}`, got === want, got);
+  }
+  const t0 = Date.now();
+  local.answerText('language '.repeat(5000) + 'x');
+  check('a long run of tag words is quick', Date.now() - t0 < 100, Date.now() - t0);
+}
+
 (async () => {
   const local = freshLocal({});
   letterTests(local);
+  tagTests(local);
   await bodyTests();
   if (!process.argv.includes('--no-model')) await modelTests();
   console.log('\n' + (failures ? failures + ' FAILED' : 'all passed'));
