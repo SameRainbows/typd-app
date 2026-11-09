@@ -1,0 +1,22 @@
+name: Verify Machine L4 GPU access
+on:
+  push:
+    branches: [compute/verify-machine-2026-11-09]
+permissions: {}
+jobs:
+  verify-gpu:
+    runs-on: machine/gpu=l4/tenancy=spot
+    timeout-minutes: 3
+    steps:
+      - name: Verify at least 24 GB GPU memory
+        shell: bash
+        run: |
+          set -eu
+          nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv
+          python3 - <<'PYTHON'
+          import csv, io, json, subprocess
+          text = subprocess.check_output(['nvidia-smi','--query-gpu=memory.total','--format=csv,noheader,nounits'], text=True)
+          memory = [int(x.strip()) for x in text.splitlines() if x.strip()]
+          assert memory and max(memory) * 1024**2 >= 24_000_000_000, memory
+          print(json.dumps({'gpu_memory_MiB': memory, 'capacity_at_least_24_decimal_GB': True, 'pytorch_training': 'not yet tested'}))
+          PYTHON
