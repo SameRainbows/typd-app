@@ -1313,6 +1313,11 @@ function guardGrammar(assistant, asRevise) {
   return /^\s*language (?:English|Turkish)<asr_text>/.test(assistant) ? GUARD_REST : null;
 }
 
+// llama.cpp's DRY sampler, on every dictation and not on a revise: it stops a runaway repeat while it is being
+// written, where loopCut can only cut it afterwards and lose what came after (0.2.13; a looping clip went from
+// 92 errors per 100 to 21). The model's numbers were measured with these values. A short repeat is untouched.
+const DRY = { dry_multiplier: 0.8, dry_base: 1.75, dry_allowed_length: 5 };
+
 /**
  * The request body for audio in one or more pieces (base64 WAVs, in order). Every request
  * goes through here. With a revise adapter loaded it names the adapter's scale: on only when
@@ -1331,6 +1336,7 @@ function body(parts, system, extra, asRevise = false, assistant = PREFILL, guard
     ],
     temperature: 0,
     cache_prompt: true,
+    ...(asRevise || process.env.TYPD_DRY === '0' ? {} : DRY),
     ...(adapter ? { lora: [{ id: adapter.id, scale: asRevise ? 1 : 0 }] } : {}),
     ...(grammar ? { grammar } : {}),
     ...extra

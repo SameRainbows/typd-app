@@ -144,20 +144,37 @@ function loadSound(withVoices) {
 {
   const { sound, log } = loadSound(true);
   sound.play('start');
-  check('start: one buffer, through its level to the output and the room, nothing through the old low-pass',
-    log.includes('buffer->gain') && log.includes('gain->out') && log.includes('gain->room') && log.includes('room->out') &&
-    log.filter((l) => l.startsWith('buffer start')).length === 1 && !log.some((l) => l.startsWith('osc')), log);
+  check('start: one buffer, through its level to the output, nothing through the old low-pass (this cue has no room)',
+    log.includes('buffer->gain') && log.includes('gain->out') && log.filter((l) => l.startsWith('buffer start')).length === 1 && !log.some((l) => l.startsWith('osc')), log);
   const n = log.length;
   sound.play('commit');
-  check('commit: the stop cue, the same room (made once)', log.slice(n).filter((l) => l === 'room->out').length === 0 &&
+  check('commit: the stop cue', log.slice(n).filter((l) => l === 'room->out').length === 0 &&
     log.slice(n).some((l) => l.startsWith('buffer start')), log.slice(n));
   sound.play('done');
-  check('done: still the old tone', log.some((l) => l === 'osc start'));
+  check('done (a revise uses its own): still the old tone', log.some((l) => l === 'osc start'));
 }
 {
   const { sound, log } = loadSound(false);
   sound.play('start');
   check('without sound-voices.js, start falls back to the old tone', log.includes('osc start') && !log.some((l) => l.startsWith('buffer')), log);
+}
+{
+  // Both cues are drawn soon after load, silently, and playing them then draws nothing more.
+  const log = [];
+  const timers = [];
+  let draws = 0;
+  const sandbox = { window: {}, setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; }, clearTimeout: () => {}, Date, Math, Float32Array };
+  sandbox.window.AudioContext = fakeAudio(log);
+  sandbox.AudioContext = sandbox.window.AudioContext;
+  sandbox.window.typdVoices = Object.assign({}, V, { render: (...a) => { draws++; return V.render(...a); } });
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'sound.js'), 'utf8'), sandbox);
+  const ahead = timers.find((t) => t.ms === 1000);
+  check('a draw-ahead timer is set at load', !!ahead);
+  if (ahead) ahead.fn();
+  check('drawing ahead draws both cues and plays nothing', draws === 2 && !log.some((l) => /start/.test(l)), { draws, log });
+  sandbox.window.typdSound.play('start');
+  sandbox.window.typdSound.play('commit');
+  check('playing them after that draws nothing more', draws === 2 && log.filter((l) => l.startsWith('buffer start')).length === 2, { draws });
 }
 {
   const { sound, log } = loadSound(true);

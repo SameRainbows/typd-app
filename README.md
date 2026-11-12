@@ -13,40 +13,28 @@ This repository is the app's source code, under the **GPL-3.0** ([LICENSE](LICEN
 
 ## Download
 
-**Typd 0.2.11** for Windows 10/11 (x64) and Apple-silicon Macs:
+**Typd 0.2.13** for Windows 10/11 (x64) with an NVIDIA GPU, and for Apple-silicon Macs:
 **[typd.mehmetdedeler.com](https://typd.mehmetdedeler.com/download/)**.
 
-- The installer has no model in it. On first launch Typd downloads the one that suits your
-  computer, once:
-  - **Full**: 1.7B parameters (1.5 GB), on a PC with an NVIDIA GPU with 4 GB of memory or
-    more, or a Mac with 16 GB of memory or more;
-  - **Light**: 0.6B parameters (0.6 GB), everywhere else.
-
-  **Model** in Settings changes it.
+- **It needs** an NVIDIA GPU with 4 GB of memory or more on Windows, or an Apple-silicon Mac. Other
+  computers aren't supported yet: Typd installs but doesn't download its model.
+- The installer has no model in it. On first launch Typd downloads it once: 1.7B parameters, 2.2 GB,
+  plus NVIDIA's GPU libraries (337 MB) on Windows.
 - After that download, dictation works offline.
-- The installers are not signed by Apple or Microsoft yet: macOS wants **Open Anyway** in System
-  Settings, Windows shows a security warning (**Run**). The download page shows both steps.
+- The Mac app is signed and notarized. The Windows installer isn't signed yet, so Windows shows a
+  security warning (**Run**). The download page shows the steps.
 - **Language:** English. The model is trained on English dictation; while it writes, it is held to
   English or Turkish, so a short phrase never comes out in another language or script.
 
-## How accurate
+## How good is it
 
-The full model (P2g) against Wispr Flow (Pro). Word error rate on the words that carry meaning
-(case, punctuation and number style ignored); lower is better. Wispr Flow's outputs were never trained on.
+It's early. I judge it by reading what it writes on real speech, mostly my own, so I'm not
+publishing scores. It takes out most fillers and false starts, writes proper sentences, and lays out
+emails. It's still weak at long lists and bigger changes of mind, it sometimes drops a detail, and it
+gets names it hasn't seen wrong. More at
+[typd.mehmetdedeler.com/how-we-tested](https://typd.mehmetdedeler.com/how-we-tested/).
 
-| Test | Typd (P2g) | Wispr Flow |
-|---|---:|---:|
-| 70 real dictations, one speaker (the developer) | **4.2 %** | 6.1 % |
-| AASR-Bench: 407 English dictations full of self-corrections, synthetic voices | **8.7 %** | 8.75 % |
-| … AASR-Bench clips where real content was dropped | **4** | 6 |
-
-One speaker is a small sample, and on AASR-Bench the two are level. The light model scores 4.0 %
-and 9.1 % on the same two tests.
-
-Against local Whisper + LLM setups on the same laptop (RTX 3050 Ti, 4 GB): Whisper base, turbo or
-large-v3 followed by Qwen3.5 4B or 9B with OpenWhispr's cleanup prompt. Every one of them got more
-words wrong than Typd's full model on all four test sets (AASR-Bench: 13.0 % for the best of them),
-and took 2.5 to 36 s per dictation against Typd's 0.5 s: two models do not fit in 4 GB of GPU memory.
+If it gets something wrong for you, I'd really like to hear about it: please open an issue.
 
 ## What is here,
 
@@ -61,8 +49,8 @@ and took 2.5 to 36 s per dictation against Typd's 0.5 s: two models do not fit i
 `typd-dictate` is fine-tuned from [Qwen3-ASR](https://github.com/QwenLM/Qwen3-ASR) (Apache-2.0, Alibaba Cloud).
 It learned from openly licensed speech: Emilia-YODAS (CC BY 4.0), YODAS2, YODAS-Granary and YODAS (CC BY 3.0),
 NaturalVoices (CC BY and public-domain episodes only), Localized Narratives (CC BY 4.0), Common Voice Spontaneous
-Speech (CC0) and FLEURS (CC BY 4.0), plus, for the light model, AMI (CC BY 4.0), VoxPopuli (CC0) and
-DisfluencySpeech. Scripted practice dictations were voiced with 20 LibriTTS-R speakers (CC BY 4.0). The audio was
+Speech (CC0), FLEURS (CC BY 4.0), AMI (CC BY 4.0), VoxPopuli (CC0) and DisfluencySpeech. Some of these went only
+into earlier versions, or the light model older versions of Typd use. Scripted practice dictations were voiced with 20 LibriTTS-R speakers (CC BY 4.0). The audio was
 segmented, transcribed and given finished text, and used only to train the model; none of it is redistributed.
 Creators, links and licences: **[typd.mehmetdedeler.com/credits](https://typd.mehmetdedeler.com/credits/)**.
 
@@ -74,16 +62,15 @@ revise:   mic ─► typd-dictate, with the highlighted text and your spoken ins
 ```
 
 - **One model, not two.** `typd-dictate` is [Qwen3-ASR](https://github.com/QwenLM/Qwen3-ASR)
-  (Apache-2.0, 1.7B or 0.6B) fine-tuned to write what you meant rather than every word you said.
+  (Apache-2.0, 1.7B) fine-tuned to write what you meant rather than every word you said.
   It runs in [llama.cpp](https://github.com/ggml-org/llama.cpp)'s `llama-server`, started at launch
-  and kept resident, so no dictation waits for a load. It uses the GPU when it can (CUDA on Windows,
-  whose libraries are downloaded after the model on a PC with an NVIDIA GPU; Metal on a Mac) and
-  works on the CPU alone, more slowly.
-- **Long dictations arrive about as fast as short ones.** From about 20 seconds on, the full model
+  and kept resident, so no dictation waits for a load. It runs on the GPU (CUDA on Windows, whose
+  libraries are downloaded after the model; Metal on a Mac). The CPU is only a fallback, if the GPU
+  fails Typd's self-test, and it's much slower.
+- **Long dictations arrive about as fast as short ones.** From about 20 seconds on, the model
   starts writing while you are still talking.
-- **Low-memory mode.** With the light model, or on a computer with less than 8 GB of memory, the
-  model uses about 0.8 GB, with a small llama.cpp patch to its audio encoder
-  (`patches/llama.cpp/`, built by `scripts/build-mtmd.js`).
+- **Low-memory mode.** The light model, for older versions of Typd, uses about 0.8 GB, with a small
+  llama.cpp patch to its audio encoder (`patches/llama.cpp/`, built by `scripts/build-mtmd.js`).
 - **Revising** runs on the same local model when the model supports it (`"revise": true` in its
   `model.json`, with an optional LoRA adapter switched on for revise requests only). Otherwise it
   falls back to a cloud model (`src/main/pipeline/cleanup.js`, which needs `POOLSIDE_API_KEY`).
@@ -149,7 +136,7 @@ You need [Node.js](https://nodejs.org/) 24 and Git, on Windows 10/11 (x64) or ma
 
 ```bash
 npm ci
-node scripts/fetch-model.js --accept-license   # the full model, ~1.5 GB, into models/typd-dictate/ (read MODEL_LICENSE.txt first)
+node scripts/fetch-model.js --accept-license   # the full model, 2.2 GB, into models/typd-dictate/ (read MODEL_LICENSE.txt first)
 ```
 
 `fetch-model.js` downloads what a packaged Typd downloads for its model updates: it checks the

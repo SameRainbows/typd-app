@@ -38,7 +38,7 @@ const DEFAULTS = {
   // macOS only: keep the Dock icon while Typd runs. Off, Typd lives in the menu bar and the
   // Dock icon shows only while the Typd window is open (home-window.js, syncDock).
   showInDock: false,
-  // Which published model to follow (modelChoice.js): 'auto' (the hardware decides), 'full' or 'light'.
+  // Which published model to follow (modelChoice.js): 'auto' or 'full', the same model since 0.2.13.
   modelVariant: 'auto',
   // Ask before every model download. Off: downloads over 300 MB ask first only on a metered connection.
   askBeforeModelDownload: false,
@@ -54,7 +54,7 @@ const DEFAULTS = {
   macAppPaths: ''
 };
 
-const VARIANTS = ['auto', 'full', 'light'];
+const VARIANTS = ['auto', 'full'];
 const LOW_MEMORY = ['auto', 'on', 'off'];
 
 /** Two good choices, for anything that wants to suggest one: the default key and a chord. */

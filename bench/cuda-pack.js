@@ -8,7 +8,7 @@
  * model-choice code fed a fake nvidia-smi, a fake typd-collect (bench/fake-model-server.js), and a fake
  * CUDA backend (four "DLLs" of random bytes, packed by the real zip writer with Zstandard).
  *
- *   - a fresh profile on a PC with no NVIDIA GPU: the light model, and the CUDA pack is never fetched
+ *   - a fresh profile on a PC with no NVIDIA GPU: not supported yet, no model, and the CUDA pack is never fetched
  *   - fake NVIDIA hardware (4 GB), a fresh install: the full model, then the pack, unthrottled,
  *     checked, unpacked, every file checked against cuda.json, and only then the full model's one start,
  *     with the pack in place (0.2.6: never the full model on the processor while the GPU path is
@@ -210,21 +210,20 @@ const modelReqs = (s) => s.fileRequests().filter((q) => !q.url.includes('/' + PA
       withPack.cwd === path.join(p.packsDir, PACK) && withPack.env.Path === path.join(p.packsDir, PACK) + path.delimiter + 'C:\\Windows' && !('PATH' in withPack.env) && withPack.env.Other === '1', withPack);
   }
 
-  section('a fresh profile on a PC with no NVIDIA GPU: the light model, and the CUDA pack is never fetched');
+  section('a fresh profile on a PC with no NVIDIA GPU: not supported yet, no model, and the CUDA pack is never fetched');
   {
     publishAll(s);
     s.requests = [];
     const p = profile(s, { hw: 'none' });
-    p.u.start();
-    check('the light model is downloaded and switched to', await until(() => p.ev.some((e) => e.what === 'model')) && readJson(path.join(p.modelsDir, 'current.json')).version === 'light_a');
+    const first = await p.u.check();
+    check('no model is downloaded: "unsupported", nothing switched to', first.state === 'unsupported' && !exists(path.join(p.modelsDir, 'current.json')) && !p.ev.some((e) => e.what === 'model'), first);
     await p.u.check();
     await p.u.check();
     check('three checks later: not one request for the pack', packReqs(s).length === 0, s.fileRequests().map((q) => q.url));
-    check('only the light model\'s two files were fetched', modelReqs(s).length === 2 && modelReqs(s).every((q) => q.url.includes('/light_a/')), modelReqs(s).map((q) => q.url));
-    check('the pack is "unwanted"; no backend switch; nothing in userData/cuda but its state', p.u.packState === 'unwanted' && !p.ev.some((e) => e.what === 'backend') && (!exists(p.packsDir) || fs.readdirSync(p.packsDir).every((x) => x === 'state.json')));
+    check('no model file was fetched', modelReqs(s).length === 0, modelReqs(s).map((q) => q.url));
+    check('the pack is not wanted; no backend switch; nothing in userData/cuda but its state', ['idle', 'unwanted'].includes(p.u.packState) && !p.ev.some((e) => e.what === 'backend') && (!exists(p.packsDir) || fs.readdirSync(p.packsDir).every((x) => x === 'state.json')), p.u.packState);
     check('no pack line in the tray; Settings says no CUDA', p.u.packLine() === null && p.u.packInfo().cuda === 'missing', p.u.packInfo());
-    check('hardware: "No NVIDIA GPU" (Light, no CUDA)', (await p.choice.describe()).cuda === false && (await p.choice.describe()).auto === 'light');
-    p.u.stop();
+    check('hardware: "No NVIDIA GPU" (not supported yet, no CUDA)', (await p.choice.describe()).cuda === false && (await p.choice.describe()).auto === 'none');
   }
 
   // 0.2.6: never the full model on the processor while the GPU path is pending. With no model yet, the
@@ -375,7 +374,7 @@ const modelReqs = (s) => s.fileRequests().filter((q) => !q.url.includes('/' + PA
     s.requests = [];
     const q = profile(s, { hw: 'nvidia2' });
     await q.u.check();
-    check('a 2 GB card: the light model, no pack ("less than 4 GB")', readJson(path.join(q.modelsDir, 'current.json')).version === 'light_a' && packReqs(s).length === 0 && q.u.packState === 'unwanted' && /less than 4 GB/.test((await q.choice.describe()).cudaWhy));
+    check('a 2 GB card: not supported yet, no model, no pack ("less than 4 GB")', !exists(path.join(q.modelsDir, 'current.json')) && modelReqs(s).length === 0 && packReqs(s).length === 0 && ['idle', 'unwanted'].includes(q.u.packState) && /less than 4 GB/.test((await q.choice.describe()).cudaWhy), { ps: q.u.packState, d: await q.choice.describe() });
     publishAll(s, PACKZIP, { min_app: '9.0.0' });
     const r = profile(s, { hw: 'nvidia4', bundledModel: MODELS.full });
     await r.u.check();
@@ -411,6 +410,7 @@ const modelReqs = (s) => s.fileRequests().filter((q) => !q.url.includes('/' + PA
     const cpu = profile(s, { hw: 'none', bundledModel: MODELS.light, bundledCuda: DLLS });   // such a PC already moved to Light under 0.2.4
     s.requests = [];
     await cpu.u.check();
+    await cpu.cuda.prepare();   // 0.2.13: a computer with no model of its own stops before the pack, so its look at the files comes at the server's start
     check('the same on a PC without an NVIDIA GPU: kept, nothing downloaded or deleted', cpu.cuda.state() === 'bundled' && packReqs(s).length === 0 && exists(path.join(cpu.llamaDir, 'ggml-cuda.dll')));
   }
 

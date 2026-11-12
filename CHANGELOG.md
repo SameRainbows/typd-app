@@ -2,7 +2,9 @@
 
 ## 0.2.13 · November 2026
 
-- **New start and stop sounds.** Two soft notes that open out in stereo, in place of the old short blips. There is no third sound when the text lands: the text landing says it. Settings can still turn sounds off.
+- **One model.** Typd now runs its full 1.7B model on every supported computer: any Apple Silicon Mac, and PCs with an NVIDIA GPU of 4 GB or more. The lighter model is gone: a supported computer that had it moves to the full one. On other computers Typd can't stay fast yet, so a new install says so instead of downloading a model.
+- **A stuck repeat stops sooner.** In the rare case the model starts repeating itself, it now stops while writing, so the rest of what you said survives.
+- **New start and stop sounds.** Two soft notes that open out in stereo, in place of the old short blips. There is no sound when the text lands any more: the text landing says it. Settings can still turn sounds off.
 - **Macs: signed and notarized.** The download now opens with no warning. Because the signature is new, macOS asks once more for Microphone and Accessibility: if it keeps asking, remove Typd from those lists in System Settings and add it again.
 - **A smaller, calmer pill.** Still bars that only move up and down, no shadow. On a Mac it now sits at the bottom of the screen with any window in front, as it does over a full-screen app.
 - **Names, without a dictionary.** Typd notices the names and product words you keep writing and hears them better from then on. Home lists what it has learned, and you can remove any of them.

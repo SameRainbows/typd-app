@@ -251,7 +251,7 @@ function profile(s, over = {}) {
     const dead = createUpdater({ keys: KEYS, config: { endpoint: 'http://127.0.0.1:9', key: null }, modelsDir: path.join(tmp, 'dead', 'models'), bundledDir: path.join(tmp, 'dead', 'none'),
       appVersion: '0.2.5', switchModel: async () => {}, variant: () => 'full', offlinePollMs: 150 });
     r = await dead.check();
-    check('the server unreachable: the same "offline" state, the full model\'s estimate (1.6 GB)', r.state === 'retry' && dead.needed().state === 'offline' && dead.needed().size === '1.6 GB' && r.next === 1000, { r, n: dead.needed() });
+    check('the server unreachable: the same "offline" state, the full model\'s estimate (2.2 GB)', r.state === 'retry' && dead.needed().state === 'offline' && dead.needed().size === '2.2 GB' && r.next === 1000, { r, n: dead.needed() });
   }
 
   section('a metered connection: asked first');
@@ -349,7 +349,8 @@ function profile(s, over = {}) {
       retrying: [{ state: 'retrying', pct: 42, size: '611 MB', estimate: false }, 'Downloading the speech model — 42 %, paused'],
       ready: [{ state: 'ready', pct: 100, size: '611 MB' }, 'Getting the speech model ready…'],
       ask: [{ state: 'ask', size: '611 MB' }, 'Speech model needed (611 MB) — Download now'],
-      offline: [{ state: 'offline', size: '1.6 GB', estimate: true }, 'Speech model needed — connect to the internet'],
+      offline: [{ state: 'offline', size: '2.2 GB', estimate: true }, 'Speech model needed — connect to the internet'],
+      unsupported: [{ state: 'unsupported', size: '2.2 GB', estimate: true }, 'This computer isn’t supported yet'],
       space: [{ state: 'space', size: '611 MB' }, 'Speech model needs more disk space'],
       idle: [{ state: 'idle', size: '611 MB', estimate: true }, 'Getting the speech model…']
     };

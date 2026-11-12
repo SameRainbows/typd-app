@@ -54,6 +54,9 @@ function rules() {
   check('auto + the light model (397 MB decoder) on 32 GB: on', decide({ setting: 'auto', modelBytes: 396.7 * MB, totalMem: 32 * GB, env }).on === true);
   check('auto + the full model (1.1 GB decoder) on 16 GB: off', decide({ setting: 'auto', modelBytes: 1107 * MB, totalMem: 16 * GB, env }).on === false);
   check('auto + the full model on a 6 GB computer: on (memory)', decide({ setting: 'auto', modelBytes: 1107 * MB, totalMem: 6 * GB, env }).on === true);
+  check('auto + the full model on an 8 GB Mac: on', decide({ setting: 'auto', modelBytes: 1834 * MB, totalMem: 8 * GB, env, platform: 'darwin' }).on === true);
+  check('auto + the full model on a 16 GB Mac: off', decide({ setting: 'auto', modelBytes: 1834 * MB, totalMem: 16 * GB, env, platform: 'darwin' }).on === false);
+  check('auto + the full model on an 8 GB PC: off (~2.6 GB on the processor leaves room)', decide({ setting: 'auto', modelBytes: 1834 * MB, totalMem: 8 * GB, env, platform: 'win32' }).on === false);
   check('auto + the full model on an "8 GB" computer that reports 7.8 GiB: on', decide({ setting: 'auto', modelBytes: 1107 * MB, totalMem: 7.8 * GB, env }).on === true);
   check('auto + an unknown model (no file) on 16 GB: off', decide({ setting: 'auto', modelBytes: 0, totalMem: 16 * GB, env }).on === false);
   check('auto + a stand-in file of 1 byte (benches) on 16 GB: off', decide({ setting: 'auto', modelBytes: 1, totalMem: 16 * GB, env }).on === false);

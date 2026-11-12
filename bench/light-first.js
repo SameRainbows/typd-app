@@ -115,7 +115,7 @@ function profile(s, { hw = 'nvidia4', setting = 'auto', installed = null, bundle
     for (const [name, b] of Object.entries(m.files)) fs.writeFileSync(path.join(dir, name), b);
     fs.writeFileSync(path.join(dir, 'model.json'), JSON.stringify(m.model_json));
     fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify({ version: m.version, files: Object.entries(m.files).map(([name, b]) => ({ name, size: b.length, sha256: sha(b) })), model_json: m.model_json }));
-    fs.writeFileSync(path.join(modelsDir, 'current.json'), JSON.stringify({ version: m.version, previous: null, confirmed: true }));
+    fs.writeFileSync(path.join(modelsDir, 'current.json'), JSON.stringify({ version: m.version, previous: null, confirmed: true, variant: installed }));
   }
   const cuda = createCuda({ llamaDir, packsDir });
   const choice = choiceFor(hw, setting);
@@ -219,7 +219,7 @@ const backends = (p) => p.ev.filter((e) => e.what === 'backend');
     check('the next check: nothing to do', r2.state === 'current' && s.fileRequests().length === 0, { r2, reqs: s.fileRequests() });
   }
 
-  section('a first start of full + pack that fails: the pack set aside, then the light model (no full model on the processor)');
+  section('a first start of full + pack that fails: the pack set aside, the one model stays, on the processor (0.2.13)');
   {
     // A fast link: the full model and the pack start together; that start fails, the model alone starts.
     publishAll(s);
@@ -228,9 +228,9 @@ const backends = (p) => p.ev.filter((e) => e.what === 'backend');
     const q = profile(s, { switchModel: async () => { starts++; q.ev.push({ what: 'model', at: Date.now(), version: q.current().version, cuda: q.cuda.state() }); if (q.cuda.state() === 'installed') throw new Error('CUDA error: no kernel image'); } });
     await q.u.check();
     const vs = q.ev.map((e) => e.version + '/' + e.cuda);
-    check('first start of full + pack fails: the pack set aside, the full model started once on the processor, then the light one fetched and switched to',
-      vs[0] === 'full_a/installed' && vs[1] === 'full_a/missing' && q.current().version === 'light_a' && q.cuda.badTag() !== null && lightReqs(s).length === 2, { vs, cur: q.current() });
-    check('the full model then deleted (one downloaded version kept)', !exists(path.join(q.modelsDir, 'full_a')) && exists(path.join(q.modelsDir, 'light_a')), fs.readdirSync(q.modelsDir));
+    check('first start of full + pack fails: the pack set aside, the full model runs on the processor, and no light model is fetched',
+      vs[0] === 'full_a/installed' && vs[1] === 'full_a/missing' && q.current().version === 'full_a' && q.cuda.badTag() !== null && lightReqs(s).length === 0, { vs, cur: q.current() });
+    check('the full model stays', exists(path.join(q.modelsDir, 'full_a')) && !exists(path.join(q.modelsDir, 'light_a')), fs.readdirSync(q.modelsDir));
   }
 
   section('a metered connection: asked as today, nothing fetched without an OK, no light model');
@@ -263,7 +263,8 @@ const backends = (p) => p.ev.filter((e) => e.what === 'backend');
     s.requests = [];
     const b = profile(s, { hw: 'none', installed: 'light' });
     r = await b.u.check();
-    check('light model, no NVIDIA GPU: no file requested, no switch', r.state === 'current' && s.fileRequests().length === 0 && b.ev.length === 0, { r, reqs: s.fileRequests() });
+    check('an install left on the light model, no NVIDIA GPU (0.2.13): it stays, no file requested, no switch',
+      r.state === 'current' && s.fileRequests().length === 0 && b.ev.length === 0, { r, reqs: s.fileRequests().map((q) => q.url) });
     s.requests = [];
     const c = profile(s, { installed: 'full' });
     r = await c.u.check();
@@ -272,15 +273,15 @@ const backends = (p) => p.ev.filter((e) => e.what === 'backend');
     check('no light-first marker anywhere', !a.state().lightFirst && !b.state().lightFirst && !c.state().lightFirst);
   }
 
-  section('weak hardware (no NVIDIA GPU), slow link: the light model only, as before; a pin of Full: no light model');
+  section('no NVIDIA GPU: not supported yet, nothing downloaded; a pin of Full: the full model');
   {
     publishAll(s);
     s.requests = [];
     s.slow = 40;
     const p = profile(s, { hw: 'none' });
     let r = await p.u.check();
-    check('the light model, its two files, no full model, no pack, no timing', r.state === 'current' && p.current().version === 'light_a' && lightReqs(s).length === 2 && fullReqs(s).length === 0 && packReqs(s).length === 0 && !p.logs.some((l) => /light first/.test(l)), s.fileRequests().map((q) => q.url));
-    check('nothing stands in: no marker, no interim card', !p.state().lightFirst && p.u.interim() === null && p.u.packState === 'unwanted');
+    check('no model, no file, and needed() says why', r.state === 'unsupported' && !p.current() && s.fileRequests().length === 0 && p.u.needed().state === 'unsupported', { r, reqs: s.fileRequests().map((q) => q.url) });
+    check('nothing stands in: no marker, no interim card', !p.state().lightFirst && p.u.interim() === null);
     s.requests = [];
     const q = profile(s, { setting: 'full' });
     r = await q.u.check();

@@ -101,6 +101,9 @@
    * Names match the listening files (dictation-research data/typd_sounds_2026-11-07/v2/listen-*.wav).
    */
   var CUES = {
+    // The founder's pick (8 Nov). Its copy's delay, level and drift are its own, per cue.
+    'closer':     { family: 'bloom', tone: 'soft', start: ['G#4', 'C#5'], stop: ['G#4', 'D#4'], room: 0, at: 0.025, len: 0.44, tail: 0.012,
+                    bloomStart: { wet: 0.25, delay: 0.0385, depth: 0, rate: 0.8 }, bloomStop: { wet: 0.30, delay: 0.0315, depth: 0.001, rate: 0.8 } },
     'soft-A':     { family: 'bloom', tone: 'soft', start: ['A4', 'D5'], stop: ['A4', 'E4'], room: 0.07 },
     'soft-F':     { family: 'bloom', tone: 'soft', start: ['F4', 'A#4'], stop: ['F4', 'C4'], room: 0.07 },
     'softwood-A': { family: 'bloom', tone: 'softwood', start: ['A4', 'D5'], stop: ['A4', 'E4'], room: 0.07 },
@@ -109,10 +112,11 @@
   };
 
   function bloomCue(cue, which, sr) {
-    var n = Math.round(BLOOM.len * sr);
+    var len = cue.len || BLOOM.len;
+    var n = Math.round(len * sr);
     var mono = new Float32Array(n);
     var notes = cue[which].map(hz);
-    var at = BLOOM.at;
+    var at = cue.at || BLOOM.at;
     var gap = BLOOM.gap;
     var normal = rng(3);
     // The felt tick of each note (softwood): noise dying in 1.2 ms, smoothed over 8 samples.
@@ -146,7 +150,8 @@
       }
       mono[i] = y;
     }
-    return bloom(mono, sr, { wet: 0.20, delay: 0.032, depth: 0.0010, rate: 0.8 }, BLOOM.len);
+    var own = which === 'start' ? cue.bloomStart : cue.bloomStop;
+    return bloom(mono, sr, own || { wet: 0.20, delay: 0.032, depth: 0.0010, rate: 0.8 }, len, cue.tail);
   }
 
   /** The pluck: phase of a pitch settling from +cents with time constant `settle`; harmonics
@@ -208,7 +213,7 @@
    * left and taken from the right. The middle stays the dry note, so a note starts centred and opens up when
    * the copy arrives; on a mono speaker there is no echo at all.
    */
-  function bloom(mono, sr, o, len) {
+  function bloom(mono, sr, o, len, tail) {
     var n = mono.length;
     var left = new Float32Array(n);
     var right = new Float32Array(n);
@@ -226,7 +231,7 @@
       left[i] = mono[i] + o.wet * c;
       right[i] = mono[i] - o.wet * c;
     }
-    return finish(left, right, sr, len >= 0.5 ? 0.04 : 0.02);
+    return finish(left, right, sr, tail || (len >= 0.5 ? 0.04 : 0.02));
   }
 
   /** A squared fade over the last `tail` seconds, then both sides scaled so the louder peaks at 1. */

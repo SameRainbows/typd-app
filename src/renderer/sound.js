@@ -31,10 +31,10 @@
   var master = null;
   var enabled = true;
 
-  // The start/stop pair (sound-voices.js CUES), and how loud its peak plays: 0.11 is about -19 dBFS,
+  // The start/stop pair (sound-voices.js CUES), and how loud its peak plays: 0.125 is -18 dBFS,
   // the level of the cues it was chosen against.
-  var CUE = 'soft-A';
-  var CUE_PEAK = 0.11;
+  var CUE = 'closer';
+  var CUE_PEAK = 0.125;
   var buffers = {};
   var room = null;
 
@@ -102,21 +102,41 @@
    * straight to the output, with the cue's room through a ConvolverNode beside it. False when it can't
    * be (no sound-voices.js, no such cue, no audio): the caller plays the old tone instead.
    */
+  function cueBuffer(voices, c, which) {
+    var buf = buffers[which];
+    if (!buf) {
+      var r = voices.render(CUE, which, c.sampleRate);
+      if (!r) return null;
+      buf = c.createBuffer(2, r.left.length, c.sampleRate);
+      buf.copyToChannel(r.left, 0);
+      buf.copyToChannel(r.right, 1);
+      buffers[which] = buf;
+    }
+    return buf;
+  }
+
+  // Drawing a cue takes about 0.1 s, so draw both soon after the overlay loads rather than making the
+  // first start after launch that late. Plays nothing; if this fails, a cue draws itself when it first plays.
+  setTimeout(function () {
+    try {
+      var voices = window.typdVoices;
+      if (!voices || !voices.CUES[CUE]) return;
+      var c = ready();
+      if (!c) return;
+      cueBuffer(voices, c, 'start');
+      cueBuffer(voices, c, 'stop');
+      sleepAfter(0.05);
+    } catch { /* see above */ }
+  }, 1000);
+
   function playCue(which) {
     var voices = window.typdVoices;
     var spec = voices && voices.CUES[CUE];
     if (!spec) return false;
     var c = ready();
     if (!c) return true;   // sounds off or no audio device: nothing to fall back to either
-    var buf = buffers[which];
-    if (!buf) {
-      var r = voices.render(CUE, which, c.sampleRate);
-      if (!r) return false;
-      buf = c.createBuffer(2, r.left.length, c.sampleRate);
-      buf.copyToChannel(r.left, 0);
-      buf.copyToChannel(r.right, 1);
-      buffers[which] = buf;
-    }
+    var buf = cueBuffer(voices, c, which);
+    if (!buf) return false;
     var src = c.createBufferSource();
     src.buffer = buf;
     var level = c.createGain();

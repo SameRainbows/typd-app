@@ -163,6 +163,9 @@ function missing(mk) {
       return mk('download', 'Speech model needed (' + f.size + ') — Download now',
         'Typd needs to download its speech model once (' + f.size + '). This connection may be metered, so Typd waits for your OK.',
         { id: 'model-now', label: 'Download now' }, 'dim');
+    case 'unsupported':
+      return mk('download', 'This computer isn’t supported yet',
+        'Typd stays fast with an NVIDIA GPU of 4 GB or more, or an Apple Silicon Mac. Support for other computers is coming.', null, 'dim');
     case 'offline':
       return mk('download', 'Speech model needed — connect to the internet',
         'Typd needs to download its model once, ' + about + '; after that it works offline.', null, 'dim');

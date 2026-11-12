@@ -186,7 +186,7 @@ async function flow() {
   text = await collect(local.dictate(audio, 16000, null, system, 200));
   reqs = fake.requests.slice(n);
   check('no term in the text: one request, its body as before (plus the language guard, bench/lang-guard.js)', text === said && reqs.length === 1 &&
-    Object.keys(reqs[0].body).join(',') === 'messages,temperature,cache_prompt,grammar,stream,max_tokens', reqs.map((r) => Object.keys(r.body).join(',')));
+    Object.keys(reqs[0].body).join(',') === 'messages,temperature,cache_prompt,dry_multiplier,dry_base,dry_allowed_length,grammar,stream,max_tokens', reqs.map((r) => Object.keys(r.body).join(',')));
 
   // A server that does not give probabilities (an older build): the text is kept as written.
   said = "Let's get the release for Aysel ready and I'll send it to him.";

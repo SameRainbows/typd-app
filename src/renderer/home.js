@@ -499,9 +499,8 @@
 
   /* ------------------------------------------------------------ the model */
 
-  // Which published model this computer follows (Automatic / Full / Light), why Automatic picked
-  // what it picked, and a big download waiting for Update now / Later (modelUpdate.js). Shown only
-  // where model updates are followed (every installed Typd).
+  // Where the one model runs on this computer, and a big download waiting for Update now / Later
+  // (modelUpdate.js). Shown only where model updates are followed (every installed Typd).
   var M = null;
 
   function loadModel() {
@@ -511,20 +510,15 @@
     }).catch(function () {});
   }
 
-  function variantName(v) { return v === 'light' ? 'Light' : 'Full'; }
-
   function renderModel() {
     var on = Boolean(M && M.following);
     $('modelRow').hidden = !on;
     $('askRow').hidden = !on;
     if (!on) return;
     var m = S.platform.machine;
-    $('modelVariant').value = M.setting || 'auto';
-    $('modelVariant').options[0].textContent = 'Automatic (' + variantName(M.auto) + ')';
-    var help = 'Automatic picks ' + variantName(M.auto) + ' on this ' + m + (M.why ? ': ' + M.why + '.' : '.');
-    var c = M.chosen;
-    if (c && c.want && c.got && c.want !== c.got) help += ' ' + variantName(c.want) + ' is not published yet, so Typd uses ' + variantName(c.got) + '.';
-    $('modelHelp').textContent = help + ' Full is the most accurate; Light is smaller and faster without a strong GPU.';
+    $('modelHelp').textContent = M.auto === 'none'
+      ? 'Typd stays fast with an NVIDIA GPU of 4 GB or more, or an Apple Silicon Mac. This ' + m + (M.why ? ': ' + M.why : '') + '. Support for other computers is coming.'
+      : 'The 1.7B dictation model' + (M.why ? ' on this ' + m + ': ' + M.why + '.' : '.');
     // The CUDA pack (Windows on the GPU path): its line under the model's while it downloads or waits.
     var pk = M.pack && M.pack.line ? M.pack.line : '';
     $('modelNowLine').textContent = (M.line || '') + (pk ? ' · ' + pk : '');
@@ -549,7 +543,7 @@
     var now = S.settings.lowMemoryNow;
     $('lowMemory').options[0].textContent = now ? 'Automatic (' + (now.on ? 'on' : 'off') + ')' : 'Automatic';
     var help = 'Uses about half the memory, with the same accuracy. Long dictations are written in shorter pieces, and you can revise up to ~250 words at a time.';
-    if (s === 'auto') help += ' Automatic turns it on for the Light model and on computers with less than 8 GB of memory' + (now && now.why ? ' (now: ' + now.why + ').' : '.');
+    if (s === 'auto') help += ' Automatic turns it on where memory is short' + (now && now.why ? ' (now: ' + now.why + ').' : '.');
     $('lowMemoryHelp').textContent = help;
   }
 
@@ -597,15 +591,6 @@
     });
   });
 
-  $('modelVariant').addEventListener('change', function (e) {
-    var v = e.target.value;
-    api.settings.set('modelVariant', v).then(function (ok) {
-      if (!ok) { failSettings("Couldn't change the model."); loadModel(); return; }
-      S.settings.modelVariant = v;
-      toast(v === 'auto' ? 'Typd picks the model for this ' + S.platform.machine : variantName(v) + ' model chosen. Typd switches when it is ready');
-      setTimeout(loadModel, 400);
-    });
-  });
   $('lowMemory').addEventListener('change', function (e) {
     var v = e.target.value;
     api.settings.set('lowMemory', v).then(function (ok) {
@@ -1181,7 +1166,7 @@
     function renderModel() {
       var n = S.needed, box = $('walkModel');
       // Steps 2 and 3: the practice box's hint follows the model (a pasted result's ✓ line stays).
-      if ((step === 2 || step === 3) && !$('walkHint').classList.contains('ok-line')) hint(n ? WAIT_HINT : stepHint);
+      if ((step === 2 || step === 3) && !$('walkHint').classList.contains('ok-line')) hint(n ? (n.state === 'unsupported' ? '' : WAIT_HINT) : stepHint);
       $('walkModelNow').hidden = true;
       $('walkBar').hidden = true;
       box.classList.remove('done');
@@ -1192,6 +1177,10 @@
       }
       hadNeed = true;
       box.hidden = false;
+      if (n.state === 'unsupported') {
+        $('walkModelText').textContent = 'This computer isn’t supported yet: Typd stays fast with an NVIDIA GPU of 4 GB or more, or an Apple Silicon Mac. Support for other computers is coming.';
+        return;
+      }
       var about = (n.estimate ? 'about ' : '') + n.size, text;
       var bar = function () {
         $('walkBar').hidden = false;

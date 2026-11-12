@@ -218,7 +218,8 @@ async function bodyTests() {
   let b = since(n);
   check('a dictation: one request with the grammar, the body otherwise as before (no opening, temperature 0, cached prompt, streamed, its budget)',
     b.length === 1 && b[0].grammar === G.open && !opening(b[0]) &&
-    JSON.stringify(Object.keys(b[0])) === JSON.stringify(['messages', 'temperature', 'cache_prompt', 'grammar', 'stream', 'max_tokens']) &&
+    JSON.stringify(Object.keys(b[0])) === JSON.stringify(['messages', 'temperature', 'cache_prompt', 'dry_multiplier', 'dry_base', 'dry_allowed_length', 'grammar', 'stream', 'max_tokens']) &&
+    b[0].dry_multiplier === 0.8 && b[0].dry_base === 1.75 && b[0].dry_allowed_length === 5 &&
     b[0].temperature === 0 && b[0].cache_prompt === true && b[0].stream === true && b[0].max_tokens === 200, b.map((x) => Object.keys(x)));
   check('its text without the tag', text === 'the quick brown', text);
 

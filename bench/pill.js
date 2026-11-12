@@ -446,7 +446,8 @@ async function pageChecks(exe, notes) {
     let hits = await lastHits();
     let b = await boxes();
     check('listening: two areas reported', Array.isArray(hits) && hits.length === 2, hits);
-    const covers = (h, bx) => h.x <= bx.x && h.y <= bx.y && h.x + h.w >= bx.x + bx.w && h.y + h.h >= bx.y + bx.h && h.w <= bx.w + 12 && h.h <= bx.h + 12;
+    // The page rounds the area outward to whole pixels (floor, ceil), so it can be up to a pixel over 12 on a button of a fractional size.
+    const covers = (h, bx) => h.x <= bx.x && h.y <= bx.y && h.x + h.w >= bx.x + bx.w && h.y + h.h >= bx.y + bx.h && h.w <= bx.w + 13 && h.h <= bx.h + 13;
     check('each area covers its button (19.2 px, padded 6) and no more', hits && hits.length === 2 && covers(hits[0], b[0]) && covers(hits[1], b[1]) && b[0].w >= 19, { hits, b });
     const hitReports = (await named('hitAreas')).length;
     await sleep(300);

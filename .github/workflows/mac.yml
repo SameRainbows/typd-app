@@ -134,6 +134,12 @@ jobs:
         continue-on-error: true
         run: node bench/copy-popup.js
 
+      - name: Bench, the pill and its sounds (informational)
+        # 0.2.13: the page in a headless Chrome (where the bars sit, the click gate, the cues), and every
+        # start and stop cue rendered and played through sound.js with a stand-in AudioContext.
+        continue-on-error: true
+        run: node bench/sounds.js && node bench/pill.js
+
       - name: Download the dictation model (signed manifest, sha256 of every file)
         run: |
           set -o pipefail

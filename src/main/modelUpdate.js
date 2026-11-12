@@ -148,8 +148,8 @@ const NEED_BACKOFF_MAX_MS = 120e3;
 const NEED_EVERY_MS = 15 * 60e3;         // a check that found nothing to download (no manifest, refused)
 const OFFLINE_POLL_MS = 15e3;
 // What the first download is about, before the manifest says exactly: the live versions' sizes
-// (r24_1p7b_rev128 with its mmproj and adapter: 1,602,588,192 B; light_soup_r20kd: 611,092,960 B).
-const EXPECTED_BYTES = { full: 1.6e9, light: 611e6 };
+// (the 1.7B at Q8_0 with its mmproj: about 2.19 GB; light_soup_r20kd, for an old install: 611,092,960 B).
+const EXPECTED_BYTES = { full: 2.2e9, light: 611e6 };
 
 /* ------------------------------------------------------------ on-disk layout */
 
@@ -885,6 +885,8 @@ function createUpdater({
     let want = 'full';
     try { want = String((await variant()) || 'full'); } catch { want = 'full'; }
     if (chosen.want !== want) { chosen = { want, got: chosen.got }; changed(); }
+    // No model for this computer yet (hardware.js, 0.2.13): nothing is fetched, and a model an older Typd left stays.
+    if (want === 'none') return set(needed ? 'unsupported' : 'current');
     packHurry = await packMissing();
     const soon = needed || packHurry;
     if (!online()) {
@@ -932,25 +934,13 @@ function createUpdater({
   }
 
   /**
-   * The variant to follow, from `want` (variant()): Automatic's 'full' becomes 'light' on a machine whose
-   * CUDA pack was set aside under this manifest (`tag`): the full model is too slow on the processor.
+   * The variant to follow, from `want` (variant()). Until 0.2.13 Automatic's 'full' became 'light' on a
+   * machine whose CUDA pack was set aside; now such a machine keeps the one model, on the processor.
    */
-  let asideLogged = null;
   let asideTag = null;            // wantHere turned 'full' into 'light' under this manifest: that light model is fetched unthrottled
-  async function wantHere(want, tag) {
+  async function wantHere(want) {
     asideTag = null;
-    if (want !== 'full' || !cuda || !cuda.id || !cuda.packsDir) return want;
-    let auto = false;
-    try { auto = Boolean(await automatic()); } catch { auto = false; }
-    if (!auto) return want;
-    await cuda.prepare();
-    if (cuda.have() || cuda.badTag() === null || cuda.badTag() !== tag) return want;
-    let wanted = false;
-    try { wanted = Boolean(await cudaWanted()); } catch { wanted = false; }
-    if (!wanted) return want;
-    if (asideLogged !== tag) { asideLogged = tag; log('Automatic: the light model, not the full one: the CUDA pack was set aside, and the full model is too slow on the processor'); }
-    asideTag = tag;
-    return 'light';
+    return want;
   }
 
   /**
@@ -1087,8 +1077,8 @@ function createUpdater({
       }
       // Only the model the hardware picks (0.2.9): never the light one as a stand-in, however slow the
       // link. Unthrottled: the first model, the full model while a light one from 0.2.6-0.2.8 still stands
-      // in, and the light one replacing a full model left on the processor (the CUDA pack set aside).
-      await fetchVersion(e, tag, { hurry: standingIn(active) || (got === 'light' && asideTag === tag) });
+      // in, and the one model replacing a light one an older Typd left (0.2.13).
+      await fetchVersion(e, tag, { hurry: standingIn(active) || lightRunning(active) });
     } else {
       notePhase({ outcome: 'downloading', what: 'model', version: e.version });
     }
@@ -1098,7 +1088,7 @@ function createUpdater({
       if (pack) {
         firstPack = true;
         // 'installed': activate() starts the two together; 'ask': the full model on the processor meanwhile;
-        // 'failed' (set aside): the full model on the processor, and Automatic then goes to the light one.
+        // 'failed' (set aside): the full model on the processor.
         if ((await packBeforeFull(pack, tag)) === 'failed') return { ...(await activate(e.version, tag, e.version, want, { variant: got })), more: true };
       }
     }
