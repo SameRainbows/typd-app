@@ -10,6 +10,10 @@
  * cuda.json must name the pack the app fetches instead; otherwise every file cuda.json names is there.
  * With TYPD_TESTER_CONFIG=<path to a tester.json>, ship it as <resources>/tester.json,
  * which makes a tester build (src/main/sharing.js); without it, make sure there is none.
+ * Every platform: refuse an app that hands another program a path inside app.asar, which only
+ * Electron can read -- the paste helper inject.ps1 must be a real file where inject.js looks for
+ * it, and no script or native code may be left in the archive (scripts/packaged-paths.js). Up to
+ * 0.2.11 no packaged Windows install ever pasted, because the first did not hold.
  *
  * macOS:
  *  1. llama-server must be built for the architecture being packaged.
@@ -87,7 +91,15 @@ function signArgs(env = process.env) {
   if (!id) return { args: ['--sign', '-'], label: 'ad hoc' };
   if (!/^[0-9A-Fa-f]{40}$/.test(id)) throw new Error('TYPD_MAC_SIGN_IDENTITY must be the certificate\'s SHA-1 (40 hex digits)');
   const kc = (env.TYPD_MAC_SIGN_KEYCHAIN || '').trim();
-  return { args: ['--sign', id, '--timestamp=none', ...(kc ? ['--keychain', kc] : [])], label: 'with Typd\'s certificate ' + id.slice(0, 8) };
+  // Developer ID (TYPD_MAC_SIGN_DEVID=1, scripts/mac-signing-import.sh): the hardened runtime and Apple's
+  // timestamp on every piece, which notarization requires. The self-signed certificate: neither, as before.
+  const devid = env.TYPD_MAC_SIGN_DEVID === '1';
+  const how = devid ? ['--timestamp', '--options', 'runtime'] : ['--timestamp=none'];
+  return {
+    args: ['--sign', id, ...how, ...(kc ? ['--keychain', kc] : [])],
+    label: (devid ? 'with the Developer ID certificate ' : 'with Typd\'s certificate ') + id.slice(0, 8),
+    devid
+  };
 }
 
 /**
@@ -169,6 +181,22 @@ async function afterPack(context) {
     }
   }
 
+  // --- every platform: the microphone helper (0.2.12, scripts/build-mic.js) -----------------
+  // Typd falls back to Chromium's capture without it, so a build missing it would still dictate, just
+  // slower to start; refused all the same, so it can never be left out by accident.
+  const micHelper = path.join(resources, 'mic', mac ? 'typd-mic' : 'typd-mic.exe');
+  if (!fs.existsSync(micHelper) || fs.statSync(micHelper).size === 0) {
+    throw new Error(`Packaged app is missing the microphone helper ${micHelper}: run node scripts/build-mic.js ${mac ? 'mac ' + arch : 'win'}`);
+  }
+  console.log(`  • typd: microphone helper ${path.basename(micHelper)} (${fs.statSync(micHelper).size} B)`);
+
+  // --- every platform: nothing another program opens is inside app.asar ---------------------
+  // The paths come from the shipping code's own resolvers and are checked with this plain Node's fs,
+  // which, like PowerShell, cannot see into the archive. See scripts/packaged-paths.js.
+  const paths = require('./packaged-paths').checkApp({ resources, platform: mac ? 'darwin' : 'win32' });
+  if (paths.problems.length) throw new Error('Packaged app hands another program a path inside app.asar:\n  - ' + paths.problems.join('\n  - '));
+  for (const n of paths.notes) console.log(`  • typd: ${n}`);
+
   // --- tester builds: TYPD_TESTER_CONFIG names a tester.json to ship ---------------------
   // Only <resources>/tester.json makes a tester build (src/main/sharing.js), so an ordinary
   // build (variable unset) is a public build: it shares with no tester's key (on by default,
@@ -194,6 +222,11 @@ async function afterPack(context) {
   if (!m.fat && CPU[arch] && m.cpu !== CPU[arch]) {
     throw new Error(`${server} is not built for ${arch} (cpu type 0x${m.cpu.toString(16)}); run node scripts/fetch-llama-mac.js ${arch}`);
   }
+  const mm = machOMagic(micHelper);
+  if (!mm) throw new Error(`${micHelper} is not a Mach-O binary`);
+  if (!mm.fat && CPU[arch] && mm.cpu !== CPU[arch]) {
+    throw new Error(`${micHelper} is not built for ${arch} (cpu type 0x${mm.cpu.toString(16)}); run node scripts/build-mic.js mac ${arch}`);
+  }
 
   const machos = walk(resources).filter((f) => machOMagic(f));
   for (const f of machos) fs.chmodSync(f, 0o755);
@@ -210,17 +243,44 @@ async function afterPack(context) {
   // Extended attributes (quarantine, Finder info) make codesign refuse the bundle.
   try { run('xattr', ['-cr', app]); } catch { /* nothing to clear */ }
   const how = signArgs();
-  for (const f of machos) run('codesign', ['--force', ...how.args, f]);
+  // The microphone helper like the app's own helpers: Typd's identity, the audio-input entitlement, and
+  // an identifier of its own (its embedded Info.plist carries the app's NSMicrophoneUsageDescription).
+  // macOS attributes its microphone use to Typd, the app responsible for it, whose switch it uses.
+  for (const f of machos) {
+    if (f === micHelper) run('codesign', ['--force', ...how.args, '--identifier', 'ai.typd.app.mic', ...entitlementArgs(), f]);
+    else run('codesign', ['--force', ...how.args, f]);
+  }
+  // Developer ID: notarization checks every Mach-O, and --deep leaves the loose ones inside the frameworks
+  // with the signatures they came with (Apple refused 0.2.12's trial over Electron Framework's
+  // Libraries/libffmpeg.dylib and libvk_swiftshader.dylib and Squirrel's Resources/ShipIt: no Developer
+  // ID, no timestamp, no hardened runtime). The hardened runtime's library validation also wants every
+  // library Typd loads signed by its own team. So each one is signed here first, like those in Resources;
+  // the bundles' own executables are left to --deep below.
+  const bundleMain = (f) => {
+    const p = f.split(path.sep).join('/');
+    return /\.app\/Contents\/MacOS\/[^/]+$/.test(p) || /\/([^/]+)\.framework\/Versions\/[^/]+\/\1$/.test(p);
+  };
+  const frameworkLoose = how.devid ? walk(path.join(app, 'Contents', 'Frameworks')).filter((f) => machOMagic(f) && !bundleMain(f)) : [];
+  for (const f of frameworkLoose) run('codesign', ['--force', ...how.args, f]);
+  if (frameworkLoose.length) console.log(`  • typd: ${frameworkLoose.length} loose Mach-O files in Frameworks signed: ${frameworkLoose.map((f) => path.basename(f)).join(', ')}`);
   // The bundle and, through --deep, its helpers and frameworks: with the microphone entitlement. Still
   // no hardened runtime (no --options runtime): see scripts/mac-entitlements.plist.
   run('codesign', ['--force', '--deep', ...how.args, ...entitlementArgs(), app]);
   run('codesign', ['--verify', '--deep', '--strict', app]);
   const dr = designatedRequirement(app);
   const id = (process.env.TYPD_MAC_SIGN_IDENTITY || '').trim().toLowerCase();
-  if (id && !(dr && dr.toLowerCase().includes(id) && dr.includes('identifier "ai.typd.app"'))) {
+  if (how.devid) {
+    // Developer ID: Apple's requirement form (anchor apple generic, the Team ID), and the hardened runtime on.
+    const team = (process.env.TYPD_MAC_TEAM_ID || '').trim();
+    if (!(dr && dr.includes('anchor apple generic') && dr.includes('identifier "ai.typd.app"') && (!team || dr.includes(team)))) {
+      throw new Error(`signed with the Developer ID certificate, but the designated requirement is ${dr}`);
+    }
+    const flags = require('child_process').spawnSync('codesign', ['-dv', app], { encoding: 'utf8' });
+    if (!/flags=0x[0-9a-f]+\(runtime\)/.test((flags.stdout || '') + (flags.stderr || ''))) throw new Error('the app is not signed with the hardened runtime');
+  } else if (id && !(dr && dr.toLowerCase().includes(id) && dr.includes('identifier "ai.typd.app"'))) {
     throw new Error(`signed with ${id}, but the designated requirement is ${dr}`);
   }
-  console.log(`  • typd: signed ${path.basename(app)} ${how.label} (${machos.length} loose Mach-O files + bundle), signature verifies`);
+  console.log(`  • typd: signed ${path.basename(app)} ${how.label} (${machos.length + frameworkLoose.length} loose Mach-O files + bundle), signature verifies`);
   console.log(`  • typd: designated requirement: ${dr}`);
 }
 

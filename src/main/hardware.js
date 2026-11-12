@@ -1,18 +1,17 @@
 'use strict';
 
 /**
- * Which dictation model fits this computer: 'full' (the 1.7B) or 'light' (the 0.6B). The model
- * updater follows the published manifest's variant of that name (modelUpdate.js); Settings can pin
- * either one instead of Automatic (settings.modelVariant).
+ * Whether this computer gets the dictation model. Since 0.2.13 there is one model, the 1.7B (founder, 8 Nov
+ * 2026), and one bar: any dictation's text within 3 seconds. On a GPU it clears that (209 of the founder's
+ * dictations: worst 2.4 s, also at 2+ minutes); on the processor it does not (12 s of speech takes ~6 s,
+ * 72 s ~36 s). So:
  *
  *   full    an NVIDIA GPU with at least FULL_VRAM_MIB of memory in all (Windows, where llama.cpp runs
  *           on CUDA -- since 0.2.5 through the CUDA pack, downloaded after the model: cuda() below), or
- *           Apple Silicon with at least 16 GB of memory (the arm64 build, where llama.cpp runs on Metal
- *           and shares that memory)
- *   light   anything else: no NVIDIA GPU (an AMD or Intel GPU means the CPU, since Typd's Windows
+ *           any Apple Silicon Mac (the arm64 build: llama.cpp runs on Metal and shares its memory)
+ *   none    anything else, for now: no NVIDIA GPU (an AMD or Intel GPU means the CPU, since Typd's Windows
  *           llama.cpp is the CPU build plus, on the GPU path, CUDA), a smaller NVIDIA card, an Intel Mac
- *           or the x64 build under Rosetta (llama.cpp on the CPU there), an 8 GB Mac. The full model on
- *           the processor alone is too slow to dictate with, so Automatic never picks it there.
+ *           or the x64 build under Rosetta. No model is downloaded; a model an older Typd left stays.
  *
  * Total VRAM, not free. The 1.7B model with its mmproj and the revise adapter holds ~1.8 GB on the
  * GPU. Free memory is a snapshot that moves with whatever else runs, and it already excludes the
@@ -37,7 +36,6 @@ const path = require('path');
 const { execFile } = require('child_process');
 
 const FULL_VRAM_MIB = 3584;                  // 3.5 GiB of VRAM in all
-const FULL_MAC_BYTES = 15.5 * 1024 ** 3;     // a 16 GB Mac reports 17,179,869,184 bytes
 const NVIDIA = 0x10de, AMD = 0x1002, INTEL = 0x8086, APPLE = 0x106b;
 const TIMEOUT_MS = 8000;
 
@@ -125,17 +123,14 @@ async function detect({ platform = process.platform, arch = process.arch, run = 
 const gib = (bytes) => Math.round(bytes / 1024 ** 3);
 
 /**
- * {variant: 'full'|'light', why}: `why` is one line for Settings ("NVIDIA GeForce RTX 3060, 6 GB").
+ * {variant: 'full'|'none', why}: `why` is one line for Settings ("NVIDIA GeForce RTX 3060, 6 GB").
  */
 function pick(hw) {
-  if (!hw) return { variant: 'light', why: 'This computer could not be checked' };
+  if (!hw) return { variant: 'full', why: 'This computer could not be checked' };
   if (hw.platform === 'darwin') {
-    if (hw.arch !== 'arm64') return { variant: 'light', why: 'An Intel Mac (the model runs on the processor)' };
-    if (!hw.memBytes) return { variant: 'light', why: 'This Mac’s memory could not be read' };
-    const gb = gib(hw.memBytes);
-    return hw.memBytes >= FULL_MAC_BYTES
-      ? { variant: 'full', why: `Apple silicon with ${gb} GB of memory` }
-      : { variant: 'light', why: `Apple silicon with ${gb} GB of memory (Full needs 16 GB)` };
+    if (hw.arch !== 'arm64') return { variant: 'none', why: 'An Intel Mac' };
+    if (!hw.memBytes) return { variant: 'full', why: 'Apple silicon' };
+    return { variant: 'full', why: `Apple silicon with ${gib(hw.memBytes)} GB of memory` };
   }
   const g = hw.nvidia;
   if (g) {
@@ -143,19 +138,18 @@ function pick(hw) {
     const size = (Number.isInteger(gb) ? gb : gb.toFixed(1)) + ' GB';
     return g.totalMiB >= FULL_VRAM_MIB
       ? { variant: 'full', why: `${g.name}, ${size}` }
-      : { variant: 'light', why: `${g.name}, ${size} (Full needs a 4 GB NVIDIA GPU)` };
+      : { variant: 'none', why: `${g.name}, ${size}` };
   }
   // No nvidia-smi answer: either no NVIDIA card (AMD, Intel or none: the CUDA build runs on the
   // processor), or one without its driver, which CUDA needs too.
-  if ((hw.vendors || []).includes('nvidia')) return { variant: 'light', why: 'An NVIDIA GPU without its driver tools (the model runs on the processor)' };
-  return { variant: 'light', why: 'No NVIDIA GPU (the model runs on the processor)' };
+  if ((hw.vendors || []).includes('nvidia')) return { variant: 'none', why: 'An NVIDIA GPU without its driver tools' };
+  return { variant: 'none', why: 'No NVIDIA GPU' };
 }
 
 /**
  * The GPU path on Windows: {cuda: boolean, why}. True for an NVIDIA GPU nvidia-smi reports with at
- * least FULL_VRAM_MIB of memory in all -- the bar the full model has, so a PC that gets Full gets
- * llama.cpp's CUDA backend with it, and one that gets Light runs on the processor (where the light
- * model is quick enough, and a 2-3 GB card has little room left beside the desktop). Since 0.2.5 the
+ * least FULL_VRAM_MIB of memory in all: the model fits there. Any other PC runs it on the processor (a
+ * 2-3 GB card has too little room beside the desktop). Since 0.2.5 the
  * public installer has no CUDA in it: a PC on the GPU path downloads the CUDA pack after its model
  * (cudaPack.js, modelUpdate.js). macOS never: Metal is in the app on Apple silicon.
  */
@@ -167,4 +161,4 @@ function cuda(hw) {
   return { cuda: true, why: g.name };
 }
 
-module.exports = { detect, pick, cuda, parseNvidiaSmi, probeNvidia, probeMacMemory, vendorsOf, nvidiaSmiPaths, runFile, FULL_VRAM_MIB, FULL_MAC_BYTES };
+module.exports = { detect, pick, cuda, parseNvidiaSmi, probeNvidia, probeMacMemory, vendorsOf, nvidiaSmiPaths, runFile, FULL_VRAM_MIB };

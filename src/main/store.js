@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { cleanKept } = require('./kept');
 
 /**
  * History: what you dictated, on this machine only, and the counts Home shows.
@@ -10,8 +11,17 @@ const crypto = require('crypto');
  * One file, history.json, beside settings.json and dictionary.json:
  *
  *   { v: 2, keep: '30d' | 'forever' | 'off',
- *     items: [{ id, at, mode, text, words, seconds, waitMs, app, outcome }],   oldest first
+ *     items: [{ id, at, mode, text, words, seconds, waitMs, app, outcome,      oldest first
+ *               model?, variant?, kept? }],
  *     days:  { 'YYYY-MM-DD': { n, words, seconds, typedSeconds } } }          counts only
+ *
+ * The three marked ? arrive with 0.2.13 and are absent on older items (still v 2: an older Typd
+ * reads the file as before, and drops them only from the items it rewrites):
+ *   model     the model version that wrote it (pipeline/local.modelVersion: p2g_1p7b, ...)
+ *   variant   'full' (1.7B) | 'light' (0.6B)
+ *   kept      what happened to it in the minute after the paste (kept.js): {v: kept | edited |
+ *             deleted | redone | unknown, ...counts}, written by annotate() when the watch ends.
+ *             An edit's changed words (at most 8 pairs) are the only text in it.
  *
  * An item is what landed in your document and nothing else. The screen context, the
  * highlighted span and window titles are other people's words or private detail, and
@@ -45,6 +55,24 @@ function dayKey(ms) {
 /** What an hour of dictation would have cost to type, minus what it cost to say. */
 function typedSeconds(words) {
   return (words / TYPING_WPM) * 60;
+}
+
+/**
+ * Home's "kept as pasted" line: of this week's dictations whose fate was seen (kept.js; unknown
+ * ones are left out), how many stayed exactly as pasted, for all and for each model size.
+ * {n, kept, full: {n, kept}, light: {n, kept}}; n is 0 when nothing was measured.
+ */
+function keptWeek(items, week) {
+  const out = { n: 0, kept: 0, full: { n: 0, kept: 0 }, light: { n: 0, kept: 0 } };
+  for (const it of items) {
+    if (it.mode !== 'dictate' || !it.kept || it.kept.v === 'unknown' || !week.has(dayKey(Date.parse(it.at)))) continue;
+    const kept = it.kept.v === 'kept' ? 1 : 0;
+    out.n++;
+    out.kept += kept;
+    const v = out[it.variant];
+    if (v) { v.n++; v.kept += kept; }
+  }
+  return out;
 }
 
 /**
@@ -105,7 +133,7 @@ function createStore({ file, now = () => Date.now() }) {
     if (!s || typeof s !== 'object') return null;
     const text = typeof s.text === 'string' ? s.text.slice(0, 100000) : '';
     const at = typeof s.at === 'string' && !Number.isNaN(Date.parse(s.at)) ? s.at : new Date(now()).toISOString();
-    return {
+    const item = {
       id: typeof s.id === 'string' && /^[0-9TZ-]{8,24}-[0-9a-f]{4}$/.test(s.id) ? s.id : makeId(Date.parse(at)),
       at,
       mode: s.mode === 'revise' ? 'revise' : 'dictate',
@@ -116,6 +144,12 @@ function createStore({ file, now = () => Date.now() }) {
       app: typeof s.app === 'string' && s.app ? s.app.slice(0, 64) : null,
       outcome: s.outcome === 'copied' ? 'copied' : 'pasted'
     };
+    // 0.2.13's fields, only when there (older items stay as they were).
+    if (typeof s.model === 'string' && /^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/.test(s.model)) item.model = s.model;
+    if (s.variant === 'full' || s.variant === 'light') item.variant = s.variant;
+    const k = cleanKept(s.kept);
+    if (k) item.kept = k;
+    return item;
   }
 
   function makeId(ms) {
@@ -182,6 +216,20 @@ function createStore({ file, now = () => Date.now() }) {
       return load().items.find((s) => s.id === id) || null;
     },
 
+    /**
+     * What happened to a dictation after its paste (kept.js), added to its item when the watch ends.
+     * False when the item is gone (deleted, history off) or the verdict is not one.
+     */
+    annotate(id, { kept } = {}) {
+      const d = load();
+      const item = d.items.find((s) => s.id === id);
+      const k = cleanKept(kept);
+      if (!item || !k) return false;
+      item.kept = k;
+      save();
+      return true;
+    },
+
     remove(id) {
       const d = load();
       const i = d.items.findIndex((s) => s.id === id);
@@ -236,7 +284,7 @@ function createStore({ file, now = () => Date.now() }) {
       const week = new Set();
       for (let i = 0; i < 7; i++) week.add(dayKey(now() - i * 86400000));
       const weekWords = days.filter(([k]) => week.has(k)).reduce((n, [, v]) => n + (v.words || 0), 0);
-      return { dictations: total, weekWords, savedSeconds: Math.round(saved), typingWpm: TYPING_WPM };
+      return { dictations: total, weekWords, savedSeconds: Math.round(saved), typingWpm: TYPING_WPM, kept: keptWeek(d.items, week) };
     },
 
     /** For tests: forget the cache. */

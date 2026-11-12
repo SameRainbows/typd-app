@@ -4,10 +4,9 @@
  * Which published model this machine follows -- the `variant` modelUpdate.js asks for at each check:
  * Settings' Model choice (settings.modelVariant), and for Automatic, hardware.js's pick:
  *
- *   'auto'    'full' on a CUDA GPU with 3.5 GB of VRAM or more, or Apple silicon with 16 GB of
- *             memory or more; 'light' on anything else (hardware.js says why)
- *   'full'    the 1.7B, whatever the hardware
- *   'light'   the 0.6B, whatever the hardware
+ *   'auto'    since 0.2.13 the 1.7B where it clears the 3-second bar, else 'none' (hardware.js)
+ *   'full'    the 1.7B, whatever the hardware (no switch in Settings: the file, for testing)
+ * A setting of 'light' from before 0.2.13 counts as 'auto'.
  *
  * The hardware is read at most once every CACHE_MS (a check runs every 6 hours, so in practice once
  * per check), and again at once after forget() -- Settings opening, the choice changing.
@@ -17,7 +16,7 @@
 const hardware = require('./hardware');
 
 const CACHE_MS = 30 * 60e3;
-const CHOICES = ['auto', 'full', 'light'];
+const CHOICES = ['auto', 'full'];
 
 function createChoice({ setting = () => 'auto', detect = () => hardware.detect(), now = () => Date.now() } = {}) {
   let cache = null;   // {at, hw, variant, why}
@@ -36,7 +35,7 @@ function createChoice({ setting = () => 'auto', detect = () => hardware.detect()
     return CHOICES.includes(s) ? s : 'auto';
   };
 
-  /** 'full' | 'light': what the next model check follows. */
+  /** 'full' | 'none': what the next model check follows. */
   async function variant() {
     const s = chosen();
     if (s !== 'auto') return s;

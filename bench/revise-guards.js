@@ -8,12 +8,19 @@
  *      reports/dogfood_audit_2026-10-16.md: 6 no-ops, the instruction pasted over the text, two
  *      silent deletions), rebuilt on synthetic text, are refused; the presses that worked, and
  *      the ordinary kinds of revision, pass.
- *   2. eval/revise_gold.jsonl (in ../dictation-research, when present): every reference result
- *      passes -- the 12 whose reference is the selection unchanged get the "nothing changed" note,
- *      which leaves the selection as the reference does.
+ *      A result the model left unchanged (or next to it) whose words said are the selection's new
+ *      text -- a misheard word or a sentence said again -- is replaced by those words
+ *      (guards.replacement; dictation-research reports/revise_no_difference_2026-10-31.md, on
+ *      invented text in the shapes of the user's presses); an instruction, a question, a reaction or
+ *      fillers still get "nothing changed".
+ *   2. eval/revise_gold.jsonl (in ../dictation-research or TYPD_RESEARCH, when present): every
+ *      reference result passes -- the 12 whose reference is the selection unchanged get the "nothing
+ *      changed" note, which leaves the selection as the reference does -- and none of its 160 spoken
+ *      instructions (scripted, and as Whisper heard them) is taken for new text.
  *   3. Through run() with a fake model: the 'refused' event and its message, the instruction
- *      transcribed only when the result alone cannot decide, the local log (no selection text in
- *      it); selections up to 6,000 characters, an output budget that grows with them, a span
+ *      transcribed only when the result alone cannot decide (an unchanged one now always asks), a
+ *      re-dictation pasted as "done" marked replaced, the local log (no selection text in it, and
+ *      never a replacement's words); selections up to 6,000 characters, an output budget that grows with them, a span
  *      whose tokens do not fit refused up front, and an answer cut off by the budget never pasted.
  *
  *   node bench/revise-guards.js
@@ -92,7 +99,9 @@ const CASES = [
   ['"Make it simpler": one paragraph break added, nothing else (#27)', TRIP, 'Make it simpler.', TRIP.replace('. On the other hand', '.\n\nOn the other hand'), 'noop'],
   ['"Make it more formalized and understandable": a letter and two marks (#26)', TRIP, 'Make it more formalized and understandable.',
     TRIP.replace('direction,', 'direction?').replace('Anyway,', 'Anyway.').replace('twenty', 'twentye'), 'noop'],
-  ['a replacement word over one word, returned unchanged (#23)', 'cook test', 'Smoke test', 'cook test', 'noop'],
+  // A re-dictation, not an instruction: the model hands the selection back, the words said replace it
+  // (2026-10-31, reports/revise_no_difference_2026-10-31.md). Before, "nothing changed".
+  ['a replacement word over one word, returned unchanged (#23): the words said replace it', 'cook test', 'Smoke test', 'cook test', 'replace:Smoke test'],
   ['the instruction pasted over the selection (#28)', TRIP, "I said I'm going to bed multiple times, get rid of it and keep it once.",
     "I said I'm going to bed multiple times, get rid of it and keep it once.", 'echo'],
   ['"Format the stuff I listed as a list": the last 43 % gone (#40)', STATUS, 'Format the stuff I listed as a list.', firstShare(STATUS, 0.57), 'deleted'],
@@ -119,6 +128,33 @@ const CASES = [
   ['"make it a table": fewer words, the same facts', SHARES, 'make this a table',
     '| testers | use |\n|---|---|\n| 40 % | every day |\n| 25 % | a few times a week |\n| rest | tried it once |', 'pass'],
   ['"bold the second bullet" on plain text: unchanged, the "nothing changed" note', 'Two eggs and some milk.', 'bold the second bullet point', 'Two eggs and some milk.', 'noop'],
+  // -- the model handed the selection back: a re-dictation replaces it, anything else is "nothing changed"
+  //    (the shapes of the user's real presses, reports/revise_no_difference_2026-10-31.md, on invented text) --
+  ['a misheard word re-said: in mid-sentence, no capital and no full stop', 'roughages', 'Rough edges.', 'roughages', 'replace:rough edges'],
+  ['a misheard name re-said', 'Gragle', 'Kaggle.', 'Gragle', 'replace:Kaggle'],
+  ['an address re-said', 'type.typedotmehmetodilr.com', 'typd.mehmetdedeler.com', 'type.typedotmehmetodilr.com', 'replace:typd.mehmetdedeler.com'],
+  ['a sentence re-said a little otherwise', 'We should stay with the old router for now.', "Let's stay with the new router for now.", 'We should stay with the old router for now.',
+    "replace:Let's stay with the new router for now."],
+  ['one sentence of two re-said: only that one replaced', 'We should stay with the old router for now. I asked another shop.', "Let's stay with the new router for now.",
+    'We should stay with the old router for now. I asked another shop.', "replace:Let's stay with the new router for now. I asked another shop."],
+  ['a re-dictation that opens like a request, nearly word for word', 'Make sure the test pass before merging.', 'Make sure the tests pass before merging.',
+    'Make sure the test pass before merging.', 'replace:Make sure the tests pass before merging.'],
+  ['talking at length over a short selection: a dictation that replaces it', 'and the agents grade them blind.',
+    'Is this to check whether the gold examples are really gold, and whether the agents did a good job grading them?', 'and the agents grade them blind.',
+    'replace:Is this to check whether the gold examples are really gold, and whether the agents did a good job grading them?'],
+  ['a small change already the way of the words said: the model\'s text kept, not the hearing\'s', 'And Sam asked for seeing some numbers. Show him.',
+    "Sam asked for seeing some numbers. Let's show him.", "And Sam asked for seeing some numbers. Let's show him.", 'pass'],
+  ['a small change the other way (the words said ignored): replaced', 'We should stay with the old router for now. I asked another shop.',
+    "Let's stay with the new router for now.", "We should stay with the old router for now. I've asked another shop.",
+    "replace:Let's stay with the new router for now. I asked another shop."],
+  ['an instruction that names words of the selection: not a replacement', 'The meeting is on Tuesday at noon.', 'Change Tuesday to Wednesday.', 'The meeting is on Tuesday at noon.', 'noop'],
+  ['"make it more clear", unchanged: not a replacement', TRIP, 'Make it more clear.', TRIP, 'noop'],
+  ['a question to the assistant over a short selection: not a replacement', 'See you Sunday!', 'What is the capital of Peru?', 'See you Sunday!', 'noop'],
+  ['a reaction ("Wait.") over a word: not a replacement', 'start', 'Wait.', 'start', 'noop'],
+  ['the words heard are the selection\'s own (a copy of the context): still "nothing changed", never "done"', 'We should stay with the old router for now.',
+    'We should stay with the old router for now.', 'We should stay with the old router for now.', 'noop'],
+  ['fillers alone: not a replacement', 'Quiet hours: 11pm to 7am.', 'Uh, so, the, the um.', 'Quiet hours: 11pm to 7am.', 'noop'],
+  ['"make it more clear" with one word changed in 76: still "nothing changed"', TRIP, 'Make it more clear.', TRIP.replace('the whole way', 'all the whole way'), 'noop'],
   // -- the real model on long selections (results/revise_long_check.log, 2026-10-17), rebuilt --
   ['"clean up the grammar" over ~1,000 words came back as one line (pasted in the first round)', LONG, 'uh can you clean up the grammar',
     'Sure, here is the text with the grammar cleaned up.', 'short'],
@@ -135,24 +171,35 @@ function unitTests() {
   let caught = 0, wrongly = 0, failuresN = 0, goodN = 0;
   for (const [name, span, instruction, result, want] of CASES) {
     const v = guards.verdict(span, result, instruction);
-    const got = v.refuse ? v.reason : 'pass';
+    const got = v.refuse ? v.reason : v.replace ? 'replace:' + v.replace : 'pass';
     check(`${name}  -> ${got}${v.kind ? ' (' + v.kind + ')' : ''}`, got === want, v);
-    if (want !== 'pass' && !(want === 'noop' && span === result && /bold/.test(instruction))) { failuresN++; if (got === want) caught++; }
+    if (want !== 'pass' && !want.startsWith('replace:') && !(want === 'noop' && span === result && /bold/.test(instruction))) { failuresN++; if (got === want) caught++; }
     if (want === 'pass') { goodN++; if (got !== 'pass') wrongly++; }
   }
   console.log(`  failures refused: ${caught}/${failuresN}; good revisions refused: ${wrongly}/${goodN}`);
-  // The result alone settles identity and emptiness; nothing is transcribed for them.
-  check('identical or empty: settled without the instruction', guards.check(TRIP, TRIP).verdict === 'refuse' && guards.check(TRIP, '').verdict === 'refuse');
+  // The result alone settles emptiness. Identity needs the words said: a re-dictation replaces the
+  // selection, an instruction gets the "nothing changed" note.
+  check('empty: settled without the instruction', guards.check(TRIP, '').verdict === 'refuse');
+  check('identical: the instruction is asked for', guards.check(TRIP, TRIP).verdict === 'ask' && guards.check(TRIP, TRIP).reason === 'noop');
+  check('identical, instruction not heard: "nothing changed", as before', guards.verdict(TRIP, TRIP, null).reason === 'noop');
   check('a rewrite of about the same length passes without the instruction (no extra decode)', guards.check(TRIP, FORMAL).verdict === 'pass');
   check('a much shorter one needs the instruction first ("compact" may; "list" may not)', guards.check(TRIP, CASES[10][3]).verdict === 'ask');
   check('without the instruction (it could not be transcribed), a suspicious result is pasted', guards.verdict(STATUS, firstShare(STATUS, 0.57), null).refuse === false);
   check('...but one under 40 % of the selection is not: nothing said it may be that short', guards.verdict(LONG, 'Sure, here it is.', null).reason === 'short');
+  // A replacement's names, as the dictionary spells them (never a common word, never far off).
+  const TERMS = ['mehmetdedeler.com', 'Kaggle', 'Colab', 'Modal', 'Dedeler'];
+  check('respell: "contact@mehmetadeler.com" with "mehmetdedeler.com" in the dictionary -> its spelling',
+    guards.respell('contact@mehmetadeler.com', TERMS) === 'contact@mehmetdedeler.com', guards.respell('contact@mehmetadeler.com', TERMS));
+  check('respell: "Kagle" -> "Kaggle", "Collab" -> "Colab"; "model" (common) and "dealer" (common) kept',
+    guards.respell('Kagle and Collab, the model, a dealer', TERMS) === 'Kaggle and Colab, the model, a dealer', guards.respell('Kagle and Collab, the model, a dealer', TERMS));
   check('a sentence or two may shrink under 40 % (revise_gold "make me sound more confident")',
     guards.verdict('Hi, I was just wondering if you could maybe look at my draft at some point?', 'Please review my draft.', 'uh make me sound more confident').refuse === false);
 }
 
 function goldSweep() {
-  const gold = path.join(__dirname, '..', '..', 'dictation-research', 'eval', 'revise_gold.jsonl');
+  // ../dictation-research beside the checkout, or TYPD_RESEARCH (a worktree elsewhere).
+  const research = process.env.TYPD_RESEARCH || path.join(__dirname, '..', '..', 'dictation-research');
+  const gold = path.join(research, 'eval', 'revise_gold.jsonl');
   section('2. eval/revise_gold.jsonl: every reference passes');
   if (!fs.existsSync(gold)) { console.log('  (skipped: ../dictation-research is not here)'); return; }
   const rows = fs.readFileSync(gold, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
@@ -164,6 +211,15 @@ function goldSweep() {
     else refused.push([g.id, g.kind, v.reason, g.spoken]);
   }
   check(`${rows.length} references: none refused (${unchanged.length} unchanged by design get the "nothing changed" note)`, refused.length === 0, refused);
+  // Every spoken instruction is an instruction: none would replace its selection if the model handed it
+  // back -- as scripted, and as Whisper heard the synthetic audio (results/revise_heard_instructions.json).
+  const heardFile = path.join(path.dirname(gold), '..', 'results', 'revise_heard_instructions.json');
+  const heard = fs.existsSync(heardFile) ? JSON.parse(fs.readFileSync(heardFile, 'utf8')) : {};
+  const replaced = [];
+  for (const g of rows) {
+    for (const said of [g.spoken, heard[g.id]]) if (said && guards.replacement(g.span, said)) replaced.push([g.id, said]);
+  }
+  check(`${rows.length} instructions (scripted${Object.keys(heard).length ? ' and as heard' : ''}): none taken for the selection's new text`, replaced.length === 0, replaced);
 }
 
 /* ------------------------------------------------------------- 3. through run() */
@@ -206,13 +262,34 @@ async function throughRun() {
   const run = (span) => events(pipeline.run({ mode: 'revise', audio, span, signal: null, contextBlock: null }));
   const reqsSince = (n) => fake.requests.slice(n).map((r) => (/^Revise/.test(r.system) ? 'revise' : 'instruction'));
 
-  // Identical: refused at once, no instruction needed.
+  // Identical, an instruction said: refused, after hearing the instruction.
   reviseOut = STATUS; instruction = 'Clean this up.';
   let n = fake.requests.length;
   let ev = await run('  ' + STATUS + '\n');
   let last = ev[ev.length - 1];
-  check('unchanged: a "refused" event, "nothing changed", no paste', last.type === 'refused' && last.reason === 'noop' && last.message === "Couldn't revise that — nothing changed" && !ev.some((e) => e.type === 'done'), last);
-  check('unchanged: one request (the result alone decides)', JSON.stringify(reqsSince(n)) === '["revise"]', reqsSince(n));
+  check('unchanged: a "refused" event, "nothing changed", no paste', last.type === 'refused' && last.reason === 'noop' && last.message === "Didn't change it — try saying it another way" && !ev.some((e) => e.type === 'done'), last);
+  check('unchanged: two requests, the revise and the instruction (a re-dictation would replace it)', JSON.stringify(reqsSince(n)) === '["revise","instruction"]', reqsSince(n));
+
+  // Identical, the selection said again a little otherwise: the words said replace it.
+  const SAID = 'This week we applied to the research credits program at the university and to the startup program at the cloud provider.';
+  const SAID_AGAIN = 'This week we applied to the research credit program at the university, and to the startup program of the cloud provider.';
+  reviseOut = SAID; instruction = SAID_AGAIN;
+  n = fake.requests.length;
+  ev = await run(' ' + SAID + '\n');
+  last = ev[ev.length - 1];
+  check('unchanged, a re-dictation said: "done" with the words said, the selection\'s own spaces around them, marked replaced',
+    last.type === 'done' && last.text === ' ' + SAID_AGAIN + '\n' && last.replaced === true && !ev.some((e) => e.type === 'refused'), last);
+  check('a re-dictation: two requests (the revise, then the words heard on the base model)', JSON.stringify(reqsSince(n)) === '["revise","instruction"]', reqsSince(n));
+  // A misheard word re-said: in mid-sentence, without the dictation's capital and full stop.
+  reviseOut = 'roughages'; instruction = 'Rough edges.';
+  ev = await run('roughages ');
+  last = ev[ev.length - 1];
+  check('a misheard word re-said over it: replaced by "rough edges" (no capital, no full stop, its trailing space kept)', last.type === 'done' && last.text === 'rough edges ' && last.replaced === true, last);
+  // A question to the assistant over a short selection is not a replacement.
+  reviseOut = 'See you Sunday!'; instruction = 'What is the capital of Peru?';
+  ev = await run('See you Sunday!');
+  last = ev[ev.length - 1];
+  check('unchanged, a question said over a short selection: "nothing changed", not pasted', last.type === 'refused' && last.reason === 'noop', last);
 
   // A cut: the instruction is transcribed, then the result refused and offered on the clipboard.
   reviseOut = firstShare(STATUS, 0.57); instruction = 'Format the stuff I listed as a list.';
@@ -251,9 +328,10 @@ async function throughRun() {
 
   // The log: one line a refusal, never the selection.
   const log = fs.readFileSync(process.env.TYPD_GUARD_LOG, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
-  check(`the local log: ${log.length} lines, one per refusal, reasons and sizes, the instruction when heard`, log.length === 3 &&
-    log.map((e) => e.reason).join(',') === 'noop,deleted,echo' && log[1].instruction === 'Format the stuff I listed as a list.' && log[1].spanChars === STATUS.length, log);
-  check('the log holds no selection text', !fs.readFileSync(process.env.TYPD_GUARD_LOG, 'utf8').includes('research credits program'));
+  check(`the local log: ${log.length} lines, one per refusal or replacement, reasons and sizes, the instruction when heard`, log.length === 6 &&
+    log.map((e) => e.reason).join(',') === 'noop,replaced,replaced,noop,deleted,echo' && log[4].instruction === 'Format the stuff I listed as a list.' && log[4].spanChars === STATUS.length, log);
+  const logText = fs.readFileSync(process.env.TYPD_GUARD_LOG, 'utf8');
+  check('the log holds no selection text, and never the words of a replacement', !logText.includes('research credit') && !logText.includes('rough') && log[1].instruction === null);
 
   section('   longer selections (4,096-token window)');
   // 6,000 characters: accepted; the budget grows with the span, within the window.

@@ -179,7 +179,10 @@ async function run(aApp, pkgDir) {
   const identity = (process.env.TYPD_MAC_SIGN_IDENTITY || '').toLowerCase();
   console.log(`designated requirements:\n  A (installed) ${drA}\n  B (package)   ${drB}\n  C (package)   ${drC}`);
   check('A, B and C (three builds) have the same designated requirement', Boolean(drA) && drA === drB && drA === drC, { drA, drB, drC });
-  if (identity) {
+  if (identity && process.env.TYPD_MAC_SIGN_DEVID === '1') {
+    const team = process.env.TYPD_MAC_TEAM_ID || '';
+    check('... naming ai.typd.app, Apple\'s anchor and the Developer ID Team ID', Boolean(drA) && drA.includes('identifier "ai.typd.app"') && drA.includes('anchor apple generic') && Boolean(team) && drA.includes(team), drA);
+  } else if (identity) {
     const want = JSON.parse(fs.readFileSync(path.join(ROOT, 'scripts', 'mac-signing.json'), 'utf8')).sha1;
     check(`... naming ai.typd.app and Typd's certificate (${want.slice(0, 8)}, scripts/mac-signing.json)`,
       Boolean(drA) && drA.includes('identifier "ai.typd.app"') && drA.toLowerCase().includes(want) && identity === want, drA);

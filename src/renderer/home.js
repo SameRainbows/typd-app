@@ -174,6 +174,14 @@
     $('cSaved').textContent = (c.savedSeconds >= 60 ? '≈ ' : '') + minutes(c.savedSeconds);
     $('cSavedL').textContent = 'saved vs typing at ' + c.typingWpm + ' wpm';
     $('countsNote').hidden = c.dictations > 0;
+    renderKept(c.kept);
+  }
+
+  /* "Kept as is this week: 78% of 50" (0.2.13; kept-line.js words it). */
+  function renderKept(k) {
+    var text = window.typdKeptLine ? window.typdKeptLine(k) : '';
+    $('keptLine').textContent = text;
+    $('keptLine').hidden = !text;
   }
 
   function renderTip() {
@@ -244,6 +252,9 @@
     var meta = el('div', 'entry-meta');
     if (s.mode === 'revise') meta.appendChild(el('span', 'tag', 'Revised'));
     if (s.outcome === 'copied') meta.appendChild(el('span', 'tag', 'Copied, not pasted'));
+    // What happened after the paste (kept.js): only when it was not kept as is.
+    var after = window.typdKeptTag ? window.typdKeptTag(s.kept) : '';
+    if (after) meta.appendChild(el('span', 'tag', after));
     if (s.app) meta.appendChild(el('span', null, cap(s.app)));
     meta.appendChild(el('span', null, s.words + (s.words === 1 ? ' word' : ' words')));
     body.appendChild(meta);
@@ -343,7 +354,8 @@
       row.appendChild(el('span', 'word-term', e.term));
       var heard = (e.heardAs || []).filter(Boolean);
       row.appendChild(el('span', 'word-heard', heard.length ? 'heard as ' + heard.map(function (h) { return '“' + h + '”'; }).join(', ') : ''));
-      row.appendChild(el('span', 'word-meta', (e.source === 'auto' ? 'Learned' : 'Added') + (e.addedAt ? ' · ' + shortDate(e.addedAt) : '')));
+      // 'auto': learned from a correction; 'used': a name seen where you work, then heard in what you said
+      row.appendChild(el('span', 'word-meta', (e.source === 'auto' ? 'Learned' : e.source === 'used' ? 'Learned from use' : 'Added') + (e.addedAt ? ' · ' + shortDate(e.addedAt) : '')));
       var x = el('button', 'word-remove', '×');
       x.type = 'button';
       x.title = 'Remove “' + e.term + '”';
@@ -487,9 +499,8 @@
 
   /* ------------------------------------------------------------ the model */
 
-  // Which published model this computer follows (Automatic / Full / Light), why Automatic picked
-  // what it picked, and a big download waiting for Update now / Later (modelUpdate.js). Shown only
-  // where model updates are followed (every installed Typd).
+  // Where the one model runs on this computer, and a big download waiting for Update now / Later
+  // (modelUpdate.js). Shown only where model updates are followed (every installed Typd).
   var M = null;
 
   function loadModel() {
@@ -499,20 +510,15 @@
     }).catch(function () {});
   }
 
-  function variantName(v) { return v === 'light' ? 'Light' : 'Full'; }
-
   function renderModel() {
     var on = Boolean(M && M.following);
     $('modelRow').hidden = !on;
     $('askRow').hidden = !on;
     if (!on) return;
     var m = S.platform.machine;
-    $('modelVariant').value = M.setting || 'auto';
-    $('modelVariant').options[0].textContent = 'Automatic (' + variantName(M.auto) + ')';
-    var help = 'Automatic picks ' + variantName(M.auto) + ' on this ' + m + (M.why ? ': ' + M.why + '.' : '.');
-    var c = M.chosen;
-    if (c && c.want && c.got && c.want !== c.got) help += ' ' + variantName(c.want) + ' is not published yet, so Typd uses ' + variantName(c.got) + '.';
-    $('modelHelp').textContent = help + ' Full is the most accurate; Light is smaller and faster without a strong GPU.';
+    $('modelHelp').textContent = M.auto === 'none'
+      ? 'Typd stays fast with an NVIDIA GPU of 4 GB or more, or an Apple Silicon Mac. This ' + m + (M.why ? ': ' + M.why : '') + '. Support for other computers is coming.'
+      : 'The 1.7B dictation model' + (M.why ? ' on this ' + m + ': ' + M.why + '.' : '.');
     // The CUDA pack (Windows on the GPU path): its line under the model's while it downloads or waits.
     var pk = M.pack && M.pack.line ? M.pack.line : '';
     $('modelNowLine').textContent = (M.line || '') + (pk ? ' · ' + pk : '');
@@ -537,7 +543,7 @@
     var now = S.settings.lowMemoryNow;
     $('lowMemory').options[0].textContent = now ? 'Automatic (' + (now.on ? 'on' : 'off') + ')' : 'Automatic';
     var help = 'Uses about half the memory, with the same accuracy. Long dictations are written in shorter pieces, and you can revise up to ~250 words at a time.';
-    if (s === 'auto') help += ' Automatic turns it on for the Light model and on computers with less than 8 GB of memory' + (now && now.why ? ' (now: ' + now.why + ').' : '.');
+    if (s === 'auto') help += ' Automatic turns it on where memory is short' + (now && now.why ? ' (now: ' + now.why + ').' : '.');
     $('lowMemoryHelp').textContent = help;
   }
 
@@ -545,8 +551,18 @@
 
   // Under the version: Check for updates, its answer in words, and Restart now when a new Typd is ready.
   var scrollToUpdates = false;   // opened by "Check for updates": bring the answer into view once it shows
+  // A check can answer in a tenth of a second, and an answer that reads like the last one then looks like
+  // a click that did nothing (six clicks in two seconds, 2026-10-30). So "Checking…" stays up for a moment.
+  var UPDATES_HOLD_MS = 700;
+  var updatesHoldUntil = 0, updatesHeld = null;
   function renderUpdates(u) {
     if (!u) return;
+    if (u.checking) updatesHeld = null;   // a newer check is under way: an answer held back is stale
+    if (!u.checking && Date.now() < updatesHoldUntil) {
+      if (!updatesHeld) setTimeout(function () { var h = updatesHeld; updatesHeld = null; renderUpdates(h); }, updatesHoldUntil - Date.now() + 10);
+      updatesHeld = u;
+      return;
+    }
     $('updatesBox').hidden = !u.enabled;
     if (scrollToUpdates && u.enabled) { scrollToUpdates = false; $('updatesBox').scrollIntoView({ block: 'center' }); }
     $('aboutLine').textContent = u.versions || $('aboutLine').textContent;
@@ -560,6 +576,7 @@
     api.updates.get().then(renderUpdates).catch(function () {});
   }
   $('updatesCheck').addEventListener('click', function () {
+    updatesHoldUntil = Date.now() + UPDATES_HOLD_MS;
     $('updatesCheck').disabled = true;
     $('updatesCheck').textContent = 'Checking…';
     $('updatesLine').textContent = 'Checking for updates…';
@@ -574,15 +591,6 @@
     });
   });
 
-  $('modelVariant').addEventListener('change', function (e) {
-    var v = e.target.value;
-    api.settings.set('modelVariant', v).then(function (ok) {
-      if (!ok) { failSettings("Couldn't change the model."); loadModel(); return; }
-      S.settings.modelVariant = v;
-      toast(v === 'auto' ? 'Typd picks the model for this ' + S.platform.machine : variantName(v) + ' model chosen. Typd switches when it is ready');
-      setTimeout(loadModel, 400);
-    });
-  });
   $('lowMemory').addEventListener('change', function (e) {
     var v = e.target.value;
     api.settings.set('lowMemory', v).then(function (ok) {
@@ -885,17 +893,22 @@
     if (!Object.keys(hk.held).length) { hk.nonMod = false; hk.fakeCtrl = false; }
   }
 
+  // A side button is taken on its release, not its press: binding it arms the injector's
+  // hook at once, and a hook armed mid-press would get only the release (inject.ps1).
   function onMouseDown(e) {
     if (e.button === 3 || e.button === 4) {
       e.preventDefault();
-      submit(e.button === 3 ? 'Mouse4' : 'Mouse5');
     } else if (e.button === 1) {
       e.preventDefault();
       submit('Mouse3');
     }
   }
   // Side buttons also mean Back/Forward to the page; never let them act here while listening.
-  function onMouseUp(e) { if (hk.mode === 'capture' && (e.button === 3 || e.button === 4)) e.preventDefault(); }
+  function onMouseUp(e) {
+    if (hk.mode !== 'capture' || (e.button !== 3 && e.button !== 4)) return;
+    e.preventDefault();
+    submit(e.button === 3 ? 'Mouse4' : 'Mouse5');
+  }
 
   function listenKeys(on) {
     var fn = on ? 'addEventListener' : 'removeEventListener';
@@ -1153,7 +1166,7 @@
     function renderModel() {
       var n = S.needed, box = $('walkModel');
       // Steps 2 and 3: the practice box's hint follows the model (a pasted result's ✓ line stays).
-      if ((step === 2 || step === 3) && !$('walkHint').classList.contains('ok-line')) hint(n ? WAIT_HINT : stepHint);
+      if ((step === 2 || step === 3) && !$('walkHint').classList.contains('ok-line')) hint(n ? (n.state === 'unsupported' ? '' : WAIT_HINT) : stepHint);
       $('walkModelNow').hidden = true;
       $('walkBar').hidden = true;
       box.classList.remove('done');
@@ -1164,6 +1177,10 @@
       }
       hadNeed = true;
       box.hidden = false;
+      if (n.state === 'unsupported') {
+        $('walkModelText').textContent = 'This computer isn’t supported yet: Typd stays fast with an NVIDIA GPU of 4 GB or more, or an Apple Silicon Mac. Support for other computers is coming.';
+        return;
+      }
       var about = (n.estimate ? 'about ' : '') + n.size, text;
       var bar = function () {
         $('walkBar').hidden = false;

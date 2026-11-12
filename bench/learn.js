@@ -30,7 +30,13 @@ const BUILT_IN = {
     ['Then I tried type less for a week.', 'Then I tried Typeless for a week.', 'Typeless'],
     ['My site is Mehmet Azdar dot com for now.', 'My site is Mehmet Dedeler dot com for now.', 'Dedeler'],
     ['We ran the job on cable last night.', 'We ran the job on Kaggle last night.', 'Kaggle'],
-    ['Ask Nebulous about the credits.', 'Ask Nebius about the credits.', 'Nebius']
+    ['Ask Nebulous about the credits.', 'Ask Nebius about the credits.', 'Nebius'],
+    // the founder's own fixes (dictation-research reports/names_learning_2026-10-31.md)
+    ["Why doesn't Kodexi@browser?", "Why doesn't Codex see @browser?", 'Codex'],
+    ['I stumbled upon your HackedTime profile. I am building a Tari app myself, so I wasn\'t really interested in it at first.',
+      'I stumbled upon your Hackatime profile. I am building a Tauri app myself, so I was really interested in it at first.', 'Hackatime'],
+    ['a subdomain, like applyai.mehmetazdar.com or simply Typd.mehmetazdar.com, so that we could apply.',
+      'a subdomain, like applyai.mehmetdedeler.com or simply Typd.mehmetdedeler.com, so that we could apply.', 'mehmetdedeler.com']
   ],
   edits: [
     ['The whole team agreed on the plan.', 'The entire team agreed on the plan.'],

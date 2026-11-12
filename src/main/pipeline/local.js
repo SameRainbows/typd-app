@@ -8,6 +8,7 @@ const { spawn } = require('child_process');
 const { activeModel, versionOf } = require('../modelUpdate');
 const long = require('./long');
 const vocab = require('./vocab');
+const echo = require('./echo');   // the dictionary line copied into an answer (0.2.13)
 const lowMemoryRule = require('../lowMemory');
 
 /**
@@ -695,6 +696,24 @@ async function* decodeOne(samples, sr, signal, system, maxTokens, opts = {}) {
     yield t;
   }
   if (signal && signal.aborted) return;
+  // The dictionary line copied into the answer, or far more words than anyone says in that time
+  // (echo.js; seen on the names replay with a 46-term line): written once more without the line, and
+  // echo.choose() keeps the first when the second is as long (the list was said), else the second
+  // when sound, else the first cut where the copy began.
+  const seconds = samples.length / sr;
+  const bad = echo.suspect(text, system, seconds);
+  if (bad) {
+    let again = '';
+    try {
+      for await (const t of dictateParts(parts, signal, echo.withoutLine(system), maxTokens, false, { info: {}, firstWordMs })) again = t;
+    } catch { again = ''; }
+    if (signal && signal.aborted) return;
+    const { text: fixed, why } = echo.choose(text, again, system, seconds);
+    debug('answer ' + (bad.echo >= 0 ? 'looked like the dictionary line' : 'ran long') + '; ' +
+      ({ said: 'the list was said (kept)', again: 'written again without it', cut: 'cut' }[why] || why) +
+      ' (' + echo.wordCount(text) + ' -> ' + echo.wordCount(fixed) + ' words, ' + seconds.toFixed(1) + ' s)');
+    if (fixed !== text) { text = fixed; yield text; }
+  }
   const checked = await checkTerms(parts, system, info, text, signal);
   if (checked !== text) yield checked;
 }
@@ -988,7 +1007,7 @@ function openLong(signal, system) {
       let final = null;
       if (answer) {
         // Its text, as decodeOne() would give it: the tag off, then the dictionary check.
-        const own = answer.raw.replace(/^\s*language \w+<asr_text>/, '').replace(/^\s+/, '');
+        const own = answerText(answer.raw);
         final = { start, text: await checkTerms([toWav(answer.audio, SR).toString('base64')], sys, { raw: answer.raw }, own, sig) };
         if (sig && sig.aborted) return;
       }
@@ -1186,6 +1205,20 @@ function dictationBudget(samples, sampleRate) {
 }
 
 /**
+ * The dictation in a raw answer: every "language X<asr_text>" tag off, not just the opening one, and
+ * an answer that is nothing but tag words is empty. A tag is never something said: on a hum, the light
+ * model wrote its opening over and over ("language English<asr_text>language English<asr_text>..."),
+ * which pasted as "language English<asr_text>la" (dictation-research noise_check_2026-11-08). Empty
+ * means "Didn't catch that" (pipeline/index.js), as for silence.
+ */
+function answerText(raw) {
+  const s = String(raw || '').replace(/language \w+<asr_text>/g, '').replace(/^\s+/, '');
+  const words = s.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const tagWord = (w) => w === 'language' || 'english'.startsWith(w) || 'turkish'.startsWith(w);
+  return words.length && words.length <= 8 && words[0] === 'language' && words.every(tagWord) ? '' : s;
+}
+
+/**
  * A model that starts repeating itself does not stop on its own (seen live: a 79 s dictation
  * that ended in the same file name written over and over). Three copies of one sentence of 12+
  * characters, or of the last 40 characters within the last 400, mean a loop: returns the text
@@ -1280,6 +1313,11 @@ function guardGrammar(assistant, asRevise) {
   return /^\s*language (?:English|Turkish)<asr_text>/.test(assistant) ? GUARD_REST : null;
 }
 
+// llama.cpp's DRY sampler, on every dictation and not on a revise: it stops a runaway repeat while it is being
+// written, where loopCut can only cut it afterwards and lose what came after (0.2.13; a looping clip went from
+// 92 errors per 100 to 21). The model's numbers were measured with these values. A short repeat is untouched.
+const DRY = { dry_multiplier: 0.8, dry_base: 1.75, dry_allowed_length: 5 };
+
 /**
  * The request body for audio in one or more pieces (base64 WAVs, in order). Every request
  * goes through here. With a revise adapter loaded it names the adapter's scale: on only when
@@ -1298,6 +1336,7 @@ function body(parts, system, extra, asRevise = false, assistant = PREFILL, guard
     ],
     temperature: 0,
     cache_prompt: true,
+    ...(asRevise || process.env.TYPD_DRY === '0' ? {} : DRY),
     ...(adapter ? { lora: [{ id: adapter.id, scale: asRevise ? 1 : 0 }] } : {}),
     ...(grammar ? { grammar } : {}),
     ...extra
@@ -1416,7 +1455,7 @@ async function* ask(parts, signal, system = '', maxTokens = 1024, asRevise = fal
       // A model that names the language itself streams the tag first; show nothing
       // until it is complete rather than a flash of "language Tur".
       const pending = /^\s*l(a(n(g(u(a(g(e( \w*)?)?)?)?)?)?)?)?$/.test(text);
-      const shown = pending ? '' : text.replace(/^\s*language \w+<asr_text>/, '').replace(/^\s+/, '');
+      const shown = pending ? '' : answerText(text);
       if (shown.length < 2000 || shown.length - checkedAt >= 200) {
         checkedAt = shown.length;
         const cut = loopCut(shown, opts.allow);
@@ -1649,7 +1688,7 @@ async function transcribe(samples, sampleRate, signal, system = '') {
 }
 
 module.exports = {
-  warm, stop, ping, dictate, revise, transcribe, openStream, openLong, dictationBudget, loopCut, contextPrompt, revisePrompt,
+  warm, stop, ping, dictate, revise, transcribe, openStream, openLong, dictationBudget, loopCut, answerText, contextPrompt, revisePrompt,
   countTokens, setVocabLog, configure, lowMemoryStale, gpuBackend, longLimits, reviseLimit, serverArgs, serverEnv, contextChars,
   talkCommit,
   // The language guard, for the bench (bench/lang-guard.js).
@@ -1672,6 +1711,7 @@ module.exports = {
    */
   hasModel: () => fs.existsSync(MODEL) && fs.existsSync(MMPROJ),
   get MODEL() { return MODEL; },
+  get MMPROJ() { return MMPROJ; },   // its name says the size (…-1.7b-… / …-0.6b-…) when the model's does not (kept.variantOf)
   get MODEL_DIR() { return MODEL_DIR; },
   get VERSION() { return VERSION; },
   /**

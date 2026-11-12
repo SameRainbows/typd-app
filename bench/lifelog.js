@@ -23,6 +23,7 @@ if (process.argv[2] === '--run') {
   const life = require(LIFE);
   life.init(c.userData, { info: 'Typd 0.2.4, test', crashDumps: c.dumps });
   for (const [what, detail] of c.lines || []) life.log(what, detail);
+  if (c.sessionEnd) life.sessionEnding();
   for (let i = 0; i < (c.many || 0); i++) life.log('filler', 'x'.repeat(200) + ' ' + i);
   if (c.clean) life.ended('quit, exit code 0');
   process.stdout.write(JSON.stringify({ tail: life.tail(c.tail || 200) }));
@@ -67,6 +68,21 @@ r = run({ userData, dumps, clean: true });
 check('the next launch says the last run ended without quitting, and when it was last seen alive',
   /last run ended without quitting: pid \d+, Typd 0\.2\.4, started \S+, last seen alive \S+/.test(text()), text().split('\n').slice(-6));
 check('... and names the minidump it left', /minidump from the last run: completed\/abc123\.dmp, 1234 bytes/.test(text()));
+const lastLines = (n) => text().split(/\r?\n/).filter(Boolean).slice(-n).join('\n');
+check('... and calls it a crash, because of the dump', /last run ended without quitting: .* -- a crash: it left a crash dump \(below\)/.test(lastLines(6)), lastLines(6));
+fs.rmSync(path.join(dumps, 'completed'), { recursive: true, force: true });
+
+// Killed while the computer kept running (no dump, no restart since): not called a crash (0.2.12).
+run({ userData, dumps, clean: false });
+run({ userData, dumps, clean: true });
+check('a kill with no dump: "the computer kept running", not "a crash"', /last run ended without quitting: .* -- the computer kept running and no crash dump was left/.test(lastLines(4)), lastLines(4));
+
+// Windows ending the session (a window's 'session-end'): said at once, and marked for the next launch.
+run({ userData, dumps, clean: false, sessionEnd: true });
+run({ userData, dumps, clean: true });
+check('session end: logged as it happens', /\] session end: the system is shutting down, restarting or signing out/.test(lastLines(6)), lastLines(6));
+check('... and the next launch says Windows ended the session, not a crash',
+  /last run ended without quitting: .* -- Windows ended the session \(shutting down, restarting or signing out\) at \d{4}-/.test(lastLines(4)), lastLines(4));
 
 // Nothing quoted, one line, short: a JSON error that quotes dictated text loses the quote.
 const err = new SyntaxError('Unexpected token \'H\', "Hello this is my dictation" is not valid JSON');

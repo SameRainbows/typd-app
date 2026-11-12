@@ -81,21 +81,21 @@ async function hardwareTests() {
   let t = await win('NVIDIA GeForce RTX 3050 Ti Laptop GPU, 4096, 2096');
   check("the developer's RTX 3050 Ti: 4,096 MiB in all, 2,096 free with Typd running -> full (total counts, not free)", t.pick.variant === 'full' && /RTX 3050 Ti/.test(t.pick.why) && /4 GB/.test(t.pick.why), t.pick);
   t = await win('NVIDIA GeForce GTX 1060 3GB, 3072, 3000');
-  check('a 3 GB card -> light, and says Full needs 4 GB', t.pick.variant === 'light' && /4 GB/.test(t.pick.why), t.pick);
+  check('a 3 GB card -> not yet, and names the card', t.pick.variant === 'none' && /3 GB/.test(t.pick.why), t.pick);
   t = await win('Some GPU, 3584, 100');
   check('exactly 3.5 GiB in all (3,584 MiB) -> full, however little is free', t.pick.variant === 'full', t.pick);
   t = await win('Some GPU, 3583, 3583');
-  check('one MiB under 3.5 GiB, all of it free -> light', t.pick.variant === 'light', t.pick);
+  check('one MiB under 3.5 GiB, all of it free -> not yet', t.pick.variant === 'none', t.pick);
   t = await win('NVIDIA GeForce GTX 1050, 2048, 2000\nNVIDIA GeForce RTX 3060, 12288, 11000');
   check('two GPUs: the bigger one decides', t.pick.variant === 'full' && /RTX 3060/.test(t.pick.why), t.pick);
   const none = runner([[/nvidia-smi/, { code: 9, stdout: 'NVIDIA-SMI has failed because it could not communicate with the NVIDIA driver.' }]]);
   let hw = await hardware.detect({ platform: 'linux', run: none.run, gpuInfo: async () => ({ gpuDevice: [{ vendorId: 0x10de, deviceId: 1 }] }) });
-  check('an NVIDIA card whose driver tools fail -> light', hardware.pick(hw).variant === 'light' && /driver/.test(hardware.pick(hw).why), hardware.pick(hw));
+  check('an NVIDIA card whose driver tools fail -> not yet', hardware.pick(hw).variant === 'none' && /driver/.test(hardware.pick(hw).why), hardware.pick(hw));
   hw = await hardware.detect({ platform: 'linux', run: none.run, gpuInfo: async () => ({ gpuDevice: [{ vendorId: 0x1002 }, { vendorId: 0x8086 }] }) });
-  check('an AMD or Intel GPU only -> light (the Windows build runs the model on NVIDIA GPUs only)', hardware.pick(hw).variant === 'light' && /No NVIDIA GPU/.test(hardware.pick(hw).why) && hw.vendors.join() === 'amd,intel', hw);
+  check('an AMD or Intel GPU only -> not yet', hardware.pick(hw).variant === 'none' && /No NVIDIA GPU/.test(hardware.pick(hw).why) && hw.vendors.join() === 'amd,intel', hw);
   hw = await hardware.detect({ platform: 'linux', run: none.run, gpuInfo: async () => { throw new Error('no GPU process'); } });
-  check('getGPUInfo failing is no GPU at all -> light', hardware.pick(hw).variant === 'light' && hw.vendors.length === 0);
-  check('nothing detected at all -> light', hardware.pick(null).variant === 'light');
+  check('getGPUInfo failing is no GPU at all -> not yet', hardware.pick(hw).variant === 'none' && hw.vendors.length === 0);
+  check('nothing detected at all -> the model', hardware.pick(null).variant === 'full');
   const realWin = runner([smi('X, 8192, 8000')]);
   await hardware.detect({ platform: 'win32', run: realWin.run, env: { SystemRoot: path.join(tmp, 'no-windows') } });
   check('Windows with no System32 copy falls back to the PATH', realWin.calls.length === 1 && /^nvidia-smi\.exe --query-gpu=name,memory.total,memory.free --format=csv,noheader,nounits$/.test(realWin.calls[0]), realWin.calls);
@@ -109,11 +109,11 @@ async function hardwareTests() {
   let m = await mac('arm64', 16 * GiB);
   check('Apple silicon, 16 GB (sysctl hw.memsize) -> full', m.pick.variant === 'full' && /16 GB/.test(m.pick.why) && m.calls[0] === 'sysctl -n hw.memsize', m);
   m = await mac('arm64', 8 * GiB);
-  check('Apple silicon, 8 GB -> light, and says Full needs 16 GB', m.pick.variant === 'light' && /16 GB/.test(m.pick.why), m.pick);
+  check('Apple silicon, 8 GB -> the model', m.pick.variant === 'full' && /8 GB/.test(m.pick.why), m.pick);
   m = await mac('arm64', 24 * GiB, false);
   check('sysctl failing -> os.totalmem(), the same number (24 GB -> full)', m.pick.variant === 'full' && m.h.memBytes === 24 * GiB, m);
   m = await mac('x64', 32 * GiB);
-  check('an Intel Mac, or the x64 build under Rosetta (llama.cpp on the CPU) -> light', m.pick.variant === 'light' && /Intel/.test(m.pick.why), m.pick);
+  check('an Intel Mac, or the x64 build under Rosetta (llama.cpp on the CPU) -> not yet', m.pick.variant === 'none' && /Intel/.test(m.pick.why), m.pick);
   check('a Mac never runs nvidia-smi', !m.calls.some((c) => /nvidia/.test(c)));
 }
 
@@ -159,28 +159,28 @@ async function netcostTests() {
 /* ---------------------------------------------------------- modelChoice.js */
 
 async function choiceTests() {
-  section('modelChoice.js: Automatic, Full, Light');
+  section('modelChoice.js: one model');
   let setting = 'auto', detects = 0, clock = 1e6;
   const hw = { platform: 'win32', arch: 'x64', nvidia: { name: 'GTX 1050', totalMiB: 2048, freeMiB: 2000 }, vendors: [] };
   const c = createChoice({ setting: () => setting, detect: async () => { detects++; return hw; }, now: () => clock });
-  check('Automatic on a 2 GB card -> light', await c.variant() === 'light' && detects === 1);
+  check('Automatic on a 2 GB card -> not yet', await c.variant() === 'none' && detects === 1);
   setting = 'full';
   check('Full pinned -> full, whatever the hardware', await c.variant() === 'full');
   setting = 'light';
   hw.nvidia = { name: 'RTX 4090', totalMiB: 24564, freeMiB: 20000 };
-  check('Light pinned -> light on a big GPU', await c.variant() === 'light');
+  check('a Light pin from before 0.2.13 counts as Automatic', await c.variant() === 'none');
   setting = 'auto';
-  check('Automatic again: the hardware is read once per half hour (still the 2 GB answer)', await c.variant() === 'light' && detects === 1);
+  check('Automatic again: the hardware is read once per half hour (still the 2 GB answer)', await c.variant() === 'none' && detects === 1);
   clock += 31 * 60e3;
   check('... and again after it', await c.variant() === 'full' && detects === 2);
   hw.nvidia = null;
   c.forget();
   const d = await c.describe();
-  check('forget() reads it at once; describe() says what Automatic picked and why', d.setting === 'auto' && d.auto === 'light' && d.variant === 'light' && /NVIDIA/.test(d.why) && detects === 3, d);
+  check('forget() reads it at once; describe() says what Automatic picked and why', d.setting === 'auto' && d.auto === 'none' && d.variant === 'none' && /NVIDIA/.test(d.why) && detects === 3, d);
   setting = 'turbo';
-  check('an unknown setting is Automatic', await c.variant() === 'light');
+  check('an unknown setting is Automatic', await c.variant() === 'none');
   const broken = createChoice({ setting: () => 'auto', detect: async () => { throw new Error('nvidia-smi crashed'); } });
-  check('a detection that throws -> light, never an error', await broken.variant() === 'light');
+  check('a detection that throws -> the model, never an error', await broken.variant() === 'full');
 }
 
 /* ---------------------------------------------------- the manifest's variants */
@@ -465,7 +465,7 @@ function walkthroughTests() {
   const e2e = read('bench/app-update-e2e.js');
   check("the CI's app-update test starts as a person who has seen it (settings walkthrough 'done')", /if \(saved\.walkthrough !== 'done'\) next\.walkthrough = 'done';/.test(e2e));
   const settingsJs = read('src/main/settings.js');
-  check('settings: modelVariant auto|full|light (default auto), askBeforeModelDownload off, walkthrough', /modelVariant: 'auto'/.test(settingsJs) && /askBeforeModelDownload: false/.test(settingsJs) && /walkthrough: ''/.test(settingsJs) && /const VARIANTS = \['auto', 'full', 'light'\]/.test(settingsJs));
+  check('settings: modelVariant auto|full (default auto), askBeforeModelDownload off, walkthrough', /modelVariant: 'auto'/.test(settingsJs) && /askBeforeModelDownload: false/.test(settingsJs) && /walkthrough: ''/.test(settingsJs) && /const VARIANTS = \['auto', 'full'\]/.test(settingsJs));
 }
 
 /* ------------------------------------------------------------------------ run */

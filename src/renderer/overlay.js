@@ -16,7 +16,7 @@
   var LINGER_DONE_MS = 240;
   var LINGER_ERROR_MS = 2600;
   var LINGER_NOTE_MS = 1800;
-  var HIT_PAD = 5;     // forgiving edges; a 24px circle is a small target
+  var HIT_PAD = 6;     // forgiving edges; a 19px circle is a small target
 
   var state = 'idle';
   var hideId = null;
@@ -94,8 +94,6 @@
   var sampleBuf = null;
   var chunks = [];
   var capturing = false;
-  var peak = 0.02;    // slow-decaying reference so quiet mics still read
-  var level = 0;
   var synthetic = false;
 
   // A real microphone never delivers exact zeros: even a quiet room has a noise floor. A
@@ -106,10 +104,28 @@
   var micLabel = '';   // its name, to find it again if the id changes
   var SILENT_BLOCKS = 24;   // 24 x 64 ms ≈ 1.5 s
 
+  // 0.2.12: main usually has the microphone (its native helper, src/main/capture.js) and sends only the
+  // level for the meter (session:level) and the moment its first audio arrived (session:hearing). This
+  // page captures only when main says so: no helper (session:start native false), or main falling back
+  // to it mid-session (session:mic-fallback). `owned`: this page captured in this session, so it has a
+  // recording to hand over at the end.
+  var native = false;
+  var nativeLevel = 0;
+  var owned = false;
+  var hearing = false;   // the microphone's first audio is here: "listening", and the start cue
+
+  function markHearing() {
+    if (hearing || state !== 'listening') return;
+    hearing = true;
+    overlay.setAttribute('data-hearing', 'true');
+    window.typdSound.play('start');
+  }
+
   async function startMic() {
     synthetic = false;
     chunks = [];
     capturing = true;
+    owned = true;
     heard = false; zeroBlocks = 0;
 
     try {
@@ -160,6 +176,7 @@
       recorder.onaudioprocess = function (e) {
         if (!capturing) return;
         var block = new Float32Array(e.inputBuffer.getChannelData(0));
+        markHearing();
         if (!heard) {
           for (var z = 0; z < block.length && !heard; z++) if (block[z] !== 0) heard = true;
           if (!heard && ++zeroBlocks === SILENT_BLOCKS) window.typd.micProblem('silent');
@@ -184,13 +201,16 @@
       synthetic = Boolean(window.__typdSynthetic);
       analyser = null;
       capturing = false;
-      if (!window.__typdSynthetic) window.typd.micProblem('unavailable', (err && err.name) || '');
+      if (window.__typdSynthetic) markHearing();
+      else window.typd.micProblem('unavailable', (err && err.name) || '');
     }
   }
 
-  /** Stop capture and hand the audio to main. */
+  /** Stop capture and hand the audio to main -- only when this page had the microphone. */
   function stopMic(deliver) {
     capturing = false;
+    var had = owned;
+    owned = false;
 
     if (recorder) {
       recorder.onaudioprocess = null;
@@ -206,7 +226,7 @@
     // Nothing reads the context until the next startMic, which resumes it.
     if (audioCtx && audioCtx.state === 'running') audioCtx.suspend();
 
-    if (!deliver) { chunks = []; return; }
+    if (!deliver || !had) { chunks = []; return; }
 
     var total = 0;
     for (var i = 0; i < chunks.length; i++) total += chunks[i].length;
@@ -220,59 +240,106 @@
     window.typd.sendAudio(merged.buffer, RATE);
   }
 
-  function readLevel(t) {
+  /** How loud the input is right now: linear RMS, the same measure from either microphone path. */
+  function readRms(t) {
     // Preview builds drive the meter from the synthetic envelope so the active
     // state can be inspected without anyone having to talk into the machine.
     if (window.__typdSynthetic) synthetic = true;
 
+    if (native && !window.__typdSynthetic) return nativeLevel;   // measured in main (session:level)
     if (analyser && sampleBuf && !window.__typdSynthetic) {
       analyser.getFloatTimeDomainData(sampleBuf);
       var sum = 0;
       for (var i = 0; i < sampleBuf.length; i++) sum += sampleBuf[i] * sampleBuf[i];
-      var rms = Math.sqrt(sum / sampleBuf.length);
-      peak = Math.max(peak * 0.995, rms);
-      return Math.min(1, rms / Math.max(peak, 0.015));
+      return Math.sqrt(sum / sampleBuf.length);
     }
     if (synthetic && window.__typdSynthetic) {
       var syl = Math.abs(Math.sin(t * 4.1) * Math.sin(t * 2.3 + 1.1));
       var micro = 0.55 + 0.45 * Math.sin(t * 21.7 + 0.6);
       var phrase = 0.5 + 0.5 * Math.sin(t * 0.52 - 0.4);
-      return Math.min(1, syl * micro * (phrase > 0.2 ? 1 : 0.07) * 1.7);
+      // The envelope as a voice 40 dB over a quiet room: -60 to -20 dBFS.
+      return 0.001 * Math.pow(100, Math.min(1, syl * micro * (phrase > 0.2 ? 1 : 0.07) * 1.7));
     }
     return 0;
   }
 
   /* ------------------------------------------------------------------ meter */
 
-  /* TODO(meter): the user is choosing a new meter in design/meter-study.html. Leave
-   * this one exactly as it is until that choice is made, then land it here (and the
-   * constants below) in one change. */
-
-  /* Scrolling peak history, not a row of bars wiggling.
+  /* Still bars (the founder's call, 5 Nov 2026; Wispr Flow's meter is the model). The row never
+   * travels: ten bars stand in fixed places, tallest in the middle, and only their heights change,
+   * with the voice. A quiet room is a still row of dots, so a moving meter means something moved.
    *
-   * The previous meter multiplied one amplitude by a per-bar sine, so it looked
-   * busy whether or not anyone was speaking -- decoration dressed as data. Here
-   * each bar holds the true peak of one 52ms window and the row glides left, so
-   * a moving meter means something moved. Tuned in design/pill-lab.html; these
-   * constants travel with overlay.css because the meter is drawn, not styled. */
-  var BARS       = 9;      // visible slots of peak history
-  var KEEP       = 12;     // stored slots; the extra ones fade out on the left
-  var INTERVAL   = 52;     // ms per sample -- 9 of them is ~0.47s of history
-  var FLOOR      = 0.02;   // silence is a dotted rule, not a flat line
-  var MIN_HALF   = 1.35;   // px, resting half-height
-  var BAR_W      = 3;      // px, capped by the slot
-  var BAR_R      = 1.5;    // px corner radius (half the bar: round caps)
-  var GLIDE      = 1;      // 1 scrolls continuously, 0 steps once per sample
-  var DISSOLVE   = 1.3;    // slots over which the leaving bar fades
-  var HEADROOM   = 1.5;    // px kept clear so a full-level cap stays round
+   * The level and its timing are option C of design/meter-study.html. Height is how far the input is
+   * above the room's own noise, in dB, so a quiet microphone still reads and room noise does not.
+   * These constants travel with overlay.css because the meter is drawn, not styled. */
+  var BARS       = 10;
+  var SLOT       = 4;      // px between bar centres; a fixed pitch keeps the bars put while the pill changes width
+  var EDGE       = 0.42;   // the outermost bars' height, as a share of the middle one's
+  var MIN_HALF   = 1.2;    // px, resting half-height: silence is a row of dots, not a flat line
+  var BAR_W      = 2.4;    // px: 3 device px at 125 % scaling, as Wispr's
+  var BAR_R      = 1.2;    // px corner radius (half the bar: round caps)
+  var HEADROOM   = 1;      // px kept clear so a full-level cap stays round
+  var ATTACK_MS  = 15;     // the middle bar's rise; the outer bars rise up to 2.5x slower, so a word blooms from the centre
+  var RELEASE_MS = 160;    // the middle bar's fall; the outer bars fall up to 1.5x slower
   var PULSE_H    = 0.55;   // working pulse height; must stay under speaking
   var PULSE_RATE = 1.28;
-  var PULSE_SM   = 0.3;
+  var PULSE_LAG  = 1.1;    // radians from the middle bar to the edges: a breath from the centre, no sideways travel
+  var PULSE_MS   = 90;
 
-  var history = new Float32Array(KEEP);
-  var windowPeak = 0;
-  var lastPush = 0;
+  var GATE_DB      = 6;    // zero height sits this far above the room's noise
+  var RANGE_DB     = 36;   // full height sits this far above zero height
+  var ABS_FLOOR_DB = -70;
+  var RISE_DB_S    = 10;   // how fast the noise estimate may climb
+
+  var CENTRE = (BARS - 1) / 2;
+  var OFF_CENTRE = [];   // each bar's distance from the middle, 0 to 1
+  var PROFILE = [];      // each bar's share of the level
+  for (var b = 0; b < BARS; b++) {
+    OFF_CENTRE[b] = Math.abs(b - CENTRE) / CENTRE;
+    PROFILE[b] = EDGE + (1 - EDGE) * Math.cos(OFF_CENTRE[b] * Math.PI / 2);
+  }
+
+  var heights = new Float32Array(BARS);   // 0 (a dot) to 1 (full height)
   var t0 = 0;
+
+  // The room's noise: the quietest reading of the last 2 s, in 100 ms steps. It carries over between
+  // sessions: people start talking the instant they press the key, and a floor measured on speech
+  // would flatten the meter for the whole first phrase. Lower readings pull it down at once; higher
+  // ones raise it by at most RISE_DB_S.
+  var noiseDb = -60;
+  var quietest = new Float32Array(20);
+  var quietestAt = 0, stepMin = Infinity, stepMs = 0;
+
+  function resetNoiseWindow() {
+    quietest.fill(Infinity);
+    quietestAt = 0;
+    stepMin = Infinity;
+    stepMs = 0;
+  }
+  resetNoiseWindow();
+
+  /** The level for the bars, 0 to 1, from one RMS reading `dt` ms after the last one. */
+  function levelOf(rms, dt) {
+    var db = rms > 0 ? 20 * Math.log10(rms) : -140;
+    if (rms > 0) stepMin = Math.min(stepMin, db);   // exact zeros say nothing about the room
+    stepMs += dt;
+    if (stepMs >= 100) {
+      quietest[quietestAt] = stepMin;
+      quietestAt = (quietestAt + 1) % quietest.length;
+      stepMin = Infinity;
+      stepMs -= 100;
+    }
+    var m = stepMin;
+    for (var i = 0; i < quietest.length; i++) if (quietest[i] < m) m = quietest[i];
+    if (m !== Infinity) {
+      m = Math.max(-90, Math.min(-30, m));
+      noiseDb = m < noiseDb ? m : Math.min(m, noiseDb + RISE_DB_S * dt / 1000);
+    }
+    var zero = Math.max(noiseDb + GATE_DB, ABS_FLOOR_DB);
+    return Math.max(0, Math.min(1, (db - zero) / RANGE_DB));
+  }
+
+  function ease(dt, tau) { return 1 - Math.exp(-dt / tau); }
 
   function sizeCanvas() {
     var r = canvas.getBoundingClientRect();
@@ -287,11 +354,6 @@
     return getComputedStyle(root).getPropertyValue('--meter').trim() || '#F4F5F7';
   }
 
-  function push(v) {
-    for (var i = 0; i < KEEP - 1; i++) history[i] = history[i + 1];
-    history[KEEP - 1] = v;
-  }
-
   // The loop runs only while there is something to draw: listening or working. Idle, the pill is
   // hidden, and redrawing an invisible canvas 60 times a second cost about a
   // third of a CPU core (renderer plus GPU process) with nobody dictating. A note or an error
@@ -300,9 +362,9 @@
   var live = function () { return state === 'listening' || state === 'working'; };
 
   // requestAnimationFrame comes at the display's rate: 144 or 240 times a second on a gaming
-  // monitor, for a meter that takes a sample every 52 ms. A frame is drawn only once at least
+  // monitor, for a meter whose level arrives ~30 times a second. A frame is drawn only once at least
   // this long has passed, which settles on every frame at 60-90 Hz, every 2nd at 120-165 Hz and
-  // every 3rd at 240 Hz -- an even cadence, so the glide stays smooth -- at most ~95 a second.
+  // every 3rd at 240 Hz -- an even cadence, so the motion stays smooth -- at most ~95 a second.
   var FRAME_MS = 10.5;
   var lastDraw = -1e9;
 
@@ -322,6 +384,7 @@
     }
     requestAnimationFrame(draw);
     if (now - lastDraw < FRAME_MS) return;
+    var dt = Math.min(100, now - lastDraw);
     lastDraw = now;
     if (state === 'listening') reportHits();   // the controls move while they unfold
 
@@ -330,20 +393,19 @@
     var t = (now - t0) / 1000;
 
     if (state === 'listening') {
-      level += (readLevel(t) - level) * 0.4;
-      windowPeak = Math.max(windowPeak, level);
+      var x = levelOf(readRms(t), dt);
+      for (var n = 0; n < BARS; n++) {
+        var aim = x * PROFILE[n];
+        var tau = aim > heights[n] ? ATTACK_MS * (1 + 1.5 * OFF_CENTRE[n]) : RELEASE_MS * (1 + 0.5 * OFF_CENTRE[n]);
+        heights[n] += (aim - heights[n]) * ease(dt, tau);
+      }
     } else if (state === 'working') {
-      // A slow travelling swell, well under speaking height so the two states
+      // A slow breath in place, well under speaking height so the two states
       // are never mistaken for each other at a glance.
-      var pulse = PULSE_H * (0.5 + 0.5 * Math.sin(t * PULSE_RATE * Math.PI));
-      level += (pulse - level) * PULSE_SM;
-      windowPeak = Math.max(windowPeak, level);
-    }
-
-    if (now - lastPush >= INTERVAL) {
-      push(Math.max(FLOOR, windowPeak));
-      windowPeak = 0;
-      lastPush = now;
+      for (var p = 0; p < BARS; p++) {
+        var swell = 0.5 + 0.5 * Math.sin(t * PULSE_RATE * Math.PI - OFF_CENTRE[p] * PULSE_LAG);
+        heights[p] += (PULSE_H * PROFILE[p] * swell - heights[p]) * ease(dt, PULSE_MS);
+      }
     }
 
     ctx2d.clearRect(0, 0, w, h);
@@ -354,42 +416,28 @@
     var dpr = ctx2d.getTransform().a || 1;
     var snap = function (v) { return Math.round(v * dpr) / dpr; };
 
-    var slot = w / BARS;
-    var barW = snap(Math.min(BAR_W, slot * 0.62));
+    var barW = snap(BAR_W);
     var mid = h / 2;
     // Headroom keeps a full-level cap round. Without it a peak bar is exactly
     // canvas height and the round caps clip flat against the edges -- the meter
     // stops being round at precisely the moment it peaks.
     var maxHalf = h / 2 - HEADROOM;
 
-    // Fractional scroll, so the row moves continuously between samples rather
-    // than stepping once every 52ms.
-    var frac = GLIDE * Math.min(1, (now - lastPush) / INTERVAL);
-
     if (!colour) colour = meterColour();
+    ctx2d.fillStyle = colour;
 
-    for (var i = 0; i < KEEP; i++) {
-      var fromRight = (KEEP - 1 - i) + frac;
-      var cx = w - (fromRight + 0.5) * slot;
-      if (cx < -slot || cx > w + slot) continue;
-
-      // Bars leaving on the left dissolve rather than vanishing at the edge.
-      var a = 1;
-      if (cx < DISSOLVE * slot) a = Math.max(0, cx / (DISSOLVE * slot));
-      if (a <= 0.01) continue;
-
-      var half = MIN_HALF + history[i] * (maxHalf - MIN_HALF);
-      var x = snap(cx - barW / 2);
+    for (var i = 0; i < BARS; i++) {
+      // Placed from the canvas's centre at a fixed pitch: the pill changes width around its own
+      // centre (the controls coming out, dictation ending), so the bars stay put on screen.
+      var half = MIN_HALF + heights[i] * (maxHalf - MIN_HALF);
+      var left = snap(w / 2 + (i - CENTRE) * SLOT - barW / 2);
       var top = snap(mid - half);
       var barH = Math.max(barW, snap(half * 2));
 
-      ctx2d.globalAlpha = a;
-      ctx2d.fillStyle = colour;
       ctx2d.beginPath();
-      ctx2d.roundRect(x, top, barW, barH, Math.min(BAR_R, barW / 2));
+      ctx2d.roundRect(left, top, barW, barH, Math.min(BAR_R, barW / 2));
       ctx2d.fill();
     }
-    ctx2d.globalAlpha = 1;
   }
 
   /* --------------------------------------------------------------- progress */
@@ -497,19 +545,31 @@
 
     resultEl.textContent = '';
     t0 = performance.now();
-    lastPush = t0;
-    peak = 0.02;
-    level = 0;
-    windowPeak = 0;
-    history.fill(0);
+    heights.fill(0);
+    resetNoiseWindow();
 
     colour = null;   // the scheme can change between sessions (TYPD_PREVIEW_THEME)
     acted = false;
     controlsLive = true;
+    native = Boolean(p.native);
+    nativeLevel = 0;
+    hearing = false;
+    overlay.setAttribute('data-hearing', 'false');
     overlay.setAttribute('data-visible', 'true');
     setState('listening');
     reportHits();
-    window.typdSound.play('start');
+    // The start cue plays with the first audio (markHearing): it means "talk now", and now is when the
+    // microphone hears. Main says so for its helper; this page's own capture says so on its first block.
+    if (!native) startMic();
+  });
+
+  window.typd.on('session:hearing', function () { if (native) markHearing(); });
+  window.typd.on('session:level', function (p) { if (native && typeof p.rms === 'number' && isFinite(p.rms)) nativeLevel = Math.max(0, p.rms); });
+  // The helper failed during this dictation: this page captures from here on (main keeps what came before).
+  window.typd.on('session:mic-fallback', function () {
+    if (!native || state !== 'listening' || !controlsLive) return;   // never after the key is let go
+    native = false;
+    nativeLevel = 0;
     startMic();
   });
 
@@ -542,7 +602,9 @@
   });
 
   window.typd.on('session:done', function () {
-    window.typdSound.play(mode === 'revise' ? 'doneRevise' : 'done');
+    // 0.2.13: start and stop are the dictation's two sounds, and the text landing says the rest. A revise
+    // keeps its own: it lands seconds later and replaced your words, so it is worth hearing.
+    if (mode === 'revise') window.typdSound.play('doneRevise');
     setProgress(1);
     // No result state. "Pasted into Notepad" is a notification about something
     // already on screen, and the pill's whole job is not to be looked at. The
@@ -552,11 +614,11 @@
 
   // Written, but not pasted (0.2.10): there was no text field, or the paste failed. The copy
   // pop-up (main, copy-popup.js) now carries the text and what to do, so the pill just leaves:
-  // the done cue when there was simply nowhere to paste, the error cue when the paste failed.
+  // silent when there was simply nowhere to paste (the pop-up says it), the error cue when the paste failed.
   window.typd.on('session:offered', function (p) {
     controlsOff();
     stopMic(false);
-    window.typdSound.play(p.failed ? 'error' : 'done');
+    if (p.failed) window.typdSound.play('error');
     setProgress(1);
     dismiss(LINGER_DONE_MS);
   });
@@ -591,9 +653,9 @@
     if (typeof p.micLabel === 'string') micLabel = p.micLabel;
   });
 
-  window.typd.on('session:cancel', function () {
+  window.typd.on('session:cancel', function (p) {
     controlsOff();
-    window.typdSound.play('cancel');
+    if (!p.quiet) window.typdSound.play('cancel');
     stopMic(false);
     dismiss(0);
   });
@@ -622,7 +684,6 @@
   setState('idle');
   requestAnimationFrame(function (n) {
     t0 = n;
-    lastPush = n;
     creepFrom = n;
     draw(n);
   });

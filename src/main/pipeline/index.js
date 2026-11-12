@@ -24,7 +24,9 @@ const { runStub } = require('./stub');
  *   { type: 'expect', chars }         how much output to expect, once known
  *   { type: 'partial', text }         streamed text, cumulative
  *   { type: 'done',    text }         final text; a local revision adds reviseAdapter, the
- *                                     adapter file it ran with, or false (none loaded)
+ *                                     adapter file it ran with, or false (none loaded); a
+ *                                     revision the model left unchanged whose speech was the
+ *                                     selection's new text (guards.replacement) adds replaced: true
  *   { type: 'refused', reason, message, text, copy }
  *                                     a revision that must not be pasted (guards.js): nothing
  *                                     changed, the instruction came back, part of the text was
@@ -64,6 +66,32 @@ function voicedFrames(audio) {
     if (Math.sqrt(sum / n) > 0.006) count++;
   }
   return count;
+}
+
+/**
+ * Nothing was said. After a short session that is a key tapped by accident or a change of mind, so the pill
+ * just leaves (err.quiet; the founder, 6 Nov 2026, as Wispr Flow does). After a longer one the person talked
+ * and got nothing, which is worth saying: the microphone may be wrong.
+ */
+const QUIET_BELOW_S = 5;
+function nothingHeard(audio) {
+  const err = new Error("Didn't catch that");
+  err.quiet = Boolean(audio && audio.samples) && audio.samples.length / (audio.sampleRate || 16000) < QUIET_BELOW_S;
+  return err;
+}
+
+/**
+ * A whole dictation that is a mishearing the dictionary already records: "Typed." where the dictionary
+ * says Typd is heard as "typed", said alone into a search box or a name field. The term, or null. Only
+ * the whole dictation: inside a sentence the same sound is the ordinary word ("uniquely typed"), and a
+ * mishearing two entries claim is left alone.
+ */
+function wholeTerm(text, entries) {
+  const bare = String(text || '').trim().replace(/[.!?,;:]+$/, '').trim().toLowerCase();
+  if (!bare || !Array.isArray(entries)) return null;
+  const hits = entries.filter((e) => e && typeof e.term === 'string' && Array.isArray(e.heardAs) &&
+    e.heardAs.some((h) => String(h).trim().toLowerCase() === bare));
+  return hits.length === 1 ? hits[0].term : null;
 }
 
 /** Output that is nothing but terms from the user's dictionary is the vocabulary echoed back. */
@@ -178,7 +206,8 @@ function logGuard(entry) {
 }
 
 /**
- * Should this revision be refused? The 'refused' event's fields, or null to paste it.
+ * Should this revision be refused? The 'refused' event's fields; {replace} when the words said
+ * replace the selection instead (guards.replacement); or null to paste it.
  * `instruction` is called only when the result alone cannot decide (guards.check).
  */
 async function judge(span, revised, ranOut, instruction, signal) {
@@ -201,7 +230,19 @@ async function judge(span, revised, ranOut, instruction, signal) {
     }
     verdict = guards.verdict(span, revised, heard);
   }
-  if (process.env.TYPD_DEBUG) console.log('[typd:guard]', verdict.refuse ? 'refused: ' + verdict.reason : 'passed', verdict.kind || '', JSON.stringify(verdict.metrics));
+  if (process.env.TYPD_DEBUG) console.log('[typd:guard]', verdict.refuse ? 'refused: ' + verdict.reason : verdict.replace ? 'replaced by the words said' : 'passed', verdict.kind || '', JSON.stringify(verdict.metrics));
+  if (verdict.replace) {
+    // The model changed nothing, and what was said is the selection's new text, not an instruction
+    // (guards.replacement): it replaces the selection. Logged like a refusal (never the words or the
+    // text), so how often it happens can be counted.
+    logGuard({
+      reason: 'replaced', kind: verdict.kind, instruction: null,
+      spanChars: span.length, outChars: verdict.replace.length, metrics: verdict.metrics,
+      model: safe(() => local.modelVersion()), adapter: safe(() => (local.REVISE_ADAPTER ? require('path').basename(local.REVISE_ADAPTER) : false))
+    });
+    // A name said again comes out as the dictionary spells it (guards.respell).
+    return { replace: guards.respell(verdict.replace, safe(() => context.vocabulary().split(',')) || []) };
+  }
   if (!verdict.refuse) return null;
   logGuard({
     reason: verdict.reason, kind: verdict.kind, instruction: heard,
@@ -234,7 +275,7 @@ async function* run(opts = {}) {
   // A quick tap with nothing said used to paste the dictionary line: given silence, the model
   // echoed the vocabulary it was shown. Measured on 74 real recordings: silent ones had 0-1
   // voiced 30 ms frames, the quietest real word ("Hey.") had 5. Below 3, nothing was said.
-  if (voicedFrames(audio) < 3) throw new Error("Didn't catch that");
+  if (voicedFrames(audio) < 3) throw nothingHeard(audio);
 
   if (ENGINE === 'single' && mode !== 'revise') {
     // One model, audio in, finished text out. Screen context goes in its prompt
@@ -254,9 +295,10 @@ async function* run(opts = {}) {
     }
 
     const finished = text.trim();
-    if (!finished || onlyDictionary(finished)) throw new Error("Didn't catch that");
+    if (!finished || onlyDictionary(finished)) throw nothingHeard(audio);
 
-    yield { type: 'done', text: finished };
+    const term = safe(() => wholeTerm(finished, require('../dictionary').load()));
+    yield { type: 'done', text: term || finished };
     return;
   }
 
@@ -291,9 +333,17 @@ async function* run(opts = {}) {
     const adapter = local.REVISE_ADAPTER;
     const reviseAdapter = adapter ? require('path').basename(adapter) : false;
     // The instruction's words, only if the result alone cannot settle it (guards.js): one short
-    // dictation of the instruction audio, on the base model.
+    // dictation of the instruction audio, on the base model. When the words said are the selection's
+    // new text (guards.replacement), they are what is pasted. Heard with no context, as before: given
+    // the selection as screen context, P2g wrote "Make it simpler." as a sentence of the selection;
+    // given only the dictionary, it heard "Summarize." as nothing and "Make it more clear." as a
+    // sentence of its own (dictation-research reports/revise_no_difference_2026-10-31.md).
     const refusal = await judge(core, revised, info.finish === 'length', () => local.transcribe(audio.samples, audio.sampleRate, signal), signal);
     if (signal && signal.aborted) return;
+    if (refusal && refusal.replace) {
+      yield { type: 'done', text: lead + refusal.replace + tail, reviseAdapter, replaced: true };
+      return;
+    }
     if (refusal) {
       yield { ...refusal, text: lead + revised + tail, reviseAdapter };
       return;
@@ -307,7 +357,7 @@ async function* run(opts = {}) {
     : await asr.transcribe(audio.samples, audio.sampleRate);
   if (signal && signal.aborted) return;
 
-  if (!transcript) throw new Error("Didn't catch that");
+  if (!transcript) throw nothingHeard(audio);
 
   if (mode === 'revise') {
     if (!span) throw new Error('Nothing selected — highlight some text first');
@@ -329,6 +379,10 @@ async function* run(opts = {}) {
     if (signal && signal.aborted) return;
     const revised = unwrap(text).trim();
     const refusal = await judge(core, revised, false, () => Promise.resolve(transcript), signal);
+    if (refusal && refusal.replace) {
+      yield { type: 'done', text: lead + refusal.replace + tail, replaced: true };
+      return;
+    }
     if (refusal) {
       yield { ...refusal, text: lead + revised + tail };
       return;
@@ -399,6 +453,9 @@ module.exports = {
   ENGINE,
   buildContext: context.current,
   buildContextFrom: context.build,
+  // index.js: why a "Didn't catch that" happened (too quiet, or the model wrote nothing), for the life log.
+  voicedFrames,
+  wholeTerm,   // bench/names.js
 
   // Exported for bench/revise.js. Scoring the raw model output would score
   // something the user never sees -- these two are what stands between the

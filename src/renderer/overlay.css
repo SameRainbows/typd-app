@@ -17,10 +17,6 @@
   --pill-line:  rgba(16, 18, 23, 0.13);
   --edge-top:   rgba(255, 255, 255, 0.95);
   --edge-bot:   rgba(16, 18, 23, 0.07);
-  --pill-shadow:
-    0px 1px 1px 0px rgba(16, 18, 23, 0.06),
-    0px 4px 10px 0px rgba(16, 18, 23, 0.085),
-    0px 12px 26px 0px rgba(16, 18, 23, 0.07);
 
   --text:   #14161B;
   --dim:    #5A6068;
@@ -57,10 +53,6 @@
   --pill-line:  rgba(255, 255, 255, 0.145);
   --edge-top:   rgba(255, 255, 255, 0.16);
   --edge-bot:   rgba(0, 0, 0, 0.3);
-  --pill-shadow:
-    0px 1px 2px 0px rgba(0, 0, 0, 0.45),
-    0px 6px 16px 0px rgba(0, 0, 0, 0.4),
-    0px 14px 32px 20px rgba(0, 0, 0, 0.54);
 
   --text:   #F4F5F7;
   --dim:    #DADDE4;
@@ -99,11 +91,13 @@ body {
 .pill {
   position: relative;
   display: flex; align-items: center;
-  width: 116px; height: 34px; padding: 0 6px;
-  border-radius: 17px;
+  /* Exactly Wispr Flow's size (the founder's call, 5 Nov 2026): measured on his screen at 125 % scaling, 128 x 36
+     device px, 24 px controls, 7 px from the pill's end to a control. Every number here is that divided by 1.25. */
+  width: 102.4px; height: 28.8px; padding: 0 5.6px;
+  border-radius: 14.4px;
   background: var(--pill-bg);
   border: var(--hair) solid var(--pill-line);
-  box-shadow: var(--pill-shadow);
+  /* No shadow (the founder's call, 5 Nov 2026): nothing under the pill. */
   /* No backdrop-filter. The window is transparent and Chromium cannot see the desktop through
      it, so the only backdrop a blur here ever had was the page's own transparent body: it
      changed no pixel, and cost a blur pass on every frame the meter drew (design/pill-lab.html
@@ -139,9 +133,7 @@ body {
     width     var(--dur-morph) var(--ease-spring);
 }
 
-/* 116 − 92 = 24 = one control plus its gap. The meter keeps its width through
-   the morph, so the only thing that moves is the pill's trailing edge. */
-.overlay[data-state="working"] .pill { width: 92px; }
+/* Listening and working are the same size: the controls fold, the bars stay centred, nothing else moves. */
 .overlay[data-state="error"]   .pill { width: 246px; }
 /* A word learned from a correction (learn.js): said once, between sessions,
    in the ordinary text colour -- news, not a failure. */
@@ -166,12 +158,10 @@ body {
 
 /* --------------------------------------------------------------- controls */
 
-/* Explicit margins rather than `gap`: a collapsed zero-width flex item still
-   gets its gap, and the meter would jump the 6px. */
 .control {
   position: relative;   /* the anchor the glyph centres against */
   z-index: 1;
-  flex: 0 0 24px; width: 24px; height: 24px;
+  flex: 0 0 19.2px; width: 19.2px; height: 19.2px;
   padding: 0; border: 0; border-radius: 50%; background: transparent;
   display: grid; place-items: center; cursor: pointer; overflow: hidden;
   pointer-events: auto;
@@ -183,8 +173,6 @@ body {
     opacity    160ms var(--ease-exit),
     transform  180ms var(--ease-spring);
 }
-.control.cancel  { margin-right: 6px; }
-.control.confirm { margin-left: 6px; }
 
 /* Leaving, rather than vanishing. display:none removes a control in one frame
    while the pill takes 260ms to travel -- two clocks, and the morph then reads
@@ -194,15 +182,15 @@ body {
   opacity: 0; transform: scale(.55); pointer-events: none;
 }
 
-/* 33 CSS px of SVG on a 24-unit viewBox: one unit is 1.375 px, so the
-   stroke widths in the markup are the widths on screen.
+/* 26.4 CSS px of SVG on a 24-unit viewBox: one unit is 1.1 px, the old pill's
+   proportions at 80 %.
 
    Absolutely centred rather than grid-centred: `overflow: hidden` above is
    what makes the fold collapse cleanly, but a grid item wider than its button
    has its leading overflow clipped instead of shared, and the glyph drifts. */
 .control svg {
   position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
-  width: 33px; height: 33px;
+  width: 26.4px; height: 26.4px;
   fill: none; stroke-linecap: round; stroke-linejoin: round; display: block;
 }
 .control .x    { stroke-width: 1.2; }
@@ -222,7 +210,7 @@ body {
 
 /* Meter and message are stacked, not swapped: both hold the slot at all times
    and cross-fade in place, so the width morph is the only thing moving. */
-.mid { position: relative; z-index: 1; flex: 1 1 auto; min-width: 0; height: 18px; }
+.mid { position: relative; z-index: 1; flex: 1 1 auto; min-width: 0; height: 22px; }
 .layer {
   position: absolute; inset: 0;
   opacity: 0; transform: translateY(2px); pointer-events: none;
@@ -232,7 +220,10 @@ body {
   opacity: 1; transform: translateY(0);
   transition: opacity 180ms var(--ease-spring) 80ms, transform 180ms var(--ease-spring) 80ms;
 }
-.meter-slot canvas { width: 100%; height: 100%; display: block; }
+.meter-slot canvas { width: 100%; height: 100%; display: block; transition: opacity 120ms var(--ease-spring); }
+/* 0.2.12: "listening" only once the microphone's first audio is here. Until then the meter's resting
+   rule is dimmed (the pill is up, the microphone is still opening); it comes up with the start cue. */
+.overlay[data-state="listening"][data-hearing="false"] .meter-slot canvas { opacity: .35; }
 
 /* Only failure puts words in the pill now. It is the one moment worth
    interrupting for: the user has already looked away, and nothing happened. */

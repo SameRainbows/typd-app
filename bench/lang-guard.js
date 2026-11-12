@@ -218,7 +218,8 @@ async function bodyTests() {
   let b = since(n);
   check('a dictation: one request with the grammar, the body otherwise as before (no opening, temperature 0, cached prompt, streamed, its budget)',
     b.length === 1 && b[0].grammar === G.open && !opening(b[0]) &&
-    JSON.stringify(Object.keys(b[0])) === JSON.stringify(['messages', 'temperature', 'cache_prompt', 'grammar', 'stream', 'max_tokens']) &&
+    JSON.stringify(Object.keys(b[0])) === JSON.stringify(['messages', 'temperature', 'cache_prompt', 'dry_multiplier', 'dry_base', 'dry_allowed_length', 'grammar', 'stream', 'max_tokens']) &&
+    b[0].dry_multiplier === 0.8 && b[0].dry_base === 1.75 && b[0].dry_allowed_length === 5 &&
     b[0].temperature === 0 && b[0].cache_prompt === true && b[0].stream === true && b[0].max_tokens === 200, b.map((x) => Object.keys(x)));
   check('its text without the tag', text === 'the quick brown', text);
 
@@ -394,9 +395,35 @@ async function modelTests() {
   local.stop();
 }
 
+/** The tag off every answer (local.answerText): a repeated tag is never pasted (no model). */
+function tagTests(local) {
+  section('the tag, however often the model writes it');
+  const cases = [
+    // the light model on a hum (dictation-research noise_check_2026-11-08): pasted as "language English<asr_text>la"
+    ['language English<asr_text>language English<asr_text>language English<asr_text>language English<asr_text>language English', ''],
+    ['language English<asr_text>language English', ''],
+    ['language English<asr_text>', ''],
+    ['language English<asr_text>Hello there.', 'Hello there.'],
+    ['language Turkish<asr_text>Merhaba.', 'Merhaba.'],
+    ['language English<asr_text>I said hello.language English<asr_text>', 'I said hello.'],
+    ['language English<asr_text>The language English speakers use.', 'The language English speakers use.'],
+    ['language English<asr_text>language matters', 'language matters'],
+    ['language English<asr_text>Language.', 'Language.'],
+    ['  Hello', 'Hello']
+  ];
+  for (const [raw, want] of cases) {
+    const got = local.answerText(raw);
+    check(`${JSON.stringify(raw.slice(0, 60))} -> ${JSON.stringify(want)}`, got === want, got);
+  }
+  const t0 = Date.now();
+  local.answerText('language '.repeat(5000) + 'x');
+  check('a long run of tag words is quick', Date.now() - t0 < 100, Date.now() - t0);
+}
+
 (async () => {
   const local = freshLocal({});
   letterTests(local);
+  tagTests(local);
   await bodyTests();
   if (!process.argv.includes('--no-model')) await modelTests();
   console.log('\n' + (failures ? failures + ' FAILED' : 'all passed'));

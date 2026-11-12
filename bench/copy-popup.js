@@ -412,7 +412,7 @@ function sourceChecks() {
     /if \(result\.offered\) await inject\.copy\(event\.text\);[\s\S]{0,120}send\('session:error', \{ message: 'Copied — press ' \+ \(MAC \? '⌘V' : 'Ctrl\+V'\) \+ ' to paste' \}\);/.test(main));
   check('index.js: the "Copied — press Ctrl+V" pill message is now only that fallback', (main.match(/'Copied — press '/g) || []).length === 1);
   check('inject.js and inject-mac.js both read the field facts with the context, and offer fieldState for the second look',
-    ['src/main/inject.js', 'src/main/inject-mac.js'].every((f) => { const s = read(f); return /field: r\.field \|\| null/.test(s) && /async function fieldState\(\)/.test(s) && /fieldState, selection/.test(s); }));
+    ['src/main/inject.js', 'src/main/inject-mac.js'].every((f) => { const s = read(f); return /field: r\.field \|\| null/.test(s) && /async function fieldState\(\)/.test(s) && /fieldState, (?:fieldAround, )?selection/.test(s); }));
   const ps = read('src/main/inject.ps1');
   check('inject.ps1: one FocusedElement read gives the context text and the field facts; "field" answers alone',
     /\$text = Get-FocusText \$el/.test(ps) && /field = \(Get-FieldFacts \$el \$name\)/.test(ps) && /'field'\s+\{ Get-Field \}/.test(ps));

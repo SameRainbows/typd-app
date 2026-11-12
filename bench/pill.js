@@ -46,6 +46,31 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const gateMod = require(path.join(root, 'src', 'main', 'overlay-window.js'));
 const life = require(path.join(root, 'src', 'main', 'lifelog.js'));
 
+/* ------------------------------------------------------------- 0. where the pill sits */
+
+{
+  section('0. where the pill sits (overlayBounds)');
+  const box = gateMod.SIZES.compact, L = gateMod.LIFT;
+  // A MacBook-like screen: menu bar 33 px, Dock at the bottom 70 px tall.
+  const macDock = { bounds: { x: 0, y: 0, width: 1512, height: 982 }, workArea: { x: 0, y: 33, width: 1512, height: 879 } };
+  const macFull = { bounds: macDock.bounds, workArea: { x: 0, y: 0, width: 1512, height: 982 } };   // a full-screen app: no Dock
+  const a = gateMod.overlayBounds(macDock, box, 'darwin'), b = gateMod.overlayBounds(macFull, box, 'darwin');
+  check('macOS, an ordinary window in front (Dock showing): the pill sits at the screen\'s bottom, over the Dock', a.y + a.height === 982 - L, a);
+  check('macOS: the same place as over a full-screen app (founder, 7 Nov: it sat a Dock\'s height higher)', a.y === b.y && a.x === b.x, [a, b]);
+  const macSide = { bounds: macDock.bounds, workArea: { x: 80, y: 33, width: 1432, height: 949 } };   // Dock on the left
+  const c = gateMod.overlayBounds(macSide, box, 'darwin');
+  check('macOS, Dock on the left: centred on the screen, not on the work area', c.x === Math.round((1512 - box.width) / 2), c);
+  const win = { bounds: { x: 0, y: 0, width: 1920, height: 1080 }, workArea: { x: 0, y: 0, width: 1920, height: 1032 } };   // taskbar 48 px
+  const w = gateMod.overlayBounds(win, box, 'win32');
+  check('Windows: just clear of the taskbar, as before', w.y + w.height === 1032 - L && w.x === Math.round((1920 - box.width) / 2), w);
+  const tiny = { bounds: { x: 0, y: 0, width: 800, height: 200 }, workArea: { x: 0, y: 25, width: 800, height: 175 } };
+  const t = gateMod.overlayBounds(tiny, box, 'darwin');
+  check('a tiny screen: never above the menu bar', t.y >= 25 && t.height <= box.height, t);
+  const second = { bounds: { x: 1512, y: -200, width: 2560, height: 1440 }, workArea: { x: 1512, y: -175, width: 2560, height: 1340 } };
+  const s = gateMod.overlayBounds(second, box, 'darwin');
+  check('a second Mac display above and to the right: on that display, at its bottom', s.x > 1512 && s.y + s.height === 1240 - L, s);
+}
+
 /* ------------------------------------------------------------- 1. the click gate */
 
 function fakeGate(over = {}) {
@@ -190,7 +215,7 @@ section('3. the per-dictation line in the life log');
   const call = (main.match(/life\.log\('dictation', life\.dictationLine\(\{([\s\S]*?)\}\)\);/) || [])[1] || '';
   const keys = [...call.matchAll(/^\s+([a-zA-Z]+)(?::|,?\s*$)/gm)].map((m) => m[1]);
   check('index.js logs it after the paste with counts only: no text, app, title or context passed',
-    keys.length >= 8 && keys.every((k) => ['mode', 'audioSeconds', 'chars', 'releaseToTextMs', 'textToPasteMs', 'outcome', 'model', 'device', 'lowMemory'].includes(k)) &&
+    keys.length >= 8 && keys.every((k) => ['mode', 'audioSeconds', 'chars', 'releaseToTextMs', 'textToPasteMs', 'outcome', 'model', 'device', 'lowMemory', 'mic'].includes(k)) &&
     /^\s+chars,$/m.test(call) && /logDictation\(current, text\.length, result, pastedAt\)/.test(main) && !/text/.test(call), keys);
   check('index.js: the text-ready stamp is taken before the paste, and the recording is written after it',
     // 0.2.10: the paste is inside pasteTarget.land (or skipped when there is no text field: the copy pop-up).
@@ -239,8 +264,18 @@ function stubScript() {
     });
     // Draw counting for the frame-rate check: every meter frame starts with one clearRect.
     window.__draws = [];
+    // The bars of each frame too, for the still-meter checks: [x, y, width, height] of every rounded rect.
+    window.__bars = [];
+    window.__lastBars = [];
     const clear = CanvasRenderingContext2D.prototype.clearRect;
-    CanvasRenderingContext2D.prototype.clearRect = function (...a) { window.__draws.push(performance.now()); return clear.apply(this, a); };
+    CanvasRenderingContext2D.prototype.clearRect = function (...a) {
+      window.__draws.push(performance.now());
+      window.__lastBars = window.__bars;
+      window.__bars = [];
+      return clear.apply(this, a);
+    };
+    const round = CanvasRenderingContext2D.prototype.roundRect;
+    CanvasRenderingContext2D.prototype.roundRect = function (x, y, w, h, r) { window.__bars.push([x, y, w, h]); return round.call(this, x, y, w, h, r); };
     window.__rafs = 0;
     const raf = window.requestAnimationFrame.bind(window);
     // __hz set: frames come at that rate (setTimeout), as on a 240 Hz display.
@@ -396,6 +431,9 @@ async function pageChecks(exe, notes) {
     const centre = (b) => [b.x + b.w / 2, b.y + b.h / 2];
     const start = async () => { await ev('window.__calls.length = 0; window.__emit("session:start", { mode: "dictate" }); 0'); await sleep(450); };
     const count = async (n) => (await named(n)).length;
+    // The meter's last whole frame, each bar as [its centre on screen, its height].
+    const meterShot = () => ev('window.__lastBars.map((r) => [document.getElementById("meter").getBoundingClientRect().left + r[0] + r[2] / 2, r[3]])');
+    const shots = async (n, gap) => { const out = []; for (let i = 0; i < n; i++) { out.push(await meterShot()); await sleep(gap); } return out; };
 
     await load(1);
     check('the page loads with the stub preload and no errors', (await ev('document.getElementById("overlay").dataset.state')) === 'idle');
@@ -403,11 +441,14 @@ async function pageChecks(exe, notes) {
 
     // A session: the controls unfold, and the page says where they ended up.
     await start();
+    const size = await ev('(() => { const r = document.querySelector(".pill").getBoundingClientRect(); return { w: r.width, h: r.height }; })()');
+    check('the pill is Wispr Flow\'s size: 102.4 x 28.8 (128 x 36 device px at 125 %)', Math.abs(size.w - 102.4) < 0.1 && Math.abs(size.h - 28.8) < 0.1, size);
     let hits = await lastHits();
     let b = await boxes();
     check('listening: two areas reported', Array.isArray(hits) && hits.length === 2, hits);
-    const covers = (h, bx) => h.x <= bx.x && h.y <= bx.y && h.x + h.w >= bx.x + bx.w && h.y + h.h >= bx.y + bx.h && h.w <= bx.w + 12 && h.h <= bx.h + 12;
-    check('each area covers its button (24 px, padded 5) and no more', hits && hits.length === 2 && covers(hits[0], b[0]) && covers(hits[1], b[1]) && b[0].w >= 23, { hits, b });
+    // The page rounds the area outward to whole pixels (floor, ceil), so it can be up to a pixel over 12 on a button of a fractional size.
+    const covers = (h, bx) => h.x <= bx.x && h.y <= bx.y && h.x + h.w >= bx.x + bx.w && h.y + h.h >= bx.y + bx.h && h.w <= bx.w + 13 && h.h <= bx.h + 13;
+    check('each area covers its button (19.2 px, padded 6) and no more', hits && hits.length === 2 && covers(hits[0], b[0]) && covers(hits[1], b[1]) && b[0].w >= 19, { hits, b });
     const hitReports = (await named('hitAreas')).length;
     await sleep(300);
     check('settled: no more reports while nothing moves', (await named('hitAreas')).length === hitReports);
@@ -504,6 +545,39 @@ async function pageChecks(exe, notes) {
     if (rafRate < 90) notes.push('    (this machine delivered only ' + Math.round(rafRate) + ' frames/s, so the cap was not exercised)');
     await ev('window.__hz = 0; 0');
     check('the pill has no backdrop-filter at run time', (await ev('getComputedStyle(document.querySelector(".pill")).backdropFilter')) === 'none');
+    check('the pill has no shadow under it', (await ev('getComputedStyle(document.querySelector(".pill")).boxShadow')) === 'none');
+
+    // The meter stands still (founder, 5 Nov 2026): ten bars in fixed places, and only their heights move.
+    await load(1);
+    await start();
+    const talk = await shots(25, 50);
+    const places = (s) => s.map((bar) => bar[0]);
+    check('listening: ten bars', talk.every((s) => s.length === 10), talk.map((s) => s.length));
+    check('listening: the bars never move sideways', talk.every((s) => JSON.stringify(places(s)) === JSON.stringify(places(talk[0]))), talk.map(places).slice(0, 3));
+    const mids = talk.map((s) => s[4][1]);
+    check('listening: the middle bar moves up and down with the sound', Math.max(...mids) - Math.min(...mids) >= 4, mids);
+    await ev('window.__emit("session:thinking"); 0');
+    await sleep(450);   // the pill's width morph
+    const think = await shots(25, 50);
+    check('working: the same ten places on screen, within a pixel', think.every((s) => s.length === 10 && s.every((bar, i) => Math.abs(bar[0] - talk[0][i][0]) <= 1)), think[0]);
+    const swells = think.map((s) => s[4][1]);
+    check('working: it breathes, under the speaking height', Math.max(...swells) - Math.min(...swells) >= 2 && Math.max(...swells) <= Math.max(...mids), { swells, mids });
+    // The real path, the helper's level: a quiet room is a still row of dots; a voice raises the bars; then they settle.
+    const level = async (rms, ms) => { for (let i = 0; i < ms / 33; i++) { await ev('window.__emit("session:level", { rms: ' + rms + ' }); 0'); await sleep(33); } };
+    await ev('window.__typdSynthetic = false; window.__emit("session:start", { mode: "dictate", native: true }); 0');
+    await level(0.001, 600);
+    const room = await shots(8, 40);
+    check('a quiet room: every bar a dot, not moving', room.every((s) => s.length === 10 && s.every((bar) => bar[1] <= 4)), room[0]);
+    await level(0.1, 300);
+    const loud = await meterShot();
+    check('a voice: tallest in the middle, shortest at the edges', loud[4][1] >= 11 && loud[0][1] < loud[4][1] && loud[9][1] < loud[4][1] && loud[0][1] === loud[9][1], loud);
+    await level(0.001, 1500);
+    const after = await meterShot();
+    check('after the voice: back to dots', after.every((bar) => bar[1] <= 4), after);
+    await ev('window.__cues.length = 0; window.__emit("session:cancel", { quiet: true }); 0');
+    check('a short session with nothing said: the pill leaves with no sound', (await ev('window.__cues.length')) === 0);
+    await ev('window.__typdSynthetic = true; 0');
+    await sleep(300);
 
     // Display scaling: the areas are CSS px, the same numbers at 150 % (main compares them with DIPs).
     await load(1.5);

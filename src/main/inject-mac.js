@@ -5,6 +5,7 @@ const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
 const { clipboard, systemPreferences } = require('electron');
+const life = require('./lifelog');
 
 /**
  * Text injection on macOS, and knowing where it is going. The same contract as
@@ -85,6 +86,7 @@ function script() {
     if (!fs.existsSync(copy)) fs.writeFileSync(copy, body);
     return (scriptFile = copy);
   } catch (err) {
+    if (!said.has('script')) life.log('injector', 'cannot copy the helper script out of app.asar: ' + life.errorLine(err));
     warnOnce('script', 'cannot stage the helper script:', err && err.message);
     return null;
   }
@@ -111,6 +113,7 @@ class Helper {
     const now = Date.now();
     this.crashes = this.crashes.filter((t) => now - t < 60000);
     if (this.crashes.length >= 5) {
+      if (!said.has('loop-' + this.name)) life.log('injector', `${this.name} helper died 5 times in a minute: not starting it again for a minute`);
       warnOnce('loop-' + this.name, `the ${this.name} helper keeps exiting; not restarting it for a minute`);
       return;
     }
@@ -152,8 +155,10 @@ class Helper {
 
     // Only a process still current when it exits died on its own: stop() lets go of
     // its process before killing it.
+    let died = false, failed = null;
     const gone = (why) => {
       if (this.proc !== proc) return;   // an old process, already replaced
+      died = true;
       this.proc = null;
       this.ready = false;
       this.crashes.push(Date.now());
@@ -167,7 +172,15 @@ class Helper {
     });
     proc.on('error', (err) => {
       warnOnce('error-' + this.name, `the ${this.name} helper failed:`, err && err.message);
+      failed = err;
       gone('injector exited');
+    });
+    // Once its stderr is all read, a death in the life log as one line, as on Windows (inject.js):
+    // osascript's first line there, without the script's own path in front of it.
+    proc.on('close', (code, signal) => {
+      if (!died) return;
+      const why = life.clean(stderr.split(/\r?\n/).map((l) => l.trim()).find(Boolean) || '', 200).replace(/^\S+\.js:\s*/, '');
+      life.log('injector', `${this.name} helper ` + (failed ? 'could not start (' + life.clean(failed.code || failed.message, 60) + ')' : 'exited (' + (signal || 'code ' + code) + ')') + (why ? ': ' + why : ''));
     });
   }
 
@@ -354,6 +367,25 @@ async function focusContext() {
   if (!r || !r.process) return null;
   // field: whether the focused element can take a paste (fieldFacts; pasteTarget.js decides).
   return { process: r.process, title: r.title || '', text: r.text || '', field: r.field || null };
+}
+
+/**
+ * The focused field's text on both sides of the caret, for the kept-as-pasted watch (kept.js),
+ * as inject.js's: {process, fid, pw, how, text, caret, cutBefore, cutAfter}, or null. A secure
+ * (password) field comes back with pw and no text.
+ */
+async function fieldAround() {
+  // {skip: true} while the accessibility helper is answering something else (a dictation's own
+  // read, a paste): the watch looks again later rather than queue in front of it.
+  if (ax.pending && ax.pending.size) return { skip: true };
+  const r = await read('around', 3000);
+  if (!r || !r.ok || typeof r.process !== 'string' || r.denied) return null;
+  const pw = Boolean(r.pw);
+  return {
+    process: r.process, fid: typeof r.fid === 'string' ? r.fid : '', pw, how: pw ? 'password' : String(r.how || ''),
+    text: pw ? '' : String(r.text || ''), caret: Number.isInteger(r.caret) ? r.caret : -1,
+    cutBefore: Boolean(r.cutBefore), cutAfter: Boolean(r.cutAfter)
+  };
 }
 
 /**
@@ -563,7 +595,7 @@ async function prime() {
 }
 
 module.exports = {
-  start, stop, paste, copy, maskAlt, focusedApp, focusContext, fieldState, selection, selectionStillIs,
+  start, stop, paste, copy, maskAlt, focusedApp, focusContext, fieldState, fieldAround, selection, selectionStillIs,
   isReady: () => keys.ready,
   listenAccess, requestListen, prime
 };
